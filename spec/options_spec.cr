@@ -34,6 +34,21 @@ module KrikriPlaybookGenerator
       assert_equal("/tmp/results", opts.results_dir)
     end
 
+    it "defaults run_on_podman? to false" do
+      opts = Options.parse(["generate"])
+      refute(opts.run_on_podman?)
+    end
+
+    it "parses --run-on-podman on generate" do
+      opts = Options.parse(["generate", "--run-on-podman"])
+      assert(opts.run_on_podman?)
+    end
+
+    it "parses --run-on-podman on run" do
+      opts = Options.parse(["run", "--run-on-podman"])
+      assert(opts.run_on_podman?)
+    end
+
     it "raises on an empty argv" do
       err = assert_raises(InvalidOptionsError) { Options.parse([] of String) }
       assert((err.message || "").includes?("missing command"))

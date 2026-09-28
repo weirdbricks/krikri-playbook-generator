@@ -75,23 +75,54 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   role-tester's `RoleRunner`/backends are built around installing a Galaxy
   role and provisioning a fresh host pair per role — there's no "run this
   raw generated playbook" entry point to delegate to without cross-repo
-  changes to role-tester itself, which is out of scope here. Instead
-  `Runner` runs each playbook locally (`-i localhost, -c local`) against
-  both engines directly, in **`--check --diff` mode by default** — chaos
-  tasks are mostly self-limiting (they fail argument validation before
-  doing anything), but happy-path tasks are real modules that would
-  otherwise install packages, create users, etc. on *this* machine.
-  `--allow-mutation` opts out of check mode for whoever wires up a real
-  disposable-host backend later; `--atlantic-hosts` is accepted and
-  stored for that same future wiring but unused by this local runner.
+  changes to role-tester itself, which is out of scope here. Two backends,
+  neither the default:
+  - **Local** (`run_on_podman: false`, the default) — runs each playbook
+    directly on this machine (`-i localhost, -c local`), `--check --diff`
+    unless `--allow-mutation` is passed, since happy-path tasks are real
+    modules that would otherwise install packages, create users, etc. on
+    *this* machine.
+  - **Podman** (`--run-on-podman`/`run_on_podman: true`, opt-in, requires
+    `podman` on PATH) — delegates to `PodmanBackend`: a pair of throwaway,
+    `--privileged` podman containers, the same pattern krikri's own
+    testing/podman-diff/run.sh already uses. Since those containers are
+    disposable, happy-path tasks run for real there — faster to iterate
+    with than real hosts, at the cost of `PodmanBackend`'s fixed, generic
+    dependency set (see its own doc comment); real Atlantic.net hosts are
+    still what a wide/production batch needs, this doesn't replace them.
+    Raises `PodmanProvisionError` up front if `--run-on-podman` is passed
+    but `podman` isn't on PATH, rather than silently falling back to
+    local (which could surprise someone expecting containment).
+  `--atlantic-hosts` is accepted and stored for a possible future remote/
+  Atlantic.net backend but unused by either backend implemented here.
   Own small `Recap` (ok/changed/unreachable/failed/skipped, parsed from
   the `PLAY RECAP` line) rather than reusing role-tester's — copying one
   five-line regex-based struct beat adding a `path:` dependency on an app
   shard for it. Writes one `results.jsonl` line per playbook (`playbook`,
   `divergent?`, both engines' `rc`/`recap`) to `--results-dir`. Verified
   live: a real generated batch across apt/user/debug ran clean against
-  both installed engines and **found two genuine recap divergences**
-  between real ansible-playbook and krikri-playbook on the first try.
+  both installed engines locally and **found two genuine recap
+  divergences** between real ansible-playbook and krikri-playbook on the
+  first try; a separate real podman-backed run found a third (krikri
+  erroring on a `debug` task real Ansible skips cleanly at a high
+  `verbosity:`).
+- `src/krikri_playbook_generator/podman_backend.cr` — `PodmanBackend`.
+  **Implemented**: provisions two containers from
+  `docker.io/library/debian:bookworm-slim` (`kpg-real-<ts>-<pid>`,
+  `kpg-krikri-<ts>-<pid>`, collision-safe across concurrent invocations),
+  installs `ansible-core` + a small runtime-lib set in one, `podman cp`'s
+  the `krikri-playbook` binary and its `plugins/` dir into the other, both
+  get a `target ansible_connection=local` inventory. `run_playbook` copies
+  the playbook into both and execs each engine via `podman exec ... bash
+  -c "cd /work && ... -i inventory.ini <playbook>"`. `teardown` (`podman rm
+  -f` both, tracked idempotent via `@provisioned`) always runs from
+  `Runner`'s `ensure`. Any provisioning step failing raises
+  `PodmanProvisionError` with the failing step's stderr. Does **not**
+  replicate podman-diff's dozens of per-module apt/collection installs
+  (see the class's own doc comment) — modules needing something outside
+  the fixed set fail identically on both engines in the common case, or
+  can manufacture a false divergence if only one engine needs it;
+  documented limitation, not silently papered over.
 - `src/krikri_playbook_generator/triage.cr` — `Triage`. **Implemented**:
   reads `results.jsonl` (`Runner`'s output), and for every `divergent:
   true` line loads that playbook's `.meta.json` sidecar
@@ -114,14 +145,23 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   back to `--out`/`--results-dir` otherwise), matching the CLI sketch in
   `KRIKRI_PLAYBOOK_GENERATOR.md`.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
-  `Options.parse(ARGV).command`; `Command::Report` prints each `Finding`
+  `Options.parse(ARGV).command`. `Command::Report` prints each `Finding`
   as `<module> (<kind> <option>|happy-path): <count> divergent
-  playbook(s)` plus the list of playbook paths.
+  playbook(s)` plus the list of playbook paths. `Command::Generate` fuses
+  the whole pipeline into one call when `--run-on-podman` is passed:
+  after building the playbooks (still written to `--out` for later
+  review either way), it immediately runs them via `Runner` with
+  `run_on_podman: true`, prints one `[DIVERGENT]`/`[IDENTICAL] <path>`
+  line per playbook, and then prints the same grouped `Triage` findings
+  `report` would — `generate --run-on-podman` alone gets you the whole
+  round without separate `run`/`report` invocations. Plain `run` still
+  supports `--run-on-podman` on its own too, for re-running an
+  already-generated `--out` directory.
 
 Every stub is now implemented (`Options`, `Preflight`, `SchemaScanner`,
-`Generator`, `PlaybookBuilder`, `Runner`, `Triage`) — the full
-generate → run → report pipeline works end to end. See "Known gaps"
-below for what's deliberately left unbuilt.
+`Generator`, `PlaybookBuilder`, `Runner`, `PodmanBackend`, `Triage`) — the
+full generate → run → report pipeline works end to end, locally or via
+podman. See "Known gaps" below for what's deliberately left unbuilt.
 
 ## Conventions and gotchas
 
@@ -137,23 +177,37 @@ below for what's deliberately left unbuilt.
 - **Chaos mutations must always carry metadata** (`GeneratedTask#mutations`)
   — never inject a chaos mutation silently, or triage can't distinguish
   "found a real bug" from "found an artifact of our own fuzzing."
-- **`Runner` defaults to `--check` and must keep doing so** — happy-path
-  tasks are real modules that mutate real state (install packages, create
-  users, write files); running them for real against *this* machine
-  without an isolated/disposable host is not something to do by default.
-  Only `--allow-mutation` (explicit, documented as dangerous) opts out.
+- **`Runner`'s local backend defaults to `--check` and must keep doing
+  so** — happy-path tasks are real modules that mutate real state
+  (install packages, create users, write files); running them for real
+  against *this* machine without an isolated/disposable host is not
+  something to do by default. Only `--allow-mutation` (explicit,
+  documented as dangerous) opts out, and only for the local backend.
+- **Podman is opt-in (`--run-on-podman`), never the default** — even
+  though it's disposable and therefore safer than local mutation, it's
+  slower to provision than a plain local `--check` run and needs `podman`
+  installed; the person running this tool chooses when that tradeoff is
+  worth it. Don't make `PodmanBackend.available?` alone flip the default.
 - A real disposable-host backend (Atlantic.net, matching
-  krikri-role-tester's) for `Runner`'s mutating happy-path runs is a known
-  gap, not built here — see `runner.cr`'s own comment for why role-tester
-  itself couldn't be reused directly.
+  krikri-role-tester's) for wide/production batches is a known gap, not
+  built here — see `runner.cr`'s own comment for why role-tester itself
+  couldn't be reused directly. Podman fills the "fast local iteration"
+  niche, not the "hundreds of hosts" one.
 
 ## Known gaps
 
 Documented deliberately, not silently — same spirit as `required_if`
 above:
 
-- No real-host (Atlantic.net) execution backend yet; `Runner` is
-  local/check-mode only (see above).
+- No real-host (Atlantic.net) execution backend yet; `Runner` only has
+  local (`--check`-mode) and podman (`--run-on-podman`) backends (see
+  above) — neither replaces provisioning real disposable hosts for a
+  wide/production batch.
+- `PodmanBackend` installs one fixed, generic dependency set rather than
+  podman-diff's dozens of per-module installs — a randomly fuzzed module
+  needing something outside that set fails identically on both engines
+  in the common case, or can manufacture a false divergence if only one
+  side needs it.
 - `required_if` constraints are never violated by `Generator` (documented
   above).
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
@@ -177,7 +231,8 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `x || default` or `x.as(T)` after a `refute_nil` check. One spec file per
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
-`playbook_builder_spec.cr`, `runner_spec.cr`, `triage_spec.cr`. `schema_spec.cr` shells out to
+`playbook_builder_spec.cr`, `runner_spec.cr`, `podman_backend_spec.cr`,
+`triage_spec.cr`. `schema_spec.cr` shells out to
 the real, locally-installed `ansible-doc`/`python3` — no fakes, since
 tracking whatever ansible-core is actually installed is the entire point —
 but skips exercising unfiltered discovery (`SchemaScanner.new.scan`, no
@@ -191,7 +246,13 @@ string-matching the file. `runner_spec.cr` unit-tests `Recap`/
 `PlaybookResult#divergent?` directly, plus one real integration case
 (`ansible.builtin.debug`, always safe/fast/idempotent) that runs both real
 engines end to end and checks `results.jsonl`'s shape — not a fake, same
-reasoning as `schema_spec.cr`. `triage_spec.cr` writes hand-built
+reasoning as `schema_spec.cr`; it passes `run_on_podman: false` (now the
+Runner default anyway) explicitly so it stays fast even if that default
+ever changes. `podman_backend_spec.cr` is a real integration test too
+(provisions actual containers, `skip`s itself — minitest.cr's `skip`, not
+crystal-spec's `pending` — if `podman` or the `krikri-playbook` binary
+isn't available rather than failing the suite on a machine without them).
+`triage_spec.cr` writes hand-built
 `results.jsonl`/`.meta.json` fixtures rather than running the real
 pipeline, so it can assert grouping/dedup/sort behavior precisely and
 fast — the real pipeline is what the `generate`→`run`→`report` chain

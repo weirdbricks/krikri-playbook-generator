@@ -53,6 +53,9 @@ module KrikriPlaybookGenerator
       playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
 
       krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      # run_on_podman defaults to false: local is what this spec wants (fast,
+      # no container, checks this exact machine's installed engines).
+      # PodmanBackend gets its own opt-in integration spec below.
       results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin).run
 
       assert_equal(1, results.size)

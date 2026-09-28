@@ -23,13 +23,14 @@ module KrikriPlaybookGenerator
     property ansible_playbook_bin : String
     property krikri_bin : String
     property? allow_mutation : Bool
+    property? run_on_podman : Bool
 
     def initialize(@command, @modules = nil, @seed = 42, @count = 100,
                    @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint],
                    @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
-                   @allow_mutation = false)
+                   @allow_mutation = false, @run_on_podman = false)
     end
 
     def self.parse(argv : Array(String)) : Options
@@ -58,6 +59,7 @@ module KrikriPlaybookGenerator
         dsl.on("--ansible-playbook-bin PATH", "ansible-playbook executable (default: on PATH)") { |v| opts.ansible_playbook_bin = v }
         dsl.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = v }
         dsl.on("--allow-mutation", "run without --check: real modules may actually change the local host") { opts.allow_mutation = true }
+        dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
       end
       parser.parse(rest)
 
