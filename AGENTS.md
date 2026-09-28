@@ -43,7 +43,20 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   extractor's script body reaches `python3 -` via `input:`.
 - `src/krikri_playbook_generator/generator.cr` — `ChaosKind` enum,
   `GeneratedTask` (args + mutation metadata), `Generator#generate`.
-  **Not implemented.**
+  **Implemented**: for each option, required options are always included,
+  optional ones at 50%; a happy-path value is generated per Ansible type
+  (respecting `choices` when present), or — independently per option-slot
+  at `chaos_percentage` — one chaos mutation (Typo/Hallucinate/WrongType/
+  BadChoice, picked uniformly from `--chaos-kinds`) replaces it.
+  `ViolateConstraint` is rolled once per constraint *group* rather than
+  per option, since it inherently spans several options: it force-includes
+  a whole `mutually_exclusive` group, breaks a `required_together` group
+  down to one member, or empties a `required_one_of` group entirely.
+  `required_if` isn't violated (its heterogeneous `[key, value,
+  [required_keys], bool?]` shape doesn't reduce to a name group the same
+  way) — documented gap, not guessed at. Deterministic per seed
+  (`Random::PCG32`); every mutation is recorded in `GeneratedTask#mutations`,
+  never applied silently.
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`,
   turns `GeneratedTask`s into playbook YAML files. **Not implemented.**
 - `src/krikri_playbook_generator/runner.cr` — `Runner`, thin wrapper
@@ -55,9 +68,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`.
 
-`Generator`, `PlaybookBuilder`, `Runner`, and `Triage` are still stubs that
-raise "not yet implemented" — `Options`, `Preflight`, and `SchemaScanner`
-are the only implemented pieces so far.
+`PlaybookBuilder`, `Runner`, and `Triage` are still stubs that raise "not
+yet implemented" — `Options`, `Preflight`, `SchemaScanner`, and `Generator`
+are implemented so far.
 
 ## Conventions and gotchas
 
@@ -87,13 +100,17 @@ are the only implemented pieces so far.
 directly rather than relying on a blanket require. Use `describe`/`it`
 blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `.should`), and avoid `not_nil!` (ameba's `Lint/NotNil` flags it) — prefer
-`x || default` or `x.as(T)` after a `refute_nil` check. `spec/options_spec.cr`, `spec/preflight_spec.cr`, and `spec/schema_spec.cr`
+`x || default` or `x.as(T)` after a `refute_nil` check. `spec/options_spec.cr`,
+`spec/preflight_spec.cr`, `spec/schema_spec.cr`, and `spec/generator_spec.cr`
 exist so far, following `krikri-role-tester`'s one-file-per-module pattern.
 `schema_spec.cr` shells out to the real, locally-installed
 `ansible-doc`/`python3` — no fakes, since tracking whatever ansible-core is
 actually installed is the entire point — but skips exercising unfiltered
 discovery (`SchemaScanner.new.scan`, no `--modules`), which would spawn two
 subprocesses per one of ~9000+ installed modules; verify that path live.
+`generator_spec.cr` builds a small hand-written `ModuleSchema` fixture
+rather than going through `SchemaScanner`, so it stays fast and doesn't
+depend on any particular module's real constraints.
 
 `ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr
 -o bin/ameba && ./bin/ameba` after `shards install` (no prebuilt binary is

@@ -56,8 +56,10 @@ meant to be generated from that same source of truth, not hand-duplicated.
 ## Status
 
 `generate`/`run` refuse to proceed unless both `ansible-playbook` and
-`krikri-playbook` are resolvable (`Preflight`), and `SchemaScanner` is
-implemented — it scans real, installed modules via `ansible-doc -j` for
-option schemas and via a small embedded Python AST scanner for
-cross-option constraints. `Generator`, `PlaybookBuilder`, `Runner`, and
-`Triage` still raise "not yet implemented" until their bodies are written.
+`krikri-playbook` are resolvable (`Preflight`). `SchemaScanner` scans
+real, installed modules via `ansible-doc -j` for option schemas and via a
+small embedded Python AST scanner for cross-option constraints.
+`Generator` turns a schema into happy-path and chaos-mutated argument
+sets, deterministic per `--seed`, every mutation tagged with which slot
+and which kind. `PlaybookBuilder`, `Runner`, and `Triage` still raise
+"not yet implemented" until their bodies are written.
