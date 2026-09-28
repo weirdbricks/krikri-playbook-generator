@@ -20,11 +20,14 @@ module KrikriPlaybookGenerator
     property out_dir : String
     property results_dir : String
     property atlantic_hosts : Int32
+    property ansible_playbook_bin : String
+    property krikri_bin : String
 
     def initialize(@command, @modules = nil, @seed = 42, @count = 100,
                     @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint],
                     @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
-                    @atlantic_hosts = 22)
+                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
+                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook")
     end
 
     def self.parse(argv : Array(String)) : Options
@@ -50,6 +53,8 @@ module KrikriPlaybookGenerator
         p.on("--out DIR", "playbook output dir") { |v| opts.out_dir = v }
         p.on("--results-dir DIR", "results output dir") { |v| opts.results_dir = v }
         p.on("--atlantic-hosts N", "max concurrent Atlantic.net hosts") { |v| opts.atlantic_hosts = v.to_i }
+        p.on("--ansible-playbook-bin PATH", "ansible-playbook executable (default: on PATH)") { |v| opts.ansible_playbook_bin = v }
+        p.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = v }
       end
       parser.parse(rest)
 
