@@ -57,8 +57,19 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   way) — documented gap, not guessed at. Deterministic per seed
   (`Random::PCG32`); every mutation is recorded in `GeneratedTask#mutations`,
   never applied silently.
-- `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`,
-  turns `GeneratedTask`s into playbook YAML files. **Not implemented.**
+- `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
+  **Implemented**: v1 scope is single-task-per-module playbooks (one play,
+  one task, `hosts: all`, `gather_facts: false`, `register:` +
+  `ignore_errors: true` so a batch keeps going past individual failures) —
+  multi-task interaction fuzzing (register/when chains, loops, handlers)
+  is a v2 concern per the proposal, not built here. Each `<n>-<module>-
+  happy|chaos.yml` gets a sibling `<n>-<module>-happy|chaos.meta.json`
+  (module/collection/chaos?/mutations) since the playbook YAML alone
+  doesn't say which slots were mutated or how — `Triage` reads this back.
+  Verified live: a generated chaos playbook fails against real
+  `ansible-playbook --check` with exactly the mutation the generator
+  recorded (a `mutually exclusive` error matching a real
+  `ViolateConstraint` mutation).
 - `src/krikri_playbook_generator/runner.cr` — `Runner`, thin wrapper
   around krikri-role-tester's execution/diff machinery. **Not implemented.**
 - `src/krikri_playbook_generator/triage.cr` — `Triage`, groups/dedupes
@@ -68,8 +79,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`.
 
-`PlaybookBuilder`, `Runner`, and `Triage` are still stubs that raise "not
-yet implemented" — `Options`, `Preflight`, `SchemaScanner`, and `Generator`
+`Runner` and `Triage` are still stubs that raise "not yet implemented" —
+`Options`, `Preflight`, `SchemaScanner`, `Generator`, and `PlaybookBuilder`
 are implemented so far.
 
 ## Conventions and gotchas
@@ -110,7 +121,10 @@ discovery (`SchemaScanner.new.scan`, no `--modules`), which would spawn two
 subprocesses per one of ~9000+ installed modules; verify that path live.
 `generator_spec.cr` builds a small hand-written `ModuleSchema` fixture
 rather than going through `SchemaScanner`, so it stays fast and doesn't
-depend on any particular module's real constraints.
+depend on any particular module's real constraints. `playbook_builder_spec.cr`
+parses the written YAML back with `YAML.parse` and the sidecar with
+`JSON.parse` rather than string-matching the file — writes to a
+`File.tempname` dir, cleaned up in `ensure`.
 
 `ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr
 -o bin/ameba && ./bin/ameba` after `shards install` (no prebuilt binary is

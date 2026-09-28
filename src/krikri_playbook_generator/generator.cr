@@ -16,11 +16,16 @@ module KrikriPlaybookGenerator
   # divergence can always be traced back to a specific mutation kind.
   class GeneratedTask
     property module_name : String
+    property collection : String
     property args : Hash(String, YAML::Any)
     property mutations : Array({String, ChaosKind})
 
-    def initialize(@module_name, @args = {} of String => YAML::Any,
+    def initialize(@module_name, @collection = "ansible.builtin", @args = {} of String => YAML::Any,
                    @mutations = [] of {String, ChaosKind})
+    end
+
+    def fqcn : String
+      "#{collection}.#{module_name}"
     end
 
     def chaos? : Bool
@@ -68,7 +73,7 @@ module KrikriPlaybookGenerator
 
       apply_constraint_violations!(schema, args, mutations)
 
-      GeneratedTask.new(schema.module_name, args, mutations)
+      GeneratedTask.new(schema.module_name, schema.collection, args, mutations)
     end
 
     private def include_option?(option : OptionSchema) : Bool

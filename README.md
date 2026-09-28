@@ -43,7 +43,12 @@ meant to be generated from that same source of truth, not hand-duplicated.
     crystal spec   # minitest.cr under the hood
     crystal build lib/ameba/src/cli.cr -o bin/ameba && ./bin/ameba
 
-## Usage (sketch — generation/run/report bodies are not implemented yet)
+## Usage
+
+`generate` is implemented end to end — it produces real playbook YAML
+(plus a `.meta.json` sidecar per playbook) you can hand straight to
+`ansible-playbook`/`krikri-playbook` yourself already. `run`/`report`
+bodies are not implemented yet.
 
     krikri-playbook-generator generate --modules apt,copy,user,cron --seed 42 \
       --count 500 --chaos-percentage 3 --out playbooks/
@@ -61,5 +66,7 @@ real, installed modules via `ansible-doc -j` for option schemas and via a
 small embedded Python AST scanner for cross-option constraints.
 `Generator` turns a schema into happy-path and chaos-mutated argument
 sets, deterministic per `--seed`, every mutation tagged with which slot
-and which kind. `PlaybookBuilder`, `Runner`, and `Triage` still raise
-"not yet implemented" until their bodies are written.
+and which kind. `PlaybookBuilder` turns those into real playbook YAML plus
+a `.meta.json` sidecar per playbook — verified live against real
+`ansible-playbook --check`. `Runner` and `Triage` still raise "not yet
+implemented" until their bodies are written.
