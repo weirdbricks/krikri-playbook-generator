@@ -1,3 +1,4 @@
+require "yaml"
 require "./schema"
 require "random/pcg32"
 

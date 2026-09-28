@@ -10,8 +10,9 @@ module KrikriPlaybookGenerator
     in Command::Generate
       Preflight.check!(opts.ansible_playbook_bin, opts.krikri_bin)
       schemas = SchemaScanner.new(opts.modules).scan
-      tasks = schemas.flat_map do |schema|
-        Generator.new(opts.seed, opts.chaos_percentage).generate(schema, opts.count)
+      tasks = [] of GeneratedTask
+      schemas.each do |schema|
+        tasks.concat(Generator.new(opts.seed, opts.chaos_percentage).generate(schema, opts.count))
       end
       PlaybookBuilder.new(opts.out_dir).build(tasks)
     in Command::Run

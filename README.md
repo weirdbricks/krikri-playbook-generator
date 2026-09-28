@@ -55,6 +55,9 @@ meant to be generated from that same source of truth, not hand-duplicated.
 
 ## Status
 
-Scaffold only: CLI parsing and the module/class shapes exist; `SchemaScanner`,
-`Generator`, `PlaybookBuilder`, `Runner`, and `Triage` all raise
-"not yet implemented" until their bodies are written.
+`generate`/`run` refuse to proceed unless both `ansible-playbook` and
+`krikri-playbook` are resolvable (`Preflight`), and `SchemaScanner` is
+implemented — it scans real, installed modules via `ansible-doc -j` for
+option schemas and via a small embedded Python AST scanner for
+cross-option constraints. `Generator`, `PlaybookBuilder`, `Runner`, and
+`Triage` still raise "not yet implemented" until their bodies are written.

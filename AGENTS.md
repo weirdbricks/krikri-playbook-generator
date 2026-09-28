@@ -27,8 +27,20 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 ## Architecture
 
 - `src/krikri_playbook_generator/schema.cr` — `OptionSchema`/`ModuleSchema`
-  plus `SchemaScanner`, which is meant to scan installed ansible-core +
-  collection Python source for `DOCUMENTATION` blocks. **Not implemented.**
+  plus `SchemaScanner`. **Implemented**: shells out to the real, installed
+  `ansible-doc -j` for each module's option schema (type/choices/required/
+  default/elements — exactly what real ansible-playbook validates
+  arguments against, no YAML re-parsing of our own) and to
+  `scripts/extract_constraints.py` (an embedded Python AST scanner, run via
+  `python3 -` over stdin, `{{ read_file(...) }}`'d into the binary at
+  compile time) for `mutually_exclusive`/`required_together`/`required_if`/
+  `required_one_of`, since those live only in the module's `AnsibleModule()`
+  call, not `DOCUMENTATION` — `ansible-doc` never sees them. The extractor
+  only picks up literal list arguments (`ast.literal_eval`); anything built
+  dynamically is left empty rather than guessed at.
+- `src/krikri_playbook_generator/cmd.cr` — `Cmd.run`, mirroring
+  krikri-role-tester's external-command wrapper; also how the constraint
+  extractor's script body reaches `python3 -` via `input:`.
 - `src/krikri_playbook_generator/generator.cr` — `ChaosKind` enum,
   `GeneratedTask` (args + mutation metadata), `Generator#generate`.
   **Not implemented.**
@@ -43,17 +55,16 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`.
 
-Everything past `Options` is currently a stub that raises "not yet
-implemented" — this repo is at the scaffold stage, not feature-complete.
+`Generator`, `PlaybookBuilder`, `Runner`, and `Triage` are still stubs that
+raise "not yet implemented" — `Options`, `Preflight`, and `SchemaScanner`
+are the only implemented pieces so far.
 
 ## Conventions and gotchas
 
 - Follow `krikri-role-tester`'s conventions where they apply here too:
-  no comments unless explaining a non-obvious why; external commands
-  should go through a `Cmd`-style wrapper (not yet added — add one under
-  `src/krikri_playbook_generator/cmd.cr` mirroring
-  `krikri-role-tester/src/krikri_role_tester/cmd.cr` before shelling out
-  to anything).
+  no comments unless explaining a non-obvious why; external commands go
+  through `Cmd.run` (`src/krikri_playbook_generator/cmd.cr`), not a bare
+  `Process.run`.
 - **Coverage scope**: 100% bar for `ansible.builtin` core + krikri's
   chosen community modules; zero obligation for the rest. The default
   `--modules` list should be derived from the same source of truth the
@@ -76,10 +87,13 @@ implemented" — this repo is at the scaffold stage, not feature-complete.
 directly rather than relying on a blanket require. Use `describe`/`it`
 blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `.should`), and avoid `not_nil!` (ameba's `Lint/NotNil` flags it) — prefer
-`x || default` or `x.as(T)` after a `refute_nil` check. `spec/options_spec.cr`
-and `spec/preflight_spec.cr` exist so far; add one spec file per source
-module as bodies get implemented, following `krikri-role-tester`'s
-one-file-per-module pattern.
+`x || default` or `x.as(T)` after a `refute_nil` check. `spec/options_spec.cr`, `spec/preflight_spec.cr`, and `spec/schema_spec.cr`
+exist so far, following `krikri-role-tester`'s one-file-per-module pattern.
+`schema_spec.cr` shells out to the real, locally-installed
+`ansible-doc`/`python3` — no fakes, since tracking whatever ansible-core is
+actually installed is the entire point — but skips exercising unfiltered
+discovery (`SchemaScanner.new.scan`, no `--modules`), which would spawn two
+subprocesses per one of ~9000+ installed modules; verify that path live.
 
 `ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr
 -o bin/ameba && ./bin/ameba` after `shards install` (no prebuilt binary is
