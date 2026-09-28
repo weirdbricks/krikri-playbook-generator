@@ -92,16 +92,36 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   live: a real generated batch across apt/user/debug ran clean against
   both installed engines and **found two genuine recap divergences**
   between real ansible-playbook and krikri-playbook on the first try.
-- `src/krikri_playbook_generator/triage.cr` — `Triage`, groups/dedupes
-  divergences by module + chaos-kind + constraint. **Not implemented.**
+- `src/krikri_playbook_generator/triage.cr` — `Triage`. **Implemented**:
+  reads `results.jsonl` (`Runner`'s output), and for every `divergent:
+  true` line loads that playbook's `.meta.json` sidecar
+  (`PlaybookBuilder`'s output — the only place linking a playbook back to
+  its module and mutations) and groups by `{module, chaos_kind, option}`.
+  A happy-path divergence (no mutations) groups under `{module, nil, nil}`.
+  A playbook with several mutations contributes one finding per mutation
+  — if a divergence could be caused by any one of several simultaneous
+  mutations, triage shouldn't quietly credit only the first. Findings
+  dedupe by that key (N playbooks hitting the same module+kind+option
+  become one `Finding` with `count: N`, not N separate ones) and sort by
+  descending count, so the highest-signal root cause surfaces first — the
+  same "two roles, same root cause, one fix" principle
+  `krikri-role-tester`'s own triage step already uses. A missing
+  `.meta.json` sidecar (or missing `results.jsonl` entirely) is skipped/
+  raised on respectively rather than crashing the whole report.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the three
-  subcommands (`generate`, `run`, `report`). Implemented.
+  subcommands (`generate`, `run`, `report`). Both `run <dir>` and
+  `report <dir>` accept that directory as a positional argument (falling
+  back to `--out`/`--results-dir` otherwise), matching the CLI sketch in
+  `KRIKRI_PLAYBOOK_GENERATOR.md`.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
-  `Options.parse(ARGV).command`.
+  `Options.parse(ARGV).command`; `Command::Report` prints each `Finding`
+  as `<module> (<kind> <option>|happy-path): <count> divergent
+  playbook(s)` plus the list of playbook paths.
 
-`Triage` is the only remaining stub that raises "not yet implemented" —
-everything else (`Options`, `Preflight`, `SchemaScanner`, `Generator`,
-`PlaybookBuilder`, `Runner`) is implemented.
+Every stub is now implemented (`Options`, `Preflight`, `SchemaScanner`,
+`Generator`, `PlaybookBuilder`, `Runner`, `Triage`) — the full
+generate → run → report pipeline works end to end. See "Known gaps"
+below for what's deliberately left unbuilt.
 
 ## Conventions and gotchas
 
@@ -127,6 +147,24 @@ everything else (`Options`, `Preflight`, `SchemaScanner`, `Generator`,
   gap, not built here — see `runner.cr`'s own comment for why role-tester
   itself couldn't be reused directly.
 
+## Known gaps
+
+Documented deliberately, not silently — same spirit as `required_if`
+above:
+
+- No real-host (Atlantic.net) execution backend yet; `Runner` is
+  local/check-mode only (see above).
+- `required_if` constraints are never violated by `Generator` (documented
+  above).
+- Multi-task interaction fuzzing (register/when chains, loops, handlers)
+  is v2 per the proposal; `PlaybookBuilder` only ever emits one task per
+  playbook.
+- `--modules` has no default derived from krikri's core+supported-community
+  list yet (the "Coverage scope" convention above) — every `generate`
+  invocation currently needs an explicit `--modules` list or accepts
+  ansible-core's *entire* installed module set (including modules krikri
+  has no obligation to support).
+
 ## Tests
 
 `minitest.cr` (`ysbaddaden/minitest.cr`, ~> 1.6), run through `crystal spec`
@@ -139,7 +177,7 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `x || default` or `x.as(T)` after a `refute_nil` check. One spec file per
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
-`playbook_builder_spec.cr`, `runner_spec.cr`. `schema_spec.cr` shells out to
+`playbook_builder_spec.cr`, `runner_spec.cr`, `triage_spec.cr`. `schema_spec.cr` shells out to
 the real, locally-installed `ansible-doc`/`python3` — no fakes, since
 tracking whatever ansible-core is actually installed is the entire point —
 but skips exercising unfiltered discovery (`SchemaScanner.new.scan`, no
@@ -153,8 +191,13 @@ string-matching the file. `runner_spec.cr` unit-tests `Recap`/
 `PlaybookResult#divergent?` directly, plus one real integration case
 (`ansible.builtin.debug`, always safe/fast/idempotent) that runs both real
 engines end to end and checks `results.jsonl`'s shape — not a fake, same
-reasoning as `schema_spec.cr`. All temp-dir specs use `File.tempname`,
-cleaned up in `ensure`.
+reasoning as `schema_spec.cr`. `triage_spec.cr` writes hand-built
+`results.jsonl`/`.meta.json` fixtures rather than running the real
+pipeline, so it can assert grouping/dedup/sort behavior precisely and
+fast — the real pipeline is what the `generate`→`run`→`report` chain
+itself exercises live (verified manually; no spec drives the full CLI
+chain end to end yet). All temp-dir specs use `File.tempname`, cleaned up
+in `ensure`.
 
 `ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr
 -o bin/ameba && ./bin/ameba` after `shards install` (no prebuilt binary is

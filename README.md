@@ -29,8 +29,10 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    raw generated playbook) without cross-repo changes there — out of
    scope here; `--atlantic-hosts` is accepted and stored for whoever wires
    up a real disposable-host backend later.
-5. **triage** — groups divergences by module + chaos-kind + constraint
-   violated, deduping to root cause.
+5. **triage** — reads `results.jsonl` plus each divergent playbook's
+   `.meta.json` sidecar and groups by module + chaos-kind + option,
+   deduping N divergent playbooks hitting the same root cause into one
+   finding, sorted by descending count.
 
 See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for the full proposal,
 open questions, and rationale for a separate repo.
@@ -51,15 +53,18 @@ meant to be generated from that same source of truth, not hand-duplicated.
 
 ## Usage
 
-`generate` and `run` are implemented end to end. `report` still raises
-"not yet implemented".
+The full pipeline is implemented end to end:
 
     krikri-playbook-generator generate --modules apt,copy,user,cron --seed 42 \
       --count 500 --chaos-percentage 3 --out playbooks/
 
     krikri-playbook-generator run playbooks/ --results-dir ~/scratch/kpg-results
 
-    krikri-playbook-generator report ~/scratch/kpg-results   # not yet implemented
+    krikri-playbook-generator report ~/scratch/kpg-results
+
+`report` prints one line per finding — `<module> (<kind> <option> |
+happy-path): <count> divergent playbook(s)`, followed by the list of
+playbook paths — sorted by how many playbooks hit that same root cause.
 
 `run` defaults to Ansible `--check` mode (no real host mutation) since
 happy-path tasks are real modules that would otherwise install packages,
@@ -77,7 +82,13 @@ small embedded Python AST scanner for cross-option constraints.
 sets, deterministic per `--seed`, every mutation tagged with which slot
 and which kind. `PlaybookBuilder` turns those into real playbook YAML plus
 a `.meta.json` sidecar per playbook. `Runner` runs each playbook against
-both real engines locally and writes `results.jsonl` — a first real batch
-across apt/user/debug found two genuine divergences between
-ansible-playbook and krikri-playbook on the first try. `Triage` still
-raises "not yet implemented" until its body is written.
+both real engines locally (check mode by default) and writes
+`results.jsonl`. `Triage` groups divergences from that back to a root
+cause via the `.meta.json` sidecars.
+
+A full `generate → run → report` pass across apt/user/debug found two
+genuine divergences between real ansible-playbook and krikri-playbook,
+correctly attributed down to the specific mutated option, on the first
+try. See `AGENTS.md`'s "Known gaps" for what's deliberately not built yet
+(a real disposable-host execution backend, `required_if` violation,
+multi-task playbooks, and a default `--modules` list).

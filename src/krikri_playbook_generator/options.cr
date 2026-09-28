@@ -62,6 +62,7 @@ module KrikriPlaybookGenerator
       parser.parse(rest)
 
       opts.out_dir = rest.first if opts.command.run? && !rest.empty?
+      opts.results_dir = rest.first if opts.command.report? && !rest.empty?
 
       opts
     end

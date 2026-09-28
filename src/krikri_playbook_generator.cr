@@ -1,7 +1,7 @@
 require "./krikri_playbook_generator/**"
 
 module KrikriPlaybookGenerator
-  VERSION = "0.0.3"
+  VERSION = "0.0.4"
 
   def self.main(argv : Array(String)) : Int32
     opts = Options.parse(argv)
@@ -21,7 +21,7 @@ module KrikriPlaybookGenerator
       Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, check_mode: !opts.allow_mutation?).run
     in Command::Report
-      Triage.new(opts.results_dir).report
+      print_findings(Triage.new(opts.results_dir).report)
     end
     0
   rescue e : InvalidOptionsError
@@ -30,6 +30,22 @@ module KrikriPlaybookGenerator
   rescue e : PreflightError
     STDERR.puts "error: #{e.message}"
     1
+  rescue e : TriageError
+    STDERR.puts "error: #{e.message}"
+    1
+  end
+
+  private def self.print_findings(findings : Array(Triage::Finding)) : Nil
+    if findings.empty?
+      puts "No divergences found."
+      return
+    end
+
+    findings.each do |finding|
+      label = finding.chaos_kind ? "#{finding.chaos_kind} #{finding.option}" : "happy-path"
+      puts "#{finding.module_name} (#{label}): #{finding.count} divergent playbook(s)"
+      finding.playbooks.each { |playbook| puts "  - #{playbook}" }
+    end
   end
 end
 
