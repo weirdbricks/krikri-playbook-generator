@@ -35,13 +35,12 @@ module KrikriPlaybookGenerator
       suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = "kpg-real#{suffix}"
       @name_krikri = "kpg-krikri#{suffix}"
-      @provisioned = false
+      @started_names = [] of String
     end
 
     def provision : Nil
       start_container(@name_real)
       start_container(@name_krikri)
-      @provisioned = true
 
       install(@name_real, REAL_PACKAGES)
       install(@name_krikri, KRIKRI_RUNTIME_LIBS)
@@ -55,26 +54,40 @@ module KrikriPlaybookGenerator
 
     def run_playbook(playbook_path : String) : {ansible: Cmd::Result, krikri: Cmd::Result}
       basename = File.basename(playbook_path)
-      Cmd.run("podman", ["cp", playbook_path, "#{@name_real}:/work/#{basename}"])
-      Cmd.run("podman", ["cp", playbook_path, "#{@name_krikri}:/work/#{basename}"])
+      copy_playbook(playbook_path, basename, @name_real)
+      copy_playbook(playbook_path, basename, @name_krikri)
 
-      ansible_result = Cmd.run("podman", ["exec", @name_real, "bash", "-c",
-                                          "cd /work && ANSIBLE_NOCOLOR=1 ansible-playbook -i inventory.ini #{basename}"])
-      krikri_result = Cmd.run("podman", ["exec", @name_krikri, "bash", "-c",
-                                         "cd /work && /opt/krikri/bin/krikri-playbook -i inventory.ini #{basename}"])
+      ansible_result = Cmd.run("podman", ["exec", "-w", "/work", "-e", "ANSIBLE_NOCOLOR=1", @name_real,
+                                          "ansible-playbook", "-i", "inventory.ini", basename])
+      krikri_result = Cmd.run("podman", ["exec", "-w", "/work", "-e", "ANSIBLE_NOCOLOR=1", @name_krikri,
+                                         "/opt/krikri/bin/krikri-playbook", "-i", "inventory.ini", basename])
 
       {ansible: ansible_result, krikri: krikri_result}
     end
 
+    # A failed cp must stop before exec: otherwise both engines run
+    # against a missing or stale playbook file and manufacture a
+    # misleading "both failed identically" result instead of a clear
+    # provisioning error.
+    private def copy_playbook(playbook_path : String, basename : String, name : String) : Nil
+      result = Cmd.run("podman", ["cp", playbook_path, "#{name}:/work/#{basename}"])
+      raise PodmanProvisionError.new("podman cp #{basename.inspect} into #{name} failed: #{result.stderr}") unless Cmd.success?(result)
+    end
+
+    # Whatever actually started gets removed, even if provisioning failed
+    # halfway through (e.g. the second container never came up) - otherwise
+    # the already-running --privileged container would leak permanently.
     def teardown : Nil
-      return unless @provisioned
-      Cmd.run("podman", ["rm", "-f", @name_real, @name_krikri])
-      @provisioned = false
+      return if @started_names.empty?
+
+      Cmd.run("podman", ["rm", "-f"] + @started_names)
+      @started_names.clear
     end
 
     private def start_container(name : String) : Nil
       result = Cmd.run("podman", ["run", "-d", "--privileged", "--name", name, IMAGE, "sleep", "infinity"])
       raise PodmanProvisionError.new("podman run failed for #{name}: #{result.stderr}") unless Cmd.success?(result)
+      @started_names << name
     end
 
     private def install(name : String, packages : String) : Nil

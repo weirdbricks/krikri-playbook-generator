@@ -65,7 +65,7 @@ module KrikriPlaybookGenerator
         next unless include_option?(option)
 
         if !per_option_kinds.empty? && chaos_triggered?
-          apply_chaos!(args, mutations, option, per_option_kinds.sample(@rng))
+          apply_chaos!(schema, args, mutations, option, per_option_kinds.sample(@rng))
         else
           args[option.name] = happy_value(option)
         end
@@ -84,11 +84,12 @@ module KrikriPlaybookGenerator
       @chaos_percentage > 0 && @rng.rand(100.0) < @chaos_percentage
     end
 
-    private def apply_chaos!(args : Hash(String, YAML::Any), mutations : Array({String, ChaosKind}),
+    private def apply_chaos!(schema : ModuleSchema, args : Hash(String, YAML::Any),
+                             mutations : Array({String, ChaosKind}),
                              option : OptionSchema, kind : ChaosKind) : Nil
       case kind
       when .typo?
-        args[typo_name(option.name)] = happy_value(option)
+        args[typo_name(option.name, schema.options.keys)] = happy_value(option)
         mutations << {option.name, kind}
       when .hallucinate?
         args["#{option.name}_bogus"] = happy_value(option)
@@ -187,13 +188,34 @@ module KrikriPlaybookGenerator
       candidate
     end
 
-    private def typo_name(name : String) : String
-      return "#{name}x" if name.size < 2
+    # A typo'd name must never collide with another real option name:
+    # that would silently clobber an unrelated argument while the recorded
+    # mutation still names the original option. Try each adjacent-swap
+    # position; if every swap collides (or changes nothing), fall back to
+    # appending a character until the result is collision-free.
+    private def typo_name(name : String, real_names : Array(String)) : String
+      if name.size < 2
+        candidate = "#{name}x"
+        while real_names.includes?(candidate)
+          candidate = "#{candidate}x"
+        end
+        return candidate
+      end
 
-      idx = @rng.rand(name.size - 1)
-      chars = name.chars
-      chars[idx], chars[idx + 1] = chars[idx + 1], chars[idx]
-      chars.join
+      start = @rng.rand(name.size - 1)
+      (name.size - 1).times do |offset|
+        idx = (start + offset) % (name.size - 1)
+        chars = name.chars
+        chars[idx], chars[idx + 1] = chars[idx + 1], chars[idx]
+        candidate = chars.join
+        return candidate unless real_names.includes?(candidate) || candidate == name
+      end
+
+      candidate = "#{name}x"
+      while real_names.includes?(candidate)
+        candidate = "#{candidate}x"
+      end
+      candidate
     end
 
     private def random_word(length : Int32 = 6) : String

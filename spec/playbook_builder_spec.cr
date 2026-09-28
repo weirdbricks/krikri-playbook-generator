@@ -67,5 +67,31 @@ module KrikriPlaybookGenerator
     ensure
       FileUtils.rm_rf(dir) if dir
     end
+
+    it "clears a previous batch's playbooks when rebuilding into the same directory" do
+      dir = File.tempname("kpg-spec")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "keepme.txt"), "user data")
+
+      PlaybookBuilder.new(dir).build([sample_task, sample_task(chaos: true)])
+      first_files = Dir.children(dir).sort
+      assert_equal(5, first_files.size) # 2 yml + 2 meta.json + keepme.txt
+
+      other = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")})
+      PlaybookBuilder.new(dir).build([other])
+
+      remaining = Dir.children(dir).sort
+      assert_equal(3, remaining.size) # 1 yml + 1 meta.json + keepme.txt
+      assert(remaining.includes?("keepme.txt"))
+      assert(remaining.includes?("000000-debug-happy.yml"))
+      assert(remaining.includes?("000000-debug-happy.meta.json"))
+      first_files.each do |old_name|
+        next if old_name == "keepme.txt"
+
+        refute(remaining.includes?(old_name), "#{old_name} from the first batch should have been cleared")
+      end
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
   end
 end

@@ -26,7 +26,7 @@ module KrikriPlaybookGenerator
     def report : Array(Finding)
       groups = {} of {String, String?, String?} => Array(String)
 
-      each_divergent_playbook do |playbook_path|
+      skipped_lines = each_divergent_playbook do |playbook_path|
         meta = load_meta(playbook_path)
         next unless meta
 
@@ -35,6 +35,10 @@ module KrikriPlaybookGenerator
         else
           meta.mutations.each { |mutation| group(groups, meta.module_name, mutation.kind, mutation.option, playbook_path) }
         end
+      end
+
+      if skipped_lines.positive?
+        STDERR.puts "warning: skipped #{skipped_lines} malformed results.jsonl line(s)"
       end
 
       groups.map { |(module_name, kind, option), playbooks| Finding.new(module_name, kind, option, playbooks) }
@@ -47,22 +51,32 @@ module KrikriPlaybookGenerator
       (groups[key] ||= [] of String) << playbook_path
     end
 
-    private def each_divergent_playbook(& : String ->) : Nil
+    # A truncated final line (e.g. a batch killed mid-write) is skipped
+    # and reported, not fatal: one bad line shouldn't sink the whole
+    # report over the results that did parse.
+    private def each_divergent_playbook(& : String ->) : Int32
       results_path = File.join(@results_dir, "results.jsonl")
       unless File.exists?(results_path)
         raise TriageError.new("no results.jsonl under #{@results_dir.inspect} - run `run` first")
       end
 
+      skipped = 0
       File.each_line(results_path) do |line|
         next if line.blank?
 
-        parsed = JSON.parse(line).as_h?
+        parsed = begin
+          JSON.parse(line).as_h?
+        rescue JSON::ParseException
+          skipped += 1
+          nil
+        end
         next unless parsed
         next unless parsed["divergent"]?.try(&.as_bool?)
 
         playbook_path = parsed["playbook"]?.try(&.as_s?)
         yield playbook_path if playbook_path
       end
+      skipped
     end
 
     private def load_meta(playbook_path : String) : Meta?

@@ -66,5 +66,33 @@ module KrikriPlaybookGenerator
       end
       assert(violated)
     end
+
+    it "never typos an option name into another real option's name" do
+      schema = ModuleSchema.new("collision", "ansible.builtin")
+      schema.options["ab"] = OptionSchema.new("ab", "str")
+      schema.options["ba"] = OptionSchema.new("ba", "str")
+
+      tasks = Generator.new(5, 100.0, [ChaosKind::Typo]).generate(schema, 50)
+      real_names = %w[ab ba]
+      assert(tasks.any?(&.chaos?))
+
+      tasks.each do |task|
+        extra_keys = task.args.keys - real_names
+        assert_equal(task.mutations.size, extra_keys.size)
+        extra_keys.each do |key|
+          refute(real_names.includes?(key), "typo'd key #{key.inspect} collides with a real option name")
+        end
+      end
+    end
+
+    it "still produces a plain typo when no collision is possible" do
+      schema = ModuleSchema.new("solo", "ansible.builtin")
+      schema.options["abc"] = OptionSchema.new("abc", "str")
+
+      tasks = Generator.new(5, 100.0, [ChaosKind::Typo]).generate(schema, 20)
+      typo_keys = tasks.flat_map(&.args.keys).reject { |key| key == "abc" }
+      assert(typo_keys.all? { |key| key == "acb" || key == "bac" })
+      refute_empty(typo_keys)
+    end
   end
 end

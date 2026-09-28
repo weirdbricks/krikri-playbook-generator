@@ -29,8 +29,15 @@ module KrikriPlaybookGenerator
   class Runner
     record Recap, ok : Int32, changed : Int32, unreachable : Int32, failed : Int32, skipped : Int32 do
       def self.parse(text : String) : Recap?
+        # Only the PLAY RECAP section carries the real counters; task
+        # output above it can contain incidental ok=N-shaped text that
+        # would otherwise corrupt the parse (last match wins per key).
+        lines = text.lines
+        recap_index = lines.index(&.starts_with?("PLAY RECAP"))
+        return unless recap_index
+
         counts = {} of String => Int32
-        text.scan(/(ok|changed|unreachable|failed|skipped)=(\d+)/) { |match| counts[match[1]] = match[2].to_i }
+        lines[(recap_index + 1)..].join('\n').scan(/(ok|changed|unreachable|failed|skipped)=(\d+)/) { |match| counts[match[1]] = match[2].to_i }
         return unless %w[ok changed unreachable failed skipped].all? { |key| counts.has_key?(key) }
 
         Recap.new(counts["ok"], counts["changed"], counts["unreachable"], counts["failed"], counts["skipped"])
@@ -41,7 +48,15 @@ module KrikriPlaybookGenerator
 
     record PlaybookResult, playbook : String, ansible : EngineRun, krikri : EngineRun do
       def divergent? : Bool
-        ansible.recap != krikri.recap || (ansible.rc == 0) != (krikri.rc == 0)
+        return true if ansible.recap.nil? != krikri.recap.nil?
+
+        if ansible.recap && krikri.recap
+          return true if ansible.recap != krikri.recap
+        elsif ansible.rc != krikri.rc
+          return true
+        end
+
+        (ansible.rc == 0) != (krikri.rc == 0)
       end
     end
 

@@ -58,7 +58,21 @@ module KrikriPlaybookGenerator
 
     def scan : Array(ModuleSchema)
       names = @module_filter || discover_module_names
-      names.compact_map { |name| scan_module(name) }
+      scanned_names = [] of String
+      schemas = names.compact_map do |name|
+        schema = scan_module(name)
+        scanned_names << name if schema
+        schema
+      end
+
+      if requested = @module_filter
+        skipped = requested.reject { |name| scanned_names.includes?(name) }
+        unless skipped.empty?
+          STDERR.puts "warning: skipped #{skipped.size} unscannable module(s): #{skipped.join(", ")}"
+        end
+      end
+
+      schemas
     end
 
     private def discover_module_names : Array(String)

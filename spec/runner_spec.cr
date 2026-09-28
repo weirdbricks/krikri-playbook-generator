@@ -8,7 +8,11 @@ require "json"
 module KrikriPlaybookGenerator
   describe Runner::Recap do
     it "parses a real PLAY RECAP counter line" do
-      recap = Runner::Recap.parse("localhost : ok=1 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=1")
+      text = <<-TEXT
+        PLAY RECAP *******************************************************************
+        localhost : ok=1 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=1
+        TEXT
+      recap = Runner::Recap.parse(text)
       refute_nil(recap)
       assert_equal(1, recap.as(Runner::Recap).ok)
       assert_equal(0, recap.as(Runner::Recap).changed)
@@ -16,6 +20,25 @@ module KrikriPlaybookGenerator
 
     it "returns nil for text with no recap counters" do
       assert_nil(Runner::Recap.parse("some unrelated output"))
+    end
+
+    it "ignores ok=N-shaped text appearing before the real PLAY RECAP line" do
+      text = <<-TEXT
+        TASK [debug] ***
+        task output: ok=2 changed=9 unreachable=9 failed=9 skipped=9
+        PLAY RECAP *******************************************************************
+        localhost : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
+        TEXT
+
+      recap = Runner::Recap.parse(text)
+      refute_nil(recap)
+      recap = recap.as(Runner::Recap)
+      assert_equal(3, recap.ok)
+      assert_equal(1, recap.changed)
+    end
+
+    it "returns nil when there is a PLAY RECAP header but no counter line" do
+      assert_nil(Runner::Recap.parse("PLAY RECAP *****\n(no usable counters here)"))
     end
   end
 
@@ -40,6 +63,22 @@ module KrikriPlaybookGenerator
     it "is divergent when one engine fails and the other doesn't" do
       recap = Runner::Recap.new(1, 0, 0, 0, 0)
       result = Runner::PlaybookResult.new("p.yml", engine_run(recap, rc: 0), engine_run(recap, rc: 2))
+      assert(result.divergent?)
+    end
+
+    it "is not divergent when neither recap parses and both engines exit the same way" do
+      result = Runner::PlaybookResult.new("p.yml", engine_run(nil, rc: 2), engine_run(nil, rc: 2))
+      refute(result.divergent?)
+    end
+
+    it "is divergent when neither recap parses but the engines exit differently" do
+      result = Runner::PlaybookResult.new("p.yml", engine_run(nil, rc: 2), engine_run(nil, rc: 6))
+      assert(result.divergent?)
+    end
+
+    it "is divergent when exactly one engine's recap parses" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0)
+      result = Runner::PlaybookResult.new("p.yml", engine_run(recap, rc: 2), engine_run(nil, rc: 2))
       assert(result.divergent?)
     end
   end

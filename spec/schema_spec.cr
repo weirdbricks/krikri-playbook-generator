@@ -40,5 +40,12 @@ module KrikriPlaybookGenerator
       schemas = SchemaScanner.new(["definitely_not_a_real_module_xyz"]).scan
       assert_empty(schemas)
     end
+
+    it "still scans the valid modules when the requested list also contains a bogus one" do
+      schemas = SchemaScanner.new(["apt", "definitely_not_a_real_module_xyz"]).scan
+      assert_equal(1, schemas.size)
+      assert_equal("apt", schemas.first.module_name)
+      refute_empty(schemas.first.options)
+    end
   end
 end

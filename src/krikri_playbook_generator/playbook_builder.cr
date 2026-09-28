@@ -10,12 +10,28 @@ module KrikriPlaybookGenerator
   # metadata Triage needs (the playbook YAML alone doesn't say which slots
   # were mutated or how).
   class PlaybookBuilder
+    # Only files this tool itself generates (in the current batch naming
+    # convention, directly inside @out_dir) are cleared before a rebuild;
+    # nothing else in the directory is touched.
+    STALE_PLAYBOOK = /\A\d{6}-.+-(?:happy|chaos)\.yml\z/
+    STALE_META     = /\A\d{6}-.+-(?:happy|chaos)\.meta\.json\z/
+
     def initialize(@out_dir : String)
     end
 
     def build(tasks : Array(GeneratedTask)) : Array(String)
       Dir.mkdir_p(@out_dir)
+      remove_stale_outputs
       tasks.map_with_index { |task, index| write_playbook(task, index) }
+    end
+
+    private def remove_stale_outputs : Nil
+      Dir.each_child(@out_dir) do |name|
+        next unless name.matches?(STALE_PLAYBOOK) || name.matches?(STALE_META)
+        next unless File.file?(File.join(@out_dir, name))
+
+        File.delete(File.join(@out_dir, name))
+      end
     end
 
     private def write_playbook(task : GeneratedTask, index : Int32) : String

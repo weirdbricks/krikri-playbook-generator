@@ -108,5 +108,22 @@ module KrikriPlaybookGenerator
     ensure
       FileUtils.rm_rf(dir) if dir
     end
+
+    it "skips a malformed results.jsonl line instead of crashing the whole report" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_fixture(dir, "a", divergent: true, module_name: "apt", mutations: [{"state", "BadChoice"}])
+      write_fixture(dir, "b", divergent: true, module_name: "user", mutations: [{"shell", "Typo"}])
+
+      File.open(File.join(dir, "results.jsonl"), "a") do |file|
+        file.puts("{\"playbook\": \"/truncated\", \"divergent\": tru")
+      end
+
+      findings = Triage.new(dir).report
+      assert_equal(2, findings.size)
+      assert_equal(%w[apt user], findings.map(&.module_name).sort!)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
   end
 end
