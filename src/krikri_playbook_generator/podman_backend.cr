@@ -21,8 +21,18 @@ module KrikriPlaybookGenerator
   # (not a real divergence) in the common case, or — if only one engine
   # needs the missing dependency — can manufacture a false divergence;
   # documented known limitation, not silently papered over.
+  #
+  # IMAGE's glibc must be new enough for whatever host built `krikri_bin`
+  # (a plain `crystal build` - the default here, not `--static` - links
+  # dynamically against the build host's glibc/openssl/pcre2/yaml/zstd).
+  # bookworm-slim's glibc 2.36 is too old for a binary built on a newer
+  # host (confirmed live: `GLIBC_2.38' not found` running a Debian
+  # 13/trixie-built krikri-playbook here) - trixie-slim matches this
+  # workspace's actual build hosts and still has ansible-core packaged.
+  # A `--static`-built krikri_bin (see krikri/build.sh --help) would make
+  # this image choice moot; not the default, so don't assume one here.
   class PodmanBackend
-    IMAGE               = "docker.io/library/debian:bookworm-slim"
+    IMAGE               = "docker.io/library/debian:trixie-slim"
     REAL_PACKAGES       = "ansible-core python3 procps cron gnupg git"
     KRIKRI_RUNTIME_LIBS = "libxml2 libssl3 libyaml-0-2 libpcre2-8-0 python3 procps cron gnupg git"
     INVENTORY           = "target ansible_connection=local\n"

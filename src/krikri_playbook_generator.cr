@@ -1,7 +1,7 @@
 require "./krikri_playbook_generator/**"
 
 module KrikriPlaybookGenerator
-  VERSION = "0.0.6"
+  VERSION = "0.0.7"
 
   def self.main(argv : Array(String)) : Int32
     opts = Options.parse(argv)
