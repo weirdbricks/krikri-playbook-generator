@@ -1,7 +1,7 @@
 require "./krikri_playbook_generator/**"
 
 module KrikriPlaybookGenerator
-  VERSION = "0.0.2"
+  VERSION = "0.0.3"
 
   def self.main(argv : Array(String)) : Int32
     opts = Options.parse(argv)
@@ -17,7 +17,9 @@ module KrikriPlaybookGenerator
       PlaybookBuilder.new(opts.out_dir).build(tasks)
     in Command::Run
       Preflight.check!(opts.ansible_playbook_bin, opts.krikri_bin)
-      Runner.new(Dir.glob("#{opts.out_dir}/**/*.yml"), opts.results_dir, opts.atlantic_hosts).run
+      playbooks = Dir.glob("#{opts.out_dir}/**/*.yml")
+      Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
+        opts.krikri_bin, check_mode: !opts.allow_mutation?).run
     in Command::Report
       Triage.new(opts.results_dir).report
     end

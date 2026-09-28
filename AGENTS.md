@@ -70,8 +70,28 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `ansible-playbook --check` with exactly the mutation the generator
   recorded (a `mutually exclusive` error matching a real
   `ViolateConstraint` mutation).
-- `src/krikri_playbook_generator/runner.cr` — `Runner`, thin wrapper
-  around krikri-role-tester's execution/diff machinery. **Not implemented.**
+- `src/krikri_playbook_generator/runner.cr` — `Runner`. **Implemented, but
+  scoped down from the original "delegate to krikri-role-tester" plan**:
+  role-tester's `RoleRunner`/backends are built around installing a Galaxy
+  role and provisioning a fresh host pair per role — there's no "run this
+  raw generated playbook" entry point to delegate to without cross-repo
+  changes to role-tester itself, which is out of scope here. Instead
+  `Runner` runs each playbook locally (`-i localhost, -c local`) against
+  both engines directly, in **`--check --diff` mode by default** — chaos
+  tasks are mostly self-limiting (they fail argument validation before
+  doing anything), but happy-path tasks are real modules that would
+  otherwise install packages, create users, etc. on *this* machine.
+  `--allow-mutation` opts out of check mode for whoever wires up a real
+  disposable-host backend later; `--atlantic-hosts` is accepted and
+  stored for that same future wiring but unused by this local runner.
+  Own small `Recap` (ok/changed/unreachable/failed/skipped, parsed from
+  the `PLAY RECAP` line) rather than reusing role-tester's — copying one
+  five-line regex-based struct beat adding a `path:` dependency on an app
+  shard for it. Writes one `results.jsonl` line per playbook (`playbook`,
+  `divergent?`, both engines' `rc`/`recap`) to `--results-dir`. Verified
+  live: a real generated batch across apt/user/debug ran clean against
+  both installed engines and **found two genuine recap divergences**
+  between real ansible-playbook and krikri-playbook on the first try.
 - `src/krikri_playbook_generator/triage.cr` — `Triage`, groups/dedupes
   divergences by module + chaos-kind + constraint. **Not implemented.**
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the three
@@ -79,9 +99,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`.
 
-`Runner` and `Triage` are still stubs that raise "not yet implemented" —
-`Options`, `Preflight`, `SchemaScanner`, `Generator`, and `PlaybookBuilder`
-are implemented so far.
+`Triage` is the only remaining stub that raises "not yet implemented" —
+everything else (`Options`, `Preflight`, `SchemaScanner`, `Generator`,
+`PlaybookBuilder`, `Runner`) is implemented.
 
 ## Conventions and gotchas
 
@@ -97,10 +117,15 @@ are implemented so far.
 - **Chaos mutations must always carry metadata** (`GeneratedTask#mutations`)
   — never inject a chaos mutation silently, or triage can't distinguish
   "found a real bug" from "found an artifact of our own fuzzing."
-- Once `Runner` is implemented, it should depend on
-  `../krikri-role-tester`'s execution/diff code rather than reimplementing
-  cold+warm dual-engine runs, `SUMMARY|` normalization, or PLAY RECAP
-  diffing.
+- **`Runner` defaults to `--check` and must keep doing so** — happy-path
+  tasks are real modules that mutate real state (install packages, create
+  users, write files); running them for real against *this* machine
+  without an isolated/disposable host is not something to do by default.
+  Only `--allow-mutation` (explicit, documented as dangerous) opts out.
+- A real disposable-host backend (Atlantic.net, matching
+  krikri-role-tester's) for `Runner`'s mutating happy-path runs is a known
+  gap, not built here — see `runner.cr`'s own comment for why role-tester
+  itself couldn't be reused directly.
 
 ## Tests
 
@@ -111,20 +136,25 @@ are implemented so far.
 directly rather than relying on a blanket require. Use `describe`/`it`
 blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `.should`), and avoid `not_nil!` (ameba's `Lint/NotNil` flags it) — prefer
-`x || default` or `x.as(T)` after a `refute_nil` check. `spec/options_spec.cr`,
-`spec/preflight_spec.cr`, `spec/schema_spec.cr`, and `spec/generator_spec.cr`
-exist so far, following `krikri-role-tester`'s one-file-per-module pattern.
-`schema_spec.cr` shells out to the real, locally-installed
-`ansible-doc`/`python3` — no fakes, since tracking whatever ansible-core is
-actually installed is the entire point — but skips exercising unfiltered
-discovery (`SchemaScanner.new.scan`, no `--modules`), which would spawn two
-subprocesses per one of ~9000+ installed modules; verify that path live.
-`generator_spec.cr` builds a small hand-written `ModuleSchema` fixture
-rather than going through `SchemaScanner`, so it stays fast and doesn't
-depend on any particular module's real constraints. `playbook_builder_spec.cr`
-parses the written YAML back with `YAML.parse` and the sidecar with
-`JSON.parse` rather than string-matching the file — writes to a
-`File.tempname` dir, cleaned up in `ensure`.
+`x || default` or `x.as(T)` after a `refute_nil` check. One spec file per
+source module, following `krikri-role-tester`'s pattern:
+`options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
+`playbook_builder_spec.cr`, `runner_spec.cr`. `schema_spec.cr` shells out to
+the real, locally-installed `ansible-doc`/`python3` — no fakes, since
+tracking whatever ansible-core is actually installed is the entire point —
+but skips exercising unfiltered discovery (`SchemaScanner.new.scan`, no
+`--modules`), which would spawn two subprocesses per one of ~9000+
+installed modules; verify that path live. `generator_spec.cr` builds a
+small hand-written `ModuleSchema` fixture rather than going through
+`SchemaScanner`, so it stays fast and doesn't depend on any particular
+module's real constraints. `playbook_builder_spec.cr` parses the written
+YAML back with `YAML.parse` and the sidecar with `JSON.parse` rather than
+string-matching the file. `runner_spec.cr` unit-tests `Recap`/
+`PlaybookResult#divergent?` directly, plus one real integration case
+(`ansible.builtin.debug`, always safe/fast/idempotent) that runs both real
+engines end to end and checks `results.jsonl`'s shape — not a fake, same
+reasoning as `schema_spec.cr`. All temp-dir specs use `File.tempname`,
+cleaned up in `ensure`.
 
 `ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr
 -o bin/ameba && ./bin/ameba` after `shards install` (no prebuilt binary is

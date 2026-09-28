@@ -20,9 +20,15 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
 3. **playbook-builder** — assembles generated tasks into playbook YAML,
    one task per module per play, following the shape of krikri's own
    `testing/test-*.yml` fixtures.
-4. **runner** — delegates to `krikri-role-tester`'s dual-engine
-   execution/diffing (cold+warm, `SUMMARY|` normalization, PLAY RECAP
-   diffing) rather than reimplementing it.
+4. **runner** — runs each playbook against both engines locally
+   (`-i localhost, -c local`), `--check --diff` by default so happy-path
+   tasks (real modules — apt, user, ...) can't mutate *this* machine;
+   `--allow-mutation` opts out. Full reuse of `krikri-role-tester`'s
+   backend/diff machinery turned out not to fit (it's built around
+   installing a Galaxy role onto a provisioned host pair, not running a
+   raw generated playbook) without cross-repo changes there — out of
+   scope here; `--atlantic-hosts` is accepted and stored for whoever wires
+   up a real disposable-host backend later.
 5. **triage** — groups divergences by module + chaos-kind + constraint
    violated, deduping to root cause.
 
@@ -45,18 +51,21 @@ meant to be generated from that same source of truth, not hand-duplicated.
 
 ## Usage
 
-`generate` is implemented end to end — it produces real playbook YAML
-(plus a `.meta.json` sidecar per playbook) you can hand straight to
-`ansible-playbook`/`krikri-playbook` yourself already. `run`/`report`
-bodies are not implemented yet.
+`generate` and `run` are implemented end to end. `report` still raises
+"not yet implemented".
 
     krikri-playbook-generator generate --modules apt,copy,user,cron --seed 42 \
       --count 500 --chaos-percentage 3 --out playbooks/
 
-    krikri-playbook-generator run playbooks/ --atlantic-hosts 22 \
-      --results-dir ~/scratch/kpg-results
+    krikri-playbook-generator run playbooks/ --results-dir ~/scratch/kpg-results
 
-    krikri-playbook-generator report ~/scratch/kpg-results
+    krikri-playbook-generator report ~/scratch/kpg-results   # not yet implemented
+
+`run` defaults to Ansible `--check` mode (no real host mutation) since
+happy-path tasks are real modules that would otherwise install packages,
+create users, etc. on the machine running this tool; pass
+`--allow-mutation` to run for real once you have a disposable host to
+point it at.
 
 ## Status
 
@@ -67,6 +76,8 @@ small embedded Python AST scanner for cross-option constraints.
 `Generator` turns a schema into happy-path and chaos-mutated argument
 sets, deterministic per `--seed`, every mutation tagged with which slot
 and which kind. `PlaybookBuilder` turns those into real playbook YAML plus
-a `.meta.json` sidecar per playbook — verified live against real
-`ansible-playbook --check`. `Runner` and `Triage` still raise "not yet
-implemented" until their bodies are written.
+a `.meta.json` sidecar per playbook. `Runner` runs each playbook against
+both real engines locally and writes `results.jsonl` — a first real batch
+across apt/user/debug found two genuine divergences between
+ansible-playbook and krikri-playbook on the first try. `Triage` still
+raises "not yet implemented" until its body is written.
