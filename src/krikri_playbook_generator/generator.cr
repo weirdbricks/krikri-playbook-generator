@@ -33,7 +33,7 @@ module KrikriPlaybookGenerator
   # probability `chaos_percentage`.
   class Generator
     def initialize(@seed : Int32, @chaos_percentage : Float64 = 0.0,
-                    @chaos_kinds : Array(ChaosKind) = ChaosKind.values)
+                   @chaos_kinds : Array(ChaosKind) = ChaosKind.values)
       @rng = Random::PCG32.new(@seed.to_u64)
     end
 

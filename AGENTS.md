@@ -69,7 +69,18 @@ implemented" — this repo is at the scaffold stage, not feature-complete.
 
 ## Tests
 
-Crystal's built-in `spec` framework. `spec/spec_helper.cr` requires
-`../src/krikri_playbook_generator/**`. Only `spec/options_spec.cr` exists
-so far; add one spec file per source module as bodies get implemented,
-following `krikri-role-tester`'s one-file-per-module pattern.
+`minitest.cr` (`ysbaddaden/minitest.cr`, ~> 1.6), run through `crystal spec`
+— matches the workspace-wide migration off `crystal spec`'s built-in
+`.should` matchers. `spec/spec_helper.cr` is just `require
+"minitest/autorun"`; each spec file requires the source file it tests
+directly rather than relying on a blanket require. Use `describe`/`it`
+blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
+`.should`), and avoid `not_nil!` (ameba's `Lint/NotNil` flags it) — prefer
+`x || default` or `x.as(T)` after a `refute_nil` check. `spec/options_spec.cr`
+and `spec/preflight_spec.cr` exist so far; add one spec file per source
+module as bodies get implemented, following `krikri-role-tester`'s
+one-file-per-module pattern.
+
+`ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr
+-o bin/ameba && ./bin/ameba` after `shards install` (no prebuilt binary is
+shipped). Keep it clean — `crystal tool format .` first fixes most findings.

@@ -7,7 +7,7 @@ module KrikriPlaybookGenerator
     property name : String
     property type : String
     property choices : Array(String)
-    property required : Bool
+    property? required : Bool
     property default : YAML::Any?
     property elements : String?
 

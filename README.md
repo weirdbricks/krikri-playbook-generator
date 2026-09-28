@@ -40,7 +40,8 @@ meant to be generated from that same source of truth, not hand-duplicated.
 
     shards install
     crystal build src/krikri_playbook_generator.cr -o bin/krikri-playbook-generator
-    crystal spec
+    crystal spec   # minitest.cr under the hood
+    crystal build lib/ameba/src/cli.cr -o bin/ameba && ./bin/ameba
 
 ## Usage (sketch — generation/run/report bodies are not implemented yet)
 

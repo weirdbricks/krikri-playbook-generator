@@ -4,3 +4,7 @@ shards:
     git: https://github.com/crystal-ameba/ameba.git
     version: 1.7.0
 
+  minitest:
+    git: https://github.com/ysbaddaden/minitest.cr.git
+    version: 1.6.2
+
