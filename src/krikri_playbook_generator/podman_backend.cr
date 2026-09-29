@@ -41,7 +41,7 @@ module KrikriPlaybookGenerator
   class PodmanBackend
     IMAGE                    = "docker.io/library/debian:trixie-slim"
     EXPECTED_ANSIBLE_VERSION = "2.19.11"
-    REAL_PACKAGES            = "ansible-core python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils"
+    REAL_PACKAGES            = "ansible python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils"
     KRIKRI_RUNTIME_LIBS      = "libxml2 libssl3 libyaml-0-2 libpcre2-8-0 python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils"
     INVENTORY                = "target ansible_connection=local\n"
     ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
@@ -149,7 +149,11 @@ module KrikriPlaybookGenerator
     end
 
     private def install(name : String, packages : String) : Nil
-      exec!(name, "apt-get update -qq && apt-get install -y -qq --no-install-recommends #{packages} >/dev/null", 900.0)
+      # The `ansible` package's postinst byte-compiles collection files whose
+      # names exceed the filesystem limit (pyc "File name too long"); neutralize
+      # py3compile first so the install (and the collections) succeed.
+      prep = packages.split.includes?("ansible") ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-minimal >/dev/null && dpkg-divert --local --rename --add /usr/bin/py3compile >/dev/null && ln -sf /bin/true /usr/bin/py3compile && " : "export DEBIAN_FRONTEND=noninteractive; "
+      exec!(name, "#{prep}apt-get update -qq && apt-get install -y -qq --no-install-recommends #{packages} >/dev/null", 900.0)
     end
 
     private def stage_krikri_binary : Nil

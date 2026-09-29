@@ -244,6 +244,7 @@ modules:
   systemd:
     name: {kind: literal_pool, pool: ["cron.service", "ssh.service"]}
     scope: {kind: literal_pool, pool: ["system"]}
+    always: [name]
 
   assert:
     that: {kind: literal_pool, pool: ["true", "1 == 1", "ansible_check_mode == false"]}
@@ -280,6 +281,7 @@ modules:
   systemd_service:
     name: {kind: literal_pool, pool: ["cron.service", "ssh.service"]}
     scope: {kind: literal_pool, pool: ["system"]}
+    always: [name]
 
   # cache_valid_time compares the apt lists' age against a window; both engines
   # run a few seconds apart in containers provisioned seconds earlier, so a small
