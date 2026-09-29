@@ -110,7 +110,7 @@ module KrikriPlaybookGenerator
       end
 
       def signature : String?
-        return nil if @error
+        return if @error
 
         ByteDiff.signature(masked_diff)
       end
@@ -136,12 +136,12 @@ module KrikriPlaybookGenerator
       end
 
       def ansible_error_line : String?
-        return nil unless ansible_failed?
+        return unless ansible_failed?
 
         text = ansible.stdout + '\n' + ansible.stderr
         line = text.lines.find { |candidate| candidate =~ /fatal:|FAILED|ERROR!|error:/i }
         candidate = line || text.lines.find { |candidate| !candidate.blank? }
-        return nil unless candidate
+        return unless candidate
 
         candidate.size > 200 ? candidate[0, 200] : candidate
       end
@@ -243,7 +243,7 @@ module KrikriPlaybookGenerator
 
       # fall back to the batch naming convention when no sidecar exists
       match = File.basename(path).match(/\A\d{6}-(.+)-(happy|chaos)\.yml\z/)
-      match.try { |m| MetaInfo.new(m[1], m[2] == "chaos", [] of {String, String}) }
+      match.try { |filename_match| MetaInfo.new(filename_match[1], filename_match[2] == "chaos", [] of {String, String}) }
     end
 
     private def parse_meta(text : String) : MetaInfo?

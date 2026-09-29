@@ -58,7 +58,7 @@ module KrikriPlaybookGenerator
       assert_equal("copy", findings.first.module_name)
       assert_equal(2, findings.first.count)
       assert_equal("abc123def456", findings.first.signature)
-      assert(findings.first.playbooks.all? { |path| path.ends_with?(".yml") })
+      assert(findings.first.playbooks.all?(&.ends_with?(".yml")))
     ensure
       FileUtils.rm_rf(dir) if dir
     end

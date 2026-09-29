@@ -39,7 +39,7 @@ module KrikriPlaybookGenerator
     def report : Array(Finding)
       groups = {} of {String, String?} => Array(ResultLine)
 
-      lines.each do |line|
+      result_lines.each do |line|
         next unless line.divergent
 
         key = {line.module_name, line.signature}
@@ -47,7 +47,7 @@ module KrikriPlaybookGenerator
       end
 
       groups.map do |(module_name, signature), entries|
-        playbooks = entries.map(&.playbook).uniq
+        playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations)
       end.sort_by! { |finding| -finding.count }
     end
@@ -55,7 +55,7 @@ module KrikriPlaybookGenerator
     def quality : Array(Quality)
       groups = Hash(String, Array(ResultLine)).new { |hash, key| hash[key] = [] of ResultLine }
 
-      lines.each do |line|
+      result_lines.each do |line|
         next if line.chaos || line.errored
         next unless line.ansible_failed
 
@@ -63,7 +63,7 @@ module KrikriPlaybookGenerator
       end
 
       groups.map do |module_name, entries|
-        total = lines.count { |line| !line.chaos && !line.errored && line.module_name == module_name }
+        total = result_lines.count { |line| !line.chaos && !line.errored && line.module_name == module_name }
         Quality.new(module_name, entries.size, total, entries.first.ansible_error || "unknown error")
       end.sort_by! { |quality| -quality.failed }
     end
@@ -71,7 +71,7 @@ module KrikriPlaybookGenerator
     def rates : Array(Rate)
       groups = Hash(String, Array(ResultLine)).new { |hash, key| hash[key] = [] of ResultLine }
 
-      lines.each do |line|
+      result_lines.each do |line|
         next if line.errored
 
         groups[line.module_name] << line
@@ -88,7 +88,7 @@ module KrikriPlaybookGenerator
       "krikri-playbook-generator run #{playbook_path} --run-on-podman --results-dir /tmp/kpg-repro"
     end
 
-    private def lines : Array(ResultLine)
+    private def result_lines : Array(ResultLine)
       collected = [] of ResultLine
 
       skipped = 0
@@ -112,7 +112,7 @@ module KrikriPlaybookGenerator
     private def parse_result_line(parsed : Hash(String, JSON::Any)) : ResultLine?
       playbook = parsed["playbook"]?.try(&.as_s?)
       module_name = parsed["module"]?.try(&.as_s?)
-      return nil unless playbook && module_name
+      return unless playbook && module_name
 
       mutations = parsed["mutations"]?.try(&.as_a?).try do |entries|
         entries.compact_map do |entry|

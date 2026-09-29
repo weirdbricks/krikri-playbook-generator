@@ -111,7 +111,7 @@ module KrikriPlaybookGenerator
         copy_playbook(playbook_path, krikri)
 
         {ansible: exec_engine(real, "ansible-playbook", playbook_path),
-         krikri: exec_engine(krikri, "/opt/krikri/bin/krikri-playbook", playbook_path)}
+         krikri:  exec_engine(krikri, "/opt/krikri/bin/krikri-playbook", playbook_path)}
       ensure
         unless created.empty?
           Cmd.run("podman", ["rm", "-f"] + created, timeout: 180.0)

@@ -42,13 +42,13 @@ module KrikriPlaybookGenerator
 
     it "defaults keep_going to false and engine_timeout to 120" do
       opts = Options.parse(["run"])
-      refute(opts.keep_going)
+      refute(opts.keep_going?)
       assert_equal(120, opts.engine_timeout)
     end
 
     it "parses --keep-going and --engine-timeout" do
       opts = Options.parse(["run", "--keep-going", "--engine-timeout", "30"])
-      assert(opts.keep_going)
+      assert(opts.keep_going?)
       assert_equal(30, opts.engine_timeout)
     end
 

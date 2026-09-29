@@ -13,33 +13,33 @@ module KrikriPlaybookGenerator
         Regex.new("^\\[WARNING\\][^\\n]*discovered Python interpreter[^\\n]*\\n?", Regex::Options::MULTILINE),
         "",
         "real ansible warns that the host uses the discovered Python interpreter; " \
-          "krikri has no Python interpreter and can never emit this line",
+        "krikri has no Python interpreter and can never emit this line",
       },
       {
         Regex.new("ansible-tmp-\\d+(?:[.\\-]\\d+)*"),
         "ansible-tmp-N",
         "ansible's per-task temp directory embeds an epoch timestamp and a random " \
-          "suffix; the name can never match between runs, let alone engines",
+        "suffix; the name can never match between runs, let alone engines",
       },
       {
         Regex.new("\\.\\d+\\.\\d{4}-\\d{2}-\\d{2}@\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?~"),
         ".N.<TIMESTAMP>~",
         "copy/lineinfile backup file names embed a pid-like random number plus a " \
-          "timestamp; the name differs on every run by construction (matched before " \
-          "the generic timestamp mask, which would eat the date and leave the " \
-          "random number behind)",
+        "timestamp; the name differs on every run by construction (matched before " \
+        "the generic timestamp mask, which would eat the date and leave the " \
+        "random number behind)",
       },
       {
         Regex.new("\\d{4}-\\d{2}-\\d{2}[T@ ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?"),
         "<TIMESTAMP>",
         "wall-clock timestamps (ISO-8601, ansible's log format, and lineinfile-style " \
-          "backup suffixes) differ on every run by construction",
+        "backup suffixes) differ on every run by construction",
       },
       {
         Regex.new("\\b\\d{13,}\\b"),
         "N",
         "long digit runs are epoch-millis/nonce-class values (task IDs, temp suffixes) " \
-          "that differ per run; short numbers (rcs, counters, ports) stay unmasked",
+        "that differ per run; short numbers (rcs, counters, ports) stay unmasked",
       },
     ]
 
@@ -93,7 +93,7 @@ module KrikriPlaybookGenerator
     # even when the concrete values differ.
     def self.signature(masked_diff : String) : String?
       changed = masked_diff.lines.select { |line| line.starts_with?('-') || line.starts_with?('+') }
-      return nil if changed.empty?
+      return if changed.empty?
 
       shaped = changed.map { |line| shape(line[1..]) }
       Digest::SHA256.hexdigest(shaped.join('\n'))[0, 12]

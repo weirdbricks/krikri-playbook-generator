@@ -116,7 +116,9 @@ module KrikriPlaybookGenerator
       by_fatal = Runner::PlaybookResult.new("p.yml",
         engine_run(ok_recap, stdout: "fatal: [target]: FAILED! => boom"), engine_run(ok_recap), nil)
       assert(by_fatal.ansible_failed?)
-      assert(by_fatal.ansible_error_line.not_nil!.includes?("fatal:"))
+      error_line = by_fatal.ansible_error_line
+      refute_nil(error_line)
+      assert(error_line.as(String).includes?("fatal:"))
     end
 
     it "is never divergent when the run itself errored" do
@@ -146,8 +148,9 @@ module KrikriPlaybookGenerator
       assert_equal(playbook_path, result.playbook)
       assert_equal(0, result.ansible.rc)
       assert_equal(0, result.krikri.rc)
-      assert_equal("debug", result.meta.not_nil!.module_name)
-
+      meta = result.meta
+      refute_nil(meta)
+      assert_equal("debug", meta.as(Runner::MetaInfo).module_name)
       lines = File.read_lines(File.join(results_dir, "results.jsonl"))
       assert_equal(1, lines.size)
       parsed = JSON.parse(lines.first)

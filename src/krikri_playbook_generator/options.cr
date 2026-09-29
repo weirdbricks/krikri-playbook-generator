@@ -32,7 +32,7 @@ module KrikriPlaybookGenerator
     property krikri_bin : String
     property? allow_mutation : Bool
     property? run_on_podman : Bool
-    property keep_going : Bool
+    property? keep_going : Bool
     property engine_timeout : Int32
 
     def initialize(@command, @modules = nil, @seed = 42, @count = 100,
@@ -89,15 +89,18 @@ module KrikriPlaybookGenerator
       opts.results_dir = expand_path(opts.results_dir)
 
       parse_chaos_kinds(opts.chaos_kinds)
+      validate!(opts)
 
+      opts
+    end
+
+    private def self.validate!(opts : Options) : Nil
       raise InvalidOptionsError.new("--seed must be zero or a positive integer, got #{opts.seed}") if opts.seed.negative?
       raise InvalidOptionsError.new("--count must be zero or a positive integer, got #{opts.count}") if opts.count.negative?
       raise InvalidOptionsError.new("--engine-timeout must be a positive integer, got #{opts.engine_timeout}") if opts.engine_timeout <= 0
       unless opts.chaos_percentage.in?(0.0..100.0)
         raise InvalidOptionsError.new("--chaos-percentage must be between 0 and 100, got #{opts.chaos_percentage}")
       end
-
-      opts
     end
 
     private def self.parse_int(value : String, flag : String) : Int32

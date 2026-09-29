@@ -19,7 +19,7 @@ module KrikriPlaybookGenerator
 
       if opts.run_on_podman?
         results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
-          opts.krikri_bin, run_on_podman: true, keep_going: opts.keep_going,
+          opts.krikri_bin, run_on_podman: true, keep_going: opts.keep_going?,
           engine_timeout: opts.engine_timeout).run
         print_run_summary(results)
         print_full_report(Triage.new(opts.results_dir))
@@ -32,7 +32,7 @@ module KrikriPlaybookGenerator
       playbooks = playbook_paths_for_run(opts)
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, check_mode: !opts.allow_mutation?, run_on_podman: opts.run_on_podman?,
-        keep_going: opts.keep_going, engine_timeout: opts.engine_timeout).run
+        keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout).run
       print_run_summary(results)
       divergences?(results) ? 1 : 0
     in Command::Report
@@ -91,7 +91,7 @@ module KrikriPlaybookGenerator
       label = finding.signature ? "signature #{finding.signature}" : "no signature"
       puts "#{finding.module_name} (#{label}): #{finding.count} divergent playbook(s)"
       unless finding.example_mutations.empty?
-        puts "  mutations: #{finding.example_mutations.map { |m| "#{m.kind} #{m.option}" }.join(", ")}"
+        puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
       example = finding.playbooks.first
       puts "  example: #{example}"

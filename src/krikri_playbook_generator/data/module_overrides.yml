@@ -19,60 +19,91 @@
 #   work_path    - a writable path under /tmp/kpg-work
 #   username     - a generated, collision-safe user name (user.name)
 #   literal_pool - sample one of the listed exact values
+#   work_dir     - an existing directory (for chdir-type options): the
+#                  work root itself or the pre-seeded fixture directory
 #   exclude      - never include this option in a happy-path task (values
 #                  the schema accepts but that reliably fail in practice,
 #                  e.g. uid collisions or runtime-mutually-exclusive
 #                  siblings of another option)
 #
+# Module-level keys: `exclude` (list) and `require_one_of` (list of
+# lists). `always` (list) forces options into every happy-path task -
+# needed when omitting the option fails, e.g. `file` without `state`
+# cannot set attributes on an absent path.
+#
 # `names:` entries apply by option name to ANY module that doesn't
 # override that option itself; `modules:` entries win over `names:`.
-# Extend freely - the file is embedded at compile time.
+# A module's `require_one_of` lists runtime requirement groups the
+# DOCUMENTATION doesn't encode (e.g. copy needs src or content) that the
+# generator must satisfy in the happy path. Extend freely - the file is
+# embedded at compile time.
 
 names:
   mode: {kind: mode, pool: ["0644", "0755", "0600", "0750"]}
   owner: {kind: owner}
   group: {kind: group}
   validate: {kind: validate}
+  seuser: {exclude: true}
+  serole: {exclude: true}
+  setype: {exclude: true}
+  selevel: {exclude: true}
+  attributes: {exclude: true}
 
 modules:
   file:
-    state: {choices: [file, touch, directory, absent]}
+    state: {choices: [touch, directory, absent]}
+    always: [state]
     src: {exclude: true}
-    seuser: {exclude: true}
-    serole: {exclude: true}
-    setype: {exclude: true}
-    selevel: {exclude: true}
-    attributes: {exclude: true}
+    access_time: {exclude: true}
+    modification_time: {exclude: true}
+    access_time_format: {kind: literal_pool, pool: ["%Y%m%d%H%M.%S"]}
+    modification_time_format: {kind: literal_pool, pool: ["%Y%m%d%H%M.%S"]}
 
   copy:
     src: {kind: source_path, pool: ["/opt/kpg-fixtures/src.txt", "/opt/kpg-fixtures/src2.txt", "/opt/kpg-fixtures/script.sh"]}
     dest: {kind: work_path}
     content: {exclude: true}
+    checksum: {exclude: true}
+    decrypt: {exclude: true}
+    directory_mode: {kind: mode, pool: ["0755", "0700"]}
+    require_one_of: [[src, content]]
 
   template:
     src: {kind: source_path, pool: ["/opt/kpg-fixtures/template.j2"]}
     dest: {kind: work_path}
+    output_encoding: {kind: literal_pool, pool: ["utf-8"]}
+    exclude: [block_start_string, block_end_string, comment_start_string,
+              comment_end_string, variable_start_string, variable_end_string]
 
   command:
     cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
     argv: {exclude: true}
+    free_form: {exclude: true}
+    chdir: {kind: work_dir}
+    free_form: {exclude: true}
 
   shell:
     cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
     argv: {exclude: true}
+    free_form: {exclude: true}
     executable: {kind: literal_pool, pool: ["/bin/sh"]}
 
   lineinfile:
     path: {kind: work_path}
     create: {kind: literal_pool, pool: ["true"]}
+    regexp: {kind: literal_pool, pool: ["^kpg", "kpg", "^kpg fixture"]}
+    require_one_of: [[line, regexp]]
 
   user:
     name: {kind: username}
     shell: {kind: literal_pool, pool: ["/bin/sh", "/bin/bash"]}
     home: {kind: work_path}
-    exclude: [uid, password, password_expire, password_lock, group, groups,
-              local, move_home, remove, seuser, skeleton, ssh_key_bits,
-              ssh_key_file, ssh_key_passphrase, ssh_key_type, system]
+    umask: {kind: literal_pool, pool: ["022"]}
+    exclude: [uid, uid_min, uid_max, password, password_expire_account_disable,
+              password_expire_max, password_expire_min, password_expire_warn,
+              password_lock, group, groups, local, move_home, remove,
+              seuser, skeleton, ssh_key_bits, ssh_key_file,
+              ssh_key_passphrase, ssh_key_type, system]
 
   debug:
     var: {exclude: true}

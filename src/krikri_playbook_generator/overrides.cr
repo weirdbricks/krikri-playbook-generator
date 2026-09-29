@@ -18,11 +18,24 @@ module KrikriPlaybookGenerator
 
     @modules : Hash(String, Hash(String, OptionOverride))
     @names : Hash(String, OptionOverride)
+    @require_one_of : Hash(String, Array(Array(String)))
+    @always : Hash(String, Array(String))
 
     def initialize(yaml : String)
       parsed = YAML.parse(yaml)
       @modules = parse_module_section(parsed["modules"]?)
       @names = parse_name_section(parsed["names"]?)
+      @require_one_of = parse_require_one_of(parsed["modules"]?)
+      @always = parse_always(parsed["modules"]?)
+    end
+
+    # Module-level happy-path requirement groups from the data file: a
+    # group the generator must satisfy even though the module's DOCUMENTATION
+    # (and therefore the scanned schema) doesn't encode it - e.g. copy
+    # needs src or content at runtime, but neither is `required:` in the
+    # arg spec.
+    def require_one_of(module_name : String) : Array(Array(String))
+      @require_one_of[module_name]? || [] of Array(String)
     end
 
     def for_option(module_name : String, option_name : String) : OptionOverride?
@@ -45,7 +58,7 @@ module KrikriPlaybookGenerator
           excludes = entries["exclude"]?.try(&.as_a?)
           excludes.try(&.each { |name| option_map[name.as_s] = OptionOverride.new(nil, nil, nil, true) })
           entries.each do |option_name, spec|
-            next if option_name == "exclude"
+            next if option_name.to_s == "exclude" || option_name.to_s == "require_one_of"
 
             option_map[option_name.to_s] = parse_override(spec)
           end
@@ -62,6 +75,41 @@ module KrikriPlaybookGenerator
 
       section_hash.each do |option_name, spec|
         result[option_name.to_s] = parse_override(spec)
+      end
+      result
+    end
+
+    private def parse_require_one_of(section : YAML::Any?) : Hash(String, Array(Array(String)))
+      result = {} of String => Array(Array(String))
+      section_hash = section.try(&.as_h?)
+      return result unless section_hash
+
+      section_hash.each do |module_name, options|
+        groups = options.as_h?.try(&.["require_one_of"]?).try(&.as_a?).try do |groups_yaml|
+          groups_yaml.compact_map do |group|
+            group.as_a?.try(&.map(&.as_s))
+          end
+        end
+        result[module_name.to_s] = groups if groups && !groups.empty?
+      end
+      result
+    end
+
+    # Module-level `always` list: options included in every happy-path
+    # task even when not required, because omitting them fails in
+    # practice (e.g. `file` without `state` cannot touch an absent path).
+    def always(module_name : String) : Array(String)
+      @always[module_name]? || [] of String
+    end
+
+    private def parse_always(section : YAML::Any?) : Hash(String, Array(String))
+      result = {} of String => Array(String)
+      section_hash = section.try(&.as_h?)
+      return result unless section_hash
+
+      section_hash.each do |module_name, options|
+        list = options.as_h?.try(&.["always"]?).try(&.as_a?).try(&.compact_map(&.as_s?))
+        result[module_name.to_s] = list if list && !list.empty?
       end
       result
     end

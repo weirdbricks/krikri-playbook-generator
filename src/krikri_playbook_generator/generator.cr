@@ -87,17 +87,14 @@ module KrikriPlaybookGenerator
 
       schema.options.each_value do |option|
         next if @overrides.excluded?(schema.module_name, option.name)
-        next unless include_option?(option)
+        next unless option.required? || @overrides.always(schema.module_name).includes?(option.name) ||
+                    @rng.rand < 0.5
 
         args[option.name] = happy_value(schema, option)
       end
 
       satisfy_constraints!(schema, args)
       args
-    end
-
-    private def include_option?(option : OptionSchema) : Bool
-      option.required? || @rng.rand < 0.5
     end
 
     private def chaos_triggered? : Bool
@@ -192,25 +189,32 @@ module KrikriPlaybookGenerator
     # group if none of its members made it in, and adds keys required_if
     # demands for the condition values that are actually present.
     private def satisfy_constraints!(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
+      keep_first_of_mutually_exclusive(schema, args)
+      fill_required_together(schema, args)
+      fill_required_one_of(schema, args)
+      fill_required_if(schema, args)
+    end
+
+    private def keep_first_of_mutually_exclusive(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
       schema.mutually_exclusive.each do |group|
         present = group.select { |name| args.has_key?(name) }
         next unless present.size > 1
 
         present[1..].each { |name| args.delete(name) }
       end
+    end
 
+    private def fill_required_together(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
       schema.required_together.each do |group|
         next unless group.any? { |name| args.has_key?(name) }
 
-        group.each do |name|
-          option = schema.options[name]?
-          next if !option || @overrides.excluded?(schema.module_name, name)
-
-          args[name] = happy_value(schema, option)
-        end
+        add_all(schema, args, group)
       end
+    end
 
-      schema.required_one_of.each do |group|
+    private def fill_required_one_of(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
+      groups = schema.required_one_of + @overrides.require_one_of(schema.module_name)
+      groups.each do |group|
         next if group.any? { |name| args.has_key?(name) }
 
         name = group.find { |candidate| addable?(schema, candidate) }
@@ -218,7 +222,9 @@ module KrikriPlaybookGenerator
 
         args[name] = happy_value(schema, schema.options[name])
       end
+    end
 
+    private def fill_required_if(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
       schema.required_if.each do |entry|
         entry_list = entry.as_a?
         next unless entry_list && entry_list.size >= 3
@@ -235,6 +241,15 @@ module KrikriPlaybookGenerator
           args[name] = happy_value(schema, schema.options[name])
           break if require_any
         end
+      end
+    end
+
+    private def add_all(schema : ModuleSchema, args : Hash(String, YAML::Any), names : Array(String)) : Nil
+      names.each do |name|
+        option = schema.options[name]?
+        next if !option || @overrides.excluded?(schema.module_name, name) || args.has_key?(name)
+
+        args[name] = happy_value(schema, option)
       end
     end
 
@@ -259,6 +274,9 @@ module KrikriPlaybookGenerator
       if override = @overrides.for_option(schema.module_name, option.name)
         value = override_value(override)
         return value if value
+        if (choices = override.choices) && !choices.empty?
+          return YAML::Any.new(choices.sample(@rng))
+        end
       end
 
       return YAML::Any.new(option.choices.sample(@rng)) unless option.choices.empty?
@@ -268,23 +286,38 @@ module KrikriPlaybookGenerator
 
     private def override_value(override : Overrides::OptionOverride) : YAML::Any?
       case override.kind
+      when "mode", "owner", "group", "validate"
+        simple_override_value(override)
+      when "source_path", "work_path", "work_dir", "username", "literal_pool"
+        pool_override_value(override)
+      end
+    end
+
+    private def simple_override_value(override : Overrides::OptionOverride) : YAML::Any?
+      case override.kind
       when "mode"
         YAML::Any.new((override.pool || MODES).sample(@rng))
       when "owner", "group"
         YAML::Any.new("root")
       when "validate"
         YAML::Any.new("/bin/true %s")
-      when "source_path"
-        YAML::Any.new((override.pool || Fixtures::SOURCE_FILES).sample(@rng))
-      when "work_path"
-        YAML::Any.new(Fixtures::DEST_PATHS.sample(@rng))
-      when "username"
-        YAML::Any.new("kpg#{random_word(4)}#{@rng.rand(10..99)}")
-      when "literal_pool"
-        YAML::Any.new((override.pool || [""]).sample(@rng))
-      else
-        nil
       end
+    end
+
+    private def pool_override_value(override : Overrides::OptionOverride) : YAML::Any?
+      value : String? = case override.kind
+      when "source_path"
+        (override.pool || Fixtures::SOURCE_FILES).sample(@rng)
+      when "work_path"
+        Fixtures::DEST_PATHS.sample(@rng)
+      when "work_dir"
+        [Fixtures::WORK_ROOT, "#{Fixtures::FIXTURE_ROOT}/dir"].sample(@rng)
+      when "username"
+        "kpg#{random_word(4)}#{@rng.rand(10..99)}"
+      when "literal_pool"
+        (override.pool || [""]).sample(@rng)
+      end
+      value.nil? ? nil : YAML::Any.new(value)
     end
 
     private def happy_scalar(module_name : String, option : OptionSchema) : YAML::Any
