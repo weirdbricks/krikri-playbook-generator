@@ -31,6 +31,12 @@ module KrikriPlaybookGenerator
         "disagree byte-for-byte; the membership is fixed and covered by krikri's own specs",
       },
       {
+        Regex.new("\"delta\": \"\\d+:\\d{2}:\\d{2}(?:\\.\\d+)?\""),
+        "\"delta\": \"<DELTA>\"",
+        "command/shell results carry the run's duration (delta), different on every " \
+        "execution by construction; the key itself must still match",
+      },
+      {
         Regex.new("ansible-tmp-\\d+(?:[.\\-]\\d+)*"),
         "ansible-tmp-N",
         "ansible's per-task temp directory embeds an epoch timestamp and a random " \
