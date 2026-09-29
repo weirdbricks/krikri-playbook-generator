@@ -202,3 +202,81 @@ modules:
   set_fact:
     cacheable: {kind: literal_pool, pool: ["false"]}
 
+  # --- batch 5 ---
+  wait_for:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt"]}
+    state: {choices: [present, started]}
+    timeout: {kind: literal_pool, pool: ["3"]}
+    delay: {kind: literal_pool, pool: ["0"]}
+    sleep: {kind: literal_pool, pool: ["1"]}
+    search_regex: {kind: literal_pool, pool: ["kpg", "fixture"]}
+    always: [timeout]
+    port: {exclude: true}
+    host: {exclude: true}
+    connect_timeout: {exclude: true}
+    active_connection_states: {exclude: true}
+    exclude_hosts: {exclude: true}
+    msg: {kind: literal_pool, pool: ["kpg custom timeout message"]}
+
+  package_facts:
+    manager: {kind: literal_pool, pool: ["auto", "apt"]}
+    strategy: {choices: [first, all]}
+
+  dpkg_selections:
+    name: {kind: literal_pool, pool: ["bash", "coreutils"]}
+    selection: {choices: [hold, install]}
+
+  unarchive:
+    src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/archive.tar"]}
+    dest: {kind: literal_pool, pool: ["/tmp/kpg-work/tree"]}
+    remote_src: {kind: literal_pool, pool: ["true", "false"]}
+    creates: {exclude: true}
+    decrypt: {exclude: true}
+    exclude: {exclude: true}
+    include: {exclude: true}
+    extra_opts: {exclude: true}
+    io_buffer_size: {exclude: true}
+    validate_certs: {exclude: true}
+    list_files: {kind: literal_pool, pool: ["true", "false"]}
+    keep_newer: {kind: literal_pool, pool: ["true", "false"]}
+
+  systemd:
+    name: {kind: literal_pool, pool: ["cron.service", "ssh.service"]}
+    scope: {kind: literal_pool, pool: ["system"]}
+
+  assert:
+    that: {kind: literal_pool, pool: ["true", "1 == 1", "ansible_check_mode == false"]}
+    fail_msg: {kind: literal_pool, pool: ["kpg failed"]}
+    success_msg: {kind: literal_pool, pool: ["kpg passed"]}
+    quiet: {kind: literal_pool, pool: ["true", "false"]}
+
+  cron:
+    name: {kind: literal_pool, pool: ["kpg job", "kpg other job"]}
+    job: {kind: literal_pool, pool: ["/bin/true", "echo kpg"]}
+    user: {kind: literal_pool, pool: ["root"]}
+    cron_file: {kind: literal_pool, pool: ["/tmp/kpg-work/kpgcron", "/tmp/kpg-work/kpg_cron2"]}
+    minute: {kind: literal_pool, pool: ["5", "*/10", "0"]}
+    hour: {kind: literal_pool, pool: ["3", "*", "1"]}
+    day: {kind: literal_pool, pool: ["*", "1"]}
+    month: {kind: literal_pool, pool: ["*", "6"]}
+    weekday: {kind: literal_pool, pool: ["*", "1"]}
+    special_time: {exclude: true}
+    insertafter: {exclude: true}
+    insertbefore: {exclude: true}
+    env: {exclude: true}
+    value: {exclude: true}
+    disabled: {kind: literal_pool, pool: ["false", "true"]}
+    backup: {kind: literal_pool, pool: ["false"]}
+    always: [user, cron_file]
+
+  known_hosts:
+    name: {kind: literal_pool, pool: ["example.com"]}
+    key: {kind: literal_pool, pool: ["example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]}
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work/known_hosts"]}
+    hash_host: {kind: literal_pool, pool: ["false", "true"]}
+
+  # the playbooks name this module systemd_service; mirror the systemd overrides
+  systemd_service:
+    name: {kind: literal_pool, pool: ["cron.service", "ssh.service"]}
+    scope: {kind: literal_pool, pool: ["system"]}
+

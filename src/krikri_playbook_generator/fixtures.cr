@@ -50,6 +50,7 @@ module KrikriPlaybookGenerator
       printf 'tree a\n' > #{WORK_ROOT}/tree/a.txt
       printf 'tree b\n' > #{WORK_ROOT}/tree/b.conf
       printf 'hidden\n' > #{WORK_ROOT}/tree/.hidden
+      tar -C #{FIXTURE_ROOT}/dir -cf #{FIXTURE_ROOT}/archive.tar inner.txt
       chmod 0755 #{FIXTURE_ROOT}/script.sh
       chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt
       BASH
