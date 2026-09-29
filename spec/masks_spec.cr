@@ -11,6 +11,15 @@ module KrikriPlaybookGenerator
       assert(masked.includes?("ok: done"))
     end
 
+    it "masks only the lone discovered_interpreter_python key in a fatal JSON dump" do
+      with_key = %(fatal: [t]: FAILED! => {"ansible_facts": {"discovered_interpreter_python": "/usr/bin/python3.13"}, "changed": false, "msg": "x"}\n)
+      without = %(fatal: [t]: FAILED! => {"changed": false, "msg": "x"}\n)
+      assert_equal(ByteDiff.mask(without), ByteDiff.mask(with_key))
+
+      other = %(fatal: [t]: FAILED! => {"ansible_facts": {"other": 1}, "changed": false}\n)
+      assert(ByteDiff.mask(other).includes?(%("ansible_facts": {"other": 1})))
+    end
+
     it "masks ansible temp dir names and timestamps identically" do
       a = "Using module file /root/.ansible/tmp/ansible-tmp-1727612345.123456-123456789012345/AnsiballZ_copy.py\n"
       b = "Using module file /root/.ansible/tmp/ansible-tmp-1727699999.999999-987654321098765/AnsiballZ_copy.py\n"

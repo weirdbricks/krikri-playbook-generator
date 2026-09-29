@@ -16,6 +16,14 @@ module KrikriPlaybookGenerator
         "krikri has no Python interpreter and can never emit this line",
       },
       {
+        Regex.new("\"ansible_facts\": \\{\"discovered_interpreter_python\": \"[^\"]*\"\\}, "),
+        "",
+        "real ansible attaches the Python interpreter it discovered to a failed task's " \
+        "result (ansible_facts.discovered_interpreter_python, shown in the fatal: JSON " \
+        "dump); same class as the interpreter-discovery warning above - krikri has no " \
+        "Python interpreter and can never emit it. Only that lone key is masked",
+      },
+      {
         Regex.new("ansible-tmp-\\d+(?:[.\\-]\\d+)*"),
         "ansible-tmp-N",
         "ansible's per-task temp directory embeds an epoch timestamp and a random " \
