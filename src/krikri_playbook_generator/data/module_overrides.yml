@@ -280,3 +280,9 @@ modules:
     name: {kind: literal_pool, pool: ["cron.service", "ssh.service"]}
     scope: {kind: literal_pool, pool: ["system"]}
 
+  # cache_valid_time compares the apt lists' age against a window; both engines
+  # run a few seconds apart in containers provisioned seconds earlier, so a small
+  # window (e.g. 74 s) straddles the boundary and reports timing, not behavior
+  apt:
+    cache_valid_time: {kind: literal_pool, pool: ["3600", "86400"]}
+
