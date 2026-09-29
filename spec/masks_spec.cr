@@ -20,6 +20,13 @@ module KrikriPlaybookGenerator
       assert(ByteDiff.mask(other).includes?(%("ansible_facts": {"other": 1})))
     end
 
+    it "masks the per-process set order of convert_bool's valid-boolean list" do
+      a = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 0, '1', 'on', 1, 'yes'\n)
+      b = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 'yes', 1, 0, 'on', '1'\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("boolean. Valid", "boolean.  Valid")))
+    end
+
     it "masks ansible temp dir names and timestamps identically" do
       a = "Using module file /root/.ansible/tmp/ansible-tmp-1727612345.123456-123456789012345/AnsiballZ_copy.py\n"
       b = "Using module file /root/.ansible/tmp/ansible-tmp-1727699999.999999-987654321098765/AnsiballZ_copy.py\n"

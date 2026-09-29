@@ -80,18 +80,23 @@ modules:
     argv: {exclude: true}
     free_form: {exclude: true}
     chdir: {kind: work_dir}
-    free_form: {exclude: true}
+    creates: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
+    removes: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
 
   shell:
     cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
     argv: {exclude: true}
     free_form: {exclude: true}
     executable: {kind: literal_pool, pool: ["/bin/sh"]}
+    chdir: {kind: work_dir}
+    creates: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
+    removes: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
 
   lineinfile:
     path: {kind: work_path}
     create: {kind: literal_pool, pool: ["true"]}
     regexp: {kind: literal_pool, pool: ["^kpg", "kpg", "^kpg fixture"]}
+    backrefs: {exclude: true}
     require_one_of: [[line, regexp]]
 
   user:
@@ -107,3 +112,93 @@ modules:
 
   debug:
     var: {exclude: true}
+
+  # --- batch 2: existing writable files (seeded in /tmp/kpg-work), a fragments
+  # dir, a tree to search, so happy paths run to a real ok/changed result.
+  replace:
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work/existing.txt", "/tmp/kpg-work/existing2.txt"]}
+    regexp: {kind: literal_pool, pool: ["kpg", "^second", "(kpg) existing"]}
+    replace: {kind: literal_pool, pool: ["KPG", "replaced", "\\1 changed"]}
+    after: {exclude: true}
+    before: {exclude: true}
+    encoding: {kind: literal_pool, pool: ["utf-8"]}
+
+  blockinfile:
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work/existing.txt", "/tmp/kpg-work/existing2.txt"]}
+    block: {kind: literal_pool, pool: ["kpg block line", "one\ntwo"]}
+    marker: {kind: literal_pool, pool: ["# {mark} KPG BLOCK", "; {mark} kpg"]}
+    marker_begin: {kind: literal_pool, pool: ["BEGIN"]}
+    marker_end: {kind: literal_pool, pool: ["END"]}
+    insertafter: {exclude: true}
+    insertbefore: {exclude: true}
+    encoding: {kind: literal_pool, pool: ["utf-8"]}
+
+  stat:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/tree", "/tmp/kpg-work/existing.txt", "/tmp/kpg-work/missing"]}
+    checksum_algorithm: {kind: literal_pool, pool: ["sha1", "sha256", "md5"]}
+
+  slurp:
+    src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/existing.txt"]}
+
+  find:
+    paths: {kind: literal_pool, pool: ["/tmp/kpg-work/tree", "/opt/kpg-fixtures/dir", "/opt/kpg-fixtures"]}
+    patterns: {kind: literal_pool, pool: ["*.txt", "*.conf", "a*"]}
+    excludes: {exclude: true}
+    contains: {kind: literal_pool, pool: ["tree", "kpg"]}
+    age: {kind: literal_pool, pool: ["1d", "-1d", "1w", "3600"]}
+    size: {kind: literal_pool, pool: ["1", "-1k", "10"]}
+    age_stamp: {kind: literal_pool, pool: ["mtime", "ctime"]}
+    file_type: {choices: [file, directory, any]}
+    depth: {kind: literal_pool, pool: ["1", "2"]}
+    hidden: {kind: literal_pool, pool: ["true", "false"]}
+    limit: {kind: literal_pool, pool: ["1", "5"]}
+    use_regex: {exclude: true}
+    mode: {exclude: true}
+    exact_mode: {exclude: true}
+
+  assemble:
+    src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/frags"]}
+    dest: {kind: work_path}
+    remote_src: {kind: literal_pool, pool: ["true", "false"]}
+    regexp: {kind: literal_pool, pool: ["\\.txt$"]}
+    delimiter: {kind: literal_pool, pool: ["---"]}
+    decrypt: {exclude: true}
+
+  tempfile:
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work"]}
+    prefix: {kind: literal_pool, pool: ["kpg.", "tmp_"]}
+    suffix: {kind: literal_pool, pool: [".txt", ".tmp"]}
+
+  fetch:
+    src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/existing.txt"]}
+    dest: {kind: literal_pool, pool: ["/tmp/kpg-work/fetched/", "/tmp/kpg-work/fetched2/"]}
+    fail_on_missing: {kind: literal_pool, pool: ["true"]}
+
+  getent:
+    database: {kind: literal_pool, pool: ["passwd", "group"]}
+    key: {kind: literal_pool, pool: ["root", "daemon"]}
+    service: {exclude: true}
+    split: {kind: literal_pool, pool: [":"]}
+    fail_key: {kind: literal_pool, pool: ["true", "false"]}
+
+  script:
+    cmd: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh", "/opt/kpg-fixtures/script.sh arg1"]}
+    chdir: {kind: work_dir}
+    creates: {kind: literal_pool, pool: ["/tmp/kpg-work/never-created"]}
+    removes: {exclude: true}
+    decrypt: {exclude: true}
+    executable: {kind: literal_pool, pool: ["/bin/sh"]}
+
+  group:
+    name: {kind: username}
+    gid: {exclude: true}
+    local: {exclude: true}
+    system: {kind: literal_pool, pool: ["true", "false"]}
+
+  hostname:
+    name: {kind: literal_pool, pool: ["kpg-host", "kpg-host2"]}
+    use: {kind: literal_pool, pool: ["debian"]}
+
+  set_fact:
+    cacheable: {kind: literal_pool, pool: ["false"]}
+

@@ -24,6 +24,13 @@ module KrikriPlaybookGenerator
         "Python interpreter and can never emit it. Only that lone key is masked",
       },
       {
+        Regex.new("(Valid booleans include: )[^\"\\n]*"),
+        "\\1<BOOLEAN-SET-ORDER>",
+        "convert_bool's error text lists BOOLEANS in Python set-iteration order, which " \
+        "changes per process (string hash randomization) - two real ansible runs already " \
+        "disagree byte-for-byte; the membership is fixed and covered by krikri's own specs",
+      },
+      {
         Regex.new("ansible-tmp-\\d+(?:[.\\-]\\d+)*"),
         "ansible-tmp-N",
         "ansible's per-task temp directory embeds an epoch timestamp and a random " \

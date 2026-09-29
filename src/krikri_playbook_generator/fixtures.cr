@@ -42,6 +42,14 @@ module KrikriPlaybookGenerator
       printf 'kpg says {{ 1 + 1 }}\\n' > #{FIXTURE_ROOT}/template.j2
       printf '#!/bin/sh\\necho kpg-fixture-script\\n' > #{FIXTURE_ROOT}/script.sh
       printf 'inner\\n' > #{FIXTURE_ROOT}/dir/inner.txt
+      mkdir -p #{FIXTURE_ROOT}/frags #{WORK_ROOT}/tree
+      printf 'frag one\n' > #{FIXTURE_ROOT}/frags/01-a.txt
+      printf 'frag two\n' > #{FIXTURE_ROOT}/frags/02-b.txt
+      printf 'kpg existing alpha\nsecond line\nkpg existing omega\n' > #{WORK_ROOT}/existing.txt
+      printf 'key = value\nkpg setting = on\n' > #{WORK_ROOT}/existing2.txt
+      printf 'tree a\n' > #{WORK_ROOT}/tree/a.txt
+      printf 'tree b\n' > #{WORK_ROOT}/tree/b.conf
+      printf 'hidden\n' > #{WORK_ROOT}/tree/.hidden
       chmod 0755 #{FIXTURE_ROOT}/script.sh
       chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt
       BASH
