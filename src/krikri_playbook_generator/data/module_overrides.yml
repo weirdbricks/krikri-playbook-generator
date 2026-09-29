@@ -309,3 +309,25 @@ modules:
     virtualenv_command: {exclude: true}
     chdir: {kind: work_dir}
     name: {kind: literal_pool, pool: ["pip", "setuptools"]}
+
+  ini_file:
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work/existing2.txt"]}
+    section: {kind: literal_pool, pool: ["main", "kpg"]}
+    option: {kind: literal_pool, pool: ["key", "kpg setting", "other"]}
+    value: {kind: literal_pool, pool: ["one", "on", "42"]}
+    values: {exclude: true}
+    always: [path, section, option, value]
+
+  archive:
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work/tree/a.txt", "/tmp/kpg-work/tree/b.conf"]}
+    dest: {kind: work_path}
+    exclude_path: {exclude: true}
+    exclusion_patterns: {exclude: true}
+    always: [path, dest]
+
+  authorized_key:
+    user: {kind: literal_pool, pool: ["root"]}
+    key: {kind: literal_pool, pool: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl kpg"]}
+    path: {kind: literal_pool, pool: ["/tmp/kpg-work/authorized_keys"]}
+    manage_dir: {kind: literal_pool, pool: ["false"]}
+    always: [user, key]
