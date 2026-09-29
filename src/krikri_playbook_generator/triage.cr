@@ -4,66 +4,95 @@ module KrikriPlaybookGenerator
   class TriageError < Exception
   end
 
-  # Groups divergences by module + chaos-kind + option, deduping to root
-  # cause: if N generated playbooks all diverge from the same
-  # option/mutation-kind combination on the same module, that's one bug to
-  # fix, not N. Reads `results.jsonl` (Runner's output) and, for each
-  # divergent playbook, its `.meta.json` sidecar (PlaybookBuilder's
-  # output) to learn which module and which mutation(s) produced it — the
-  # only place that link is recorded.
+  # Reads `results.jsonl` (Runner's output) and produces three report
+  # sections:
+  #
+  # - `report`: divergences grouped by module + diff SIGNATURE. The
+  #   signature (ByteDiff#signature - changed lines with digits/paths/
+  #   random names generalized, hashed) is the root-cause key: N playbooks
+  #   whose masked diffs shape to the same hash are one bug to fix, not N.
+  #   Each finding carries its count, one example playbook path and a
+  #   copy-paste repro command for it.
+  # - `quality`: generator-quality metric - per module, how many
+  #   happy-path playbooks FAILED on real ansible (wasted coverage: real
+  #   ansible is the reference engine, so if the reference can't even run
+  #   the generated task, comparing engines tells you nothing) and the
+  #   first error line explaining why.
+  # - `rates`: per-module byte-identical rate over all compared playbooks.
   class Triage
     record MutationEntry, option : String, kind : String
-    record Meta, module_name : String, collection : String, chaos : Bool, mutations : Array(MutationEntry)
-    record Finding, module_name : String, chaos_kind : String?, option : String?, playbooks : Array(String) do
+    record ResultLine, playbook : String, module_name : String, chaos : Bool,
+      divergent : Bool, signature : String?, ansible_failed : Bool, ansible_error : String?,
+      mutations : Array(MutationEntry), errored : Bool
+    record Finding, module_name : String, signature : String?, playbooks : Array(String),
+      example_mutations : Array(MutationEntry) do
       def count : Int32
         playbooks.size
       end
     end
+    record Quality, module_name : String, failed : Int32, total : Int32, example_error : String
+    record Rate, module_name : String, identical : Int32, total : Int32
 
     def initialize(@results_dir : String)
     end
 
     def report : Array(Finding)
-      groups = {} of {String, String?, String?} => Array(String)
+      groups = {} of {String, String?} => Array(ResultLine)
 
-      skipped_lines = each_divergent_playbook do |playbook_path|
-        meta = load_meta(playbook_path)
-        next unless meta
+      lines.each do |line|
+        next unless line.divergent
 
-        if meta.mutations.empty?
-          group(groups, meta.module_name, nil, nil, playbook_path)
-        else
-          meta.mutations.each { |mutation| group(groups, meta.module_name, mutation.kind, mutation.option, playbook_path) }
-        end
+        key = {line.module_name, line.signature}
+        (groups[key] ||= [] of ResultLine) << line
       end
 
-      if skipped_lines.positive?
-        STDERR.puts "warning: skipped #{skipped_lines} malformed results.jsonl line(s)"
-      end
-
-      groups.map { |(module_name, kind, option), playbooks| Finding.new(module_name, kind, option, playbooks) }
-        .sort_by! { |finding| -finding.count }
+      groups.map do |(module_name, signature), entries|
+        playbooks = entries.map(&.playbook).uniq
+        Finding.new(module_name, signature, playbooks, entries.first.mutations)
+      end.sort_by! { |finding| -finding.count }
     end
 
-    private def group(groups : Hash({String, String?, String?}, Array(String)),
-                      module_name : String, kind : String?, option : String?, playbook_path : String) : Nil
-      key = {module_name, kind, option}
-      (groups[key] ||= [] of String) << playbook_path
+    def quality : Array(Quality)
+      groups = Hash(String, Array(ResultLine)).new { |hash, key| hash[key] = [] of ResultLine }
+
+      lines.each do |line|
+        next if line.chaos || line.errored
+        next unless line.ansible_failed
+
+        groups[line.module_name] << line
+      end
+
+      groups.map do |module_name, entries|
+        total = lines.count { |line| !line.chaos && !line.errored && line.module_name == module_name }
+        Quality.new(module_name, entries.size, total, entries.first.ansible_error || "unknown error")
+      end.sort_by! { |quality| -quality.failed }
     end
 
-    # A truncated final line (e.g. a batch killed mid-write) is skipped
-    # and reported, not fatal: one bad line shouldn't sink the whole
-    # report over the results that did parse.
-    private def each_divergent_playbook(& : String ->) : Int32
-      results_path = File.join(@results_dir, "results.jsonl")
-      unless File.exists?(results_path)
-        raise TriageError.new("no results.jsonl under #{@results_dir.inspect} - run `run` first")
+    def rates : Array(Rate)
+      groups = Hash(String, Array(ResultLine)).new { |hash, key| hash[key] = [] of ResultLine }
+
+      lines.each do |line|
+        next if line.errored
+
+        groups[line.module_name] << line
       end
+
+      groups.map do |module_name, entries|
+        Rate.new(module_name, entries.count { |line| !line.divergent }, entries.size)
+      end.sort_by!(&.module_name)
+    end
+
+    # Copy-paste repro for a single divergent playbook: `run` accepts a
+    # playbook file path directly and re-runs it in a fresh container pair.
+    def self.repro_command(playbook_path : String) : String
+      "krikri-playbook-generator run #{playbook_path} --run-on-podman --results-dir /tmp/kpg-repro"
+    end
+
+    private def lines : Array(ResultLine)
+      collected = [] of ResultLine
 
       skipped = 0
-      File.each_line(results_path) do |line|
-        next if line.blank?
-
+      each_results_line do |line|
         parsed = begin
           JSON.parse(line).as_h?
         rescue JSON::ParseException
@@ -71,41 +100,57 @@ module KrikriPlaybookGenerator
           nil
         end
         next unless parsed
-        next unless parsed["divergent"]?.try(&.as_bool?)
 
-        playbook_path = parsed["playbook"]?.try(&.as_s?)
-        yield playbook_path if playbook_path
+        result = parse_result_line(parsed)
+        collected << result if result
       end
-      skipped
+
+      STDERR.puts "warning: skipped #{skipped} malformed results.jsonl line(s)" if skipped.positive?
+      collected
     end
 
-    private def load_meta(playbook_path : String) : Meta?
-      meta_path = playbook_path.sub(/\.yml$/, ".meta.json")
-      return unless File.exists?(meta_path)
-
-      parsed = JSON.parse(File.read(meta_path)).as_h?
-      return unless parsed
-
+    private def parse_result_line(parsed : Hash(String, JSON::Any)) : ResultLine?
+      playbook = parsed["playbook"]?.try(&.as_s?)
       module_name = parsed["module"]?.try(&.as_s?)
-      return unless module_name
+      return nil unless playbook && module_name
 
-      collection = parsed["collection"]?.try(&.as_s?) || "ansible.builtin"
-      chaos = parsed["chaos"]?.try(&.as_bool?) || false
-      mutations = parsed["mutations"]?.try(&.as_a?).try { |entries| parse_mutations(entries) } || [] of MutationEntry
+      mutations = parsed["mutations"]?.try(&.as_a?).try do |entries|
+        entries.compact_map do |entry|
+          entry_hash = entry.as_h?
+          next unless entry_hash
 
-      Meta.new(module_name, collection, chaos, mutations)
+          option = entry_hash["option"]?.try(&.as_s?)
+          kind = entry_hash["kind"]?.try(&.as_s?)
+          MutationEntry.new(option, kind) if option && kind
+        end
+      end || [] of MutationEntry
+
+      error_field = parsed["error"]?
+      errored = error_field ? !error_field.raw.nil? : false
+
+      ResultLine.new(
+        playbook, module_name,
+        parsed["chaos"]?.try(&.as_bool?) || false,
+        parsed["divergent"]?.try(&.as_bool?) || false,
+        parsed["signature"]?.try(&.as_s?),
+        parsed["ansible_failed"]?.try(&.as_bool?) || false,
+        parsed["ansible_error"]?.try(&.as_s?),
+        mutations,
+        errored
+      )
     end
 
-    private def parse_mutations(entries : Array(JSON::Any)) : Array(MutationEntry)
-      entries.compact_map do |entry|
-        entry_hash = entry.as_h?
-        next unless entry_hash
+    # A truncated final line (e.g. a batch killed mid-write) is skipped
+    # and reported, not fatal: one bad line shouldn't sink the whole
+    # report over the results that did parse.
+    private def each_results_line(& : String ->) : Nil
+      results_path = File.join(@results_dir, "results.jsonl")
+      unless File.exists?(results_path)
+        raise TriageError.new("no results.jsonl under #{@results_dir.inspect} - run `run` first")
+      end
 
-        option = entry_hash["option"]?.try(&.as_s?)
-        kind = entry_hash["kind"]?.try(&.as_s?)
-        next unless option && kind
-
-        MutationEntry.new(option, kind)
+      File.each_line(results_path) do |line|
+        yield line unless line.blank?
       end
     end
   end

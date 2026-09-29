@@ -1,0 +1,78 @@
+# Per-module happy-path overrides for the generator.
+#
+# The generator produces schema-valid arguments from `ansible-doc` alone,
+# but schema-valid isn't the same as runnable: `mode: 387` is an int the
+# schema happily accepts, a random `shell:` string isn't a real shell, and
+# a random `src:` path doesn't exist. This table maps specific options to
+# a known-good value kind so happy-path tasks actually succeed on real
+# ansible inside the containers (chaos mode then mutates that valid
+# baseline, so every mutation is a delta from something runnable).
+#
+# Kinds:
+#   mode         - valid octal mode string, sampled from the kind's pool
+#   owner        - an existing user name (root)
+#   group        - an existing group name (root)
+#   validate     - a validate command containing the required %s
+#                  placeholder
+#   source_path  - an existing read-only fixture file under
+#                  /opt/kpg-fixtures (pool overrides Fixtures.SOURCE_FILES)
+#   work_path    - a writable path under /tmp/kpg-work
+#   username     - a generated, collision-safe user name (user.name)
+#   literal_pool - sample one of the listed exact values
+#   exclude      - never include this option in a happy-path task (values
+#                  the schema accepts but that reliably fail in practice,
+#                  e.g. uid collisions or runtime-mutually-exclusive
+#                  siblings of another option)
+#
+# `names:` entries apply by option name to ANY module that doesn't
+# override that option itself; `modules:` entries win over `names:`.
+# Extend freely - the file is embedded at compile time.
+
+names:
+  mode: {kind: mode, pool: ["0644", "0755", "0600", "0750"]}
+  owner: {kind: owner}
+  group: {kind: group}
+  validate: {kind: validate}
+
+modules:
+  file:
+    state: {choices: [file, touch, directory, absent]}
+    src: {exclude: true}
+    seuser: {exclude: true}
+    serole: {exclude: true}
+    setype: {exclude: true}
+    selevel: {exclude: true}
+    attributes: {exclude: true}
+
+  copy:
+    src: {kind: source_path, pool: ["/opt/kpg-fixtures/src.txt", "/opt/kpg-fixtures/src2.txt", "/opt/kpg-fixtures/script.sh"]}
+    dest: {kind: work_path}
+    content: {exclude: true}
+
+  template:
+    src: {kind: source_path, pool: ["/opt/kpg-fixtures/template.j2"]}
+    dest: {kind: work_path}
+
+  command:
+    cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
+    argv: {exclude: true}
+
+  shell:
+    cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
+    argv: {exclude: true}
+    executable: {kind: literal_pool, pool: ["/bin/sh"]}
+
+  lineinfile:
+    path: {kind: work_path}
+    create: {kind: literal_pool, pool: ["true"]}
+
+  user:
+    name: {kind: username}
+    shell: {kind: literal_pool, pool: ["/bin/sh", "/bin/bash"]}
+    home: {kind: work_path}
+    exclude: [uid, password, password_expire, password_lock, group, groups,
+              local, move_home, remove, seuser, skeleton, ssh_key_bits,
+              ssh_key_file, ssh_key_passphrase, ssh_key_type, system]
+
+  debug:
+    var: {exclude: true}

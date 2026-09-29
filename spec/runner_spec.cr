@@ -16,6 +16,7 @@ module KrikriPlaybookGenerator
       refute_nil(recap)
       assert_equal(1, recap.as(Runner::Recap).ok)
       assert_equal(0, recap.as(Runner::Recap).changed)
+      assert_equal(1, recap.as(Runner::Recap).ignored)
     end
 
     it "returns nil for text with no recap counters" do
@@ -25,7 +26,7 @@ module KrikriPlaybookGenerator
     it "ignores ok=N-shaped text appearing before the real PLAY RECAP line" do
       text = <<-TEXT
         TASK [debug] ***
-        task output: ok=2 changed=9 unreachable=9 failed=9 skipped=9
+        task output: ok=2 changed=9 unreachable=9 failed=9 skipped=9 ignored=9
         PLAY RECAP *******************************************************************
         localhost : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
         TEXT
@@ -35,6 +36,7 @@ module KrikriPlaybookGenerator
       recap = recap.as(Runner::Recap)
       assert_equal(3, recap.ok)
       assert_equal(1, recap.changed)
+      assert_equal(0, recap.ignored)
     end
 
     it "returns nil when there is a PLAY RECAP header but no counter line" do
@@ -43,43 +45,85 @@ module KrikriPlaybookGenerator
   end
 
   describe Runner::PlaybookResult do
-    def engine_run(recap : Runner::Recap?, rc : Int32 = 0) : Runner::EngineRun
-      Runner::EngineRun.new("x", rc, recap, "", "")
+    def engine_run(recap : Runner::Recap?, rc : Int32 = 0, stdout : String = "", stderr : String = "") : Runner::EngineRun
+      Runner::EngineRun.new("x", rc, recap, stdout, stderr)
     end
 
-    it "is not divergent when both engines report the same recap and rc" do
-      recap = Runner::Recap.new(1, 0, 0, 0, 0)
-      result = Runner::PlaybookResult.new("p.yml", engine_run(recap), engine_run(recap))
+    it "is not divergent when both engines report the same recap and byte-identical output" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      result = Runner::PlaybookResult.new("p.yml", engine_run(recap, stdout: "same"), engine_run(recap, stdout: "same"), nil)
       refute(result.divergent?)
+      assert(result.masked_identical?)
+      assert(result.raw_identical?)
+      refute(result.recap_divergent?)
+      assert_nil(result.signature)
     end
 
-    it "is divergent when recaps differ" do
-      a = Runner::Recap.new(1, 0, 0, 0, 0)
-      b = Runner::Recap.new(1, 1, 0, 0, 0)
-      result = Runner::PlaybookResult.new("p.yml", engine_run(a), engine_run(b))
+    it "is divergent when the masked stdout differs even with matching recaps" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      result = Runner::PlaybookResult.new("p.yml",
+        engine_run(recap, stdout: "ok: [target]\n"), engine_run(recap, stdout: "ok differently\n"), nil)
+      assert(result.divergent?)
+      refute_nil(result.signature)
+    end
+
+    it "is divergent when the rcs differ even with byte-identical output" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      result = Runner::PlaybookResult.new("p.yml",
+        engine_run(recap, rc: 0, stdout: "same"), engine_run(recap, rc: 2, stdout: "same"), nil)
       assert(result.divergent?)
     end
 
-    it "is divergent when one engine fails and the other doesn't" do
-      recap = Runner::Recap.new(1, 0, 0, 0, 0)
-      result = Runner::PlaybookResult.new("p.yml", engine_run(recap, rc: 0), engine_run(recap, rc: 2))
+    it "is divergent when exactly one engine timed out" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      a = Runner::EngineRun.new("ansible", 0, recap, "same", "")
+      b = Runner::EngineRun.new("krikri", 124, recap, "same", "", true)
+      result = Runner::PlaybookResult.new("p.yml", a, b, nil)
       assert(result.divergent?)
     end
 
-    it "is not divergent when neither recap parses and both engines exit the same way" do
-      result = Runner::PlaybookResult.new("p.yml", engine_run(nil, rc: 2), engine_run(nil, rc: 2))
+    it "ignores the real ansible WARNING lines and temp paths via the mask list" do
+      warning = "[WARNING]: Host 'target' is using the discovered Python interpreter at /usr/bin/python3.12\n"
+      tmp_a = "created via ansible-tmp-1727612345.12-1234567\n"
+      tmp_b = "created via ansible-tmp-1727699999.99-7654321\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        engine_run(nil, stdout: warning + tmp_a), engine_run(nil, stdout: warning + tmp_b), nil)
       refute(result.divergent?)
+      assert(result.raw_identical? == false)
     end
 
-    it "is divergent when neither recap parses but the engines exit differently" do
-      result = Runner::PlaybookResult.new("p.yml", engine_run(nil, rc: 2), engine_run(nil, rc: 6))
-      assert(result.divergent?)
+    it "keeps the recap comparison as an independent extra field" do
+      a = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      b = Runner::Recap.new(1, 1, 0, 0, 0, 0)
+      result = Runner::PlaybookResult.new("p.yml", engine_run(a), engine_run(b), nil)
+      assert(result.recap_divergent?)
     end
 
-    it "is divergent when exactly one engine's recap parses" do
-      recap = Runner::Recap.new(1, 0, 0, 0, 0)
-      result = Runner::PlaybookResult.new("p.yml", engine_run(recap, rc: 2), engine_run(nil, rc: 2))
-      assert(result.divergent?)
+    it "flags real-ansible failures via rc, ignored counter or a fatal line" do
+      ok_recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      ignored_recap = Runner::Recap.new(1, 0, 0, 0, 0, 1)
+
+      clean = Runner::PlaybookResult.new("p.yml", engine_run(ok_recap), engine_run(ok_recap), nil)
+      refute(clean.ansible_failed?)
+      assert_nil(clean.ansible_error_line)
+
+      by_rc = Runner::PlaybookResult.new("p.yml", engine_run(ok_recap, rc: 2), engine_run(ok_recap), nil)
+      assert(by_rc.ansible_failed?)
+
+      by_ignored = Runner::PlaybookResult.new("p.yml", engine_run(ignored_recap), engine_run(ok_recap), nil)
+      assert(by_ignored.ansible_failed?)
+
+      by_fatal = Runner::PlaybookResult.new("p.yml",
+        engine_run(ok_recap, stdout: "fatal: [target]: FAILED! => boom"), engine_run(ok_recap), nil)
+      assert(by_fatal.ansible_failed?)
+      assert(by_fatal.ansible_error_line.not_nil!.includes?("fatal:"))
+    end
+
+    it "is never divergent when the run itself errored" do
+      result = Runner::PlaybookResult.errored("p.yml", nil, "podman died")
+      refute(result.divergent?)
+      refute(result.raw_identical?)
+      assert_equal("podman died", result.error)
     end
   end
 
@@ -102,12 +146,19 @@ module KrikriPlaybookGenerator
       assert_equal(playbook_path, result.playbook)
       assert_equal(0, result.ansible.rc)
       assert_equal(0, result.krikri.rc)
+      assert_equal("debug", result.meta.not_nil!.module_name)
 
       lines = File.read_lines(File.join(results_dir, "results.jsonl"))
       assert_equal(1, lines.size)
       parsed = JSON.parse(lines.first)
       assert_equal(playbook_path, parsed["playbook"].as_s)
       assert(parsed["ansible"]["recap"].as_h.has_key?("ok"))
+      assert(parsed["ansible"].as_h.has_key?("timed_out"))
+      assert(parsed.as_h.has_key?("masked_identical"))
+      assert(parsed.as_h.has_key?("signature"))
+      assert(parsed.as_h.has_key?("ansible_failed"))
+      assert(parsed["diff"].as_h.has_key?("masked"))
+      assert(parsed["diff"].as_h.has_key?("raw"))
     ensure
       FileUtils.rm_rf(playbook_dir) if playbook_dir
       FileUtils.rm_rf(results_dir) if results_dir

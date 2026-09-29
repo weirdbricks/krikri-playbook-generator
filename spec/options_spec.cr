@@ -40,6 +40,23 @@ module KrikriPlaybookGenerator
       refute(opts.run_on_podman?)
     end
 
+    it "defaults keep_going to false and engine_timeout to 120" do
+      opts = Options.parse(["run"])
+      refute(opts.keep_going)
+      assert_equal(120, opts.engine_timeout)
+    end
+
+    it "parses --keep-going and --engine-timeout" do
+      opts = Options.parse(["run", "--keep-going", "--engine-timeout", "30"])
+      assert(opts.keep_going)
+      assert_equal(30, opts.engine_timeout)
+    end
+
+    it "raises on a non-positive --engine-timeout" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--engine-timeout", "0"]) }
+      assert((err.message || "").includes?("--engine-timeout"))
+    end
+
     it "parses --run-on-podman on generate" do
       opts = Options.parse(["generate", "--run-on-podman"])
       assert(opts.run_on_podman?)

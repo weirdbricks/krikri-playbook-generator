@@ -32,13 +32,16 @@ module KrikriPlaybookGenerator
     property krikri_bin : String
     property? allow_mutation : Bool
     property? run_on_podman : Bool
+    property keep_going : Bool
+    property engine_timeout : Int32
 
     def initialize(@command, @modules = nil, @seed = 42, @count = 100,
                    @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint],
                    @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
-                   @allow_mutation = false, @run_on_podman = false)
+                   @allow_mutation = false, @run_on_podman = false,
+                   @keep_going = false, @engine_timeout = 120)
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -75,6 +78,8 @@ module KrikriPlaybookGenerator
         dsl.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = expand_tilde(v) }
         dsl.on("--allow-mutation", "run without --check: real modules may actually change the local host") { opts.allow_mutation = true }
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
+        dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
+        dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
       end
       parser.parse(rest)
 
@@ -87,6 +92,7 @@ module KrikriPlaybookGenerator
 
       raise InvalidOptionsError.new("--seed must be zero or a positive integer, got #{opts.seed}") if opts.seed.negative?
       raise InvalidOptionsError.new("--count must be zero or a positive integer, got #{opts.count}") if opts.count.negative?
+      raise InvalidOptionsError.new("--engine-timeout must be a positive integer, got #{opts.engine_timeout}") if opts.engine_timeout <= 0
       unless opts.chaos_percentage.in?(0.0..100.0)
         raise InvalidOptionsError.new("--chaos-percentage must be between 0 and 100, got #{opts.chaos_percentage}")
       end
