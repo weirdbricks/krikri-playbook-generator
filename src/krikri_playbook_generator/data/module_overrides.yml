@@ -230,6 +230,7 @@ modules:
     src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/archive.tar"]}
     dest: {kind: literal_pool, pool: ["/tmp/kpg-work/tree"]}
     remote_src: {kind: literal_pool, pool: ["true", "false"]}
+    copy: {exclude: true}
     creates: {exclude: true}
     decrypt: {exclude: true}
     exclude: {exclude: true}
@@ -285,4 +286,24 @@ modules:
   # window (e.g. 74 s) straddles the boundary and reports timing, not behavior
   apt:
     cache_valid_time: {kind: literal_pool, pool: ["3600", "86400"]}
+    deb: {exclude: true}
 
+
+  service:
+    name: {kind: literal_pool, pool: ["cron", "ssh"]}
+    use: {exclude: true}
+    arguments: {exclude: true}
+    pattern: {exclude: true}
+    sleep: {exclude: true}
+
+  git:
+    archive_prefix: {exclude: true}
+    archive: {exclude: true}
+    repo: {kind: literal_pool, pool: ["/opt/kpg-fixtures/repo.git"]}
+    dest: {kind: work_path}
+
+  pip:
+    executable: {exclude: true}
+    virtualenv_command: {exclude: true}
+    chdir: {kind: work_dir}
+    name: {kind: literal_pool, pool: ["pip", "setuptools"]}

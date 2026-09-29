@@ -51,6 +51,14 @@ module KrikriPlaybookGenerator
       printf 'tree b\n' > #{WORK_ROOT}/tree/b.conf
       printf 'hidden\n' > #{WORK_ROOT}/tree/.hidden
       tar -C #{FIXTURE_ROOT}/dir -cf #{FIXTURE_ROOT}/archive.tar inner.txt
+      if command -v git >/dev/null 2>&1 && [ ! -d #{FIXTURE_ROOT}/repo.git ]; then
+        export GIT_AUTHOR_NAME=kpg GIT_AUTHOR_EMAIL=kpg@example.com GIT_COMMITTER_NAME=kpg GIT_COMMITTER_EMAIL=kpg@example.com
+        export GIT_AUTHOR_DATE='2020-01-01T00:00:00Z' GIT_COMMITTER_DATE='2020-01-01T00:00:00Z'
+        tmp=$(mktemp -d)
+        git init -q -b main "$tmp/w" && printf 'repo file\n' > "$tmp/w/f.txt" && git -C "$tmp/w" add f.txt && git -C "$tmp/w" commit -q -m init
+        git clone -q --bare "$tmp/w" #{FIXTURE_ROOT}/repo.git
+        rm -rf "$tmp"
+      fi
       chmod 0755 #{FIXTURE_ROOT}/script.sh
       chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt
       BASH
