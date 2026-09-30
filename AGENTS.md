@@ -73,7 +73,14 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator/fixtures.cr` — `Fixtures`. **Implemented**:
   fixture layout (source files + a Jinja template + an executable script
   under `/opt/kpg-fixtures`, writable dests under `/tmp/kpg-work`) and the
-  seed script. `PodmanBackend` seeds it identically into BOTH containers
+  seed script. It also seeds the two things the engine-side-resolved actions
+  need to run at all: a task file (`tasks.yml`) for
+  import_tasks/include_tasks and a minimal role
+  (`roles/kpgrole/tasks|defaults|vars|handlers/main.yml`) for
+  include_role/import_role, which the overrides name by absolute path
+  (`Fixtures::ROLE_PATH`) so both engines resolve the same value instead of
+  each running its own roles/ search. `PodmanBackend` seeds it identically
+  into BOTH containers
   during provisioning (never via playbook tasks, so seeding never appears
   in the compared output); local runs seed the host best-effort and warn
   if that fails (e.g. `/opt` not writable).
