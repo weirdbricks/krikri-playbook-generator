@@ -66,13 +66,13 @@ module KrikriPlaybookGenerator
         "characters, up to the closing quote)",
       },
       {
-        Regex.new("(\\[Errno \\d+\\] [^:]+: '[^']*[/_.-])[a-z0-9_]{8}([^'/]*')"),
-        "\\1<RND>\\2",
+        Regex.new("(\\[Errno \\d+\\] [^:]+: '[^']*/[^'/]*)[a-z0-9_]{8}((?:\\.|[^a-z0-9_'/])[^'/]*)?'"),
+        "\\1<RND>\\2'",
         "the same mkstemp name as above but with a CUSTOM prefix (`prefix:` given): the " \
         "prefix and suffix are deterministic, the 8 characters between them are random per " \
-        "run on both engines. Anchored on an Errno message's single-quoted path, on " \
-        "exactly 8 [a-z0-9_] characters right after `/`, `_`, `.` or `-` and before the " \
-        "last path component's suffix",
+        "run on both engines. Anchored on an Errno message's single-quoted path: the last " \
+        "8 [a-z0-9_] characters of the last path component, before its suffix (which " \
+        "starts with a non-[a-z0-9_] character such as `.`) or the closing quote",
       },
       {
         Regex.new("\\b\\d{13,}\\b"),

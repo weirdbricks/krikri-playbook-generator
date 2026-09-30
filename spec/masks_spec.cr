@@ -50,6 +50,14 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("tmp_", "pre_")))
     end
 
+    it "masks the random mkstemp characters after a numeric or empty prefix" do
+      a = %(msg: [Errno 2] No such file or directory: '/work/30/92li3lyz4e.txt'\n)
+      b = %(msg: [Errno 2] No such file or directory: '/work/30/92ka3ewei0.txt'\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(b.sub("92", "93")))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(b.sub("/30/", "/31/")))
+    end
+
     it "masks which wrong-typed string option include_role reports first (random set order)" do
       a = %([ERROR]: Expected a string for tasks_from but got <class 'x'> instead\n)
       b = %([ERROR]: Expected a string for vars_from but got <class 'x'> instead\n)
