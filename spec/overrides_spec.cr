@@ -87,5 +87,18 @@ module KrikriPlaybookGenerator
       assert(overrides.expect_failure?("broken"))
       refute(overrides.excluded?("broken", "msg"))
     end
+
+    it "names the fixture role for the role-loading actions and excludes the dict-typed apply" do
+      overrides = Overrides.load
+      %w[include_role import_role].each do |module_name|
+        name = overrides.for_option(module_name, "name")
+        refute_nil(name)
+        assert_equal(["/opt/kpg-fixtures/roles/kpgrole"], name.as(Overrides::OptionOverride).pool)
+      end
+      assert(overrides.excluded?("include_role", "apply"))
+      from = overrides.for_option("import_role", "tasks_from")
+      refute_nil(from)
+      assert_equal(["main"], from.as(Overrides::OptionOverride).pool)
+    end
   end
 end

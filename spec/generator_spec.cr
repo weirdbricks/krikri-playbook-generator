@@ -210,6 +210,30 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "points the role-loading actions at the seeded fixture role and never at a dict-typed apply" do
+      tasks = Generator.new(5, 0.0).generate(include_role_schema, 20)
+      tasks.each do |task|
+        assert_equal(Fixtures::ROLE_PATH, task.args["name"].as_s)
+        refute(task.args.has_key?("apply"))
+        %w[tasks_from defaults_from vars_from handlers_from].each do |name|
+          value = task.args[name]?
+          assert_equal("main", value.as_s) if value
+        end
+      end
+    end
+
+    def include_role_schema : ModuleSchema
+      schema = ModuleSchema.new("include_role", "ansible.builtin")
+      schema.options["name"] = OptionSchema.new("name", "str", required: true)
+      schema.options["apply"] = OptionSchema.new("apply", "dict")
+      schema.options["tasks_from"] = OptionSchema.new("tasks_from", "str")
+      schema.options["defaults_from"] = OptionSchema.new("defaults_from", "str")
+      schema.options["vars_from"] = OptionSchema.new("vars_from", "str")
+      schema.options["handlers_from"] = OptionSchema.new("handlers_from", "str")
+      schema.options["public"] = OptionSchema.new("public", "bool")
+      schema
+    end
+
     def free_form_overrides : Overrides
       Overrides.new(<<-YAML)
         modules:

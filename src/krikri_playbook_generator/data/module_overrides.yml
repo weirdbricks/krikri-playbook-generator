@@ -399,6 +399,29 @@ modules:
     manage_dir: {kind: literal_pool, pool: ["false"]}
     always: [user, key]
 
+  # `name` is resolved by the ENGINE, not by the module, so it has to point
+  # at a role that exists - the fixture role seeded into both containers
+  # (Fixtures::ROLE_PATH), named by absolute path so both engines resolve
+  # the same value instead of each running its own roles/ search. The
+  # `*_from` options name a file INSIDE the role, so they can only be the
+  # one file that exists (main). `apply` is a dict (tags/become/...) this
+  # mechanism can't express, and a plain string there is rejected by
+  # argument validation before the role is ever loaded.
+  include_role:
+    name: {kind: literal_pool, pool: ["/opt/kpg-fixtures/roles/kpgrole"]}
+    apply: {exclude: true}
+    tasks_from: {kind: literal_pool, pool: ["main"]}
+    defaults_from: {kind: literal_pool, pool: ["main"]}
+    vars_from: {kind: literal_pool, pool: ["main"]}
+    handlers_from: {kind: literal_pool, pool: ["main"]}
+
+  import_role:
+    name: {kind: literal_pool, pool: ["/opt/kpg-fixtures/roles/kpgrole"]}
+    tasks_from: {kind: literal_pool, pool: ["main"]}
+    defaults_from: {kind: literal_pool, pool: ["main"]}
+    vars_from: {kind: literal_pool, pool: ["main"]}
+    handlers_from: {kind: literal_pool, pool: ["main"]}
+
   # minutes|seconds are mutually exclusive and both are ints; a random string
   # for either fails on real ansible before the pause ever runs
   pause:

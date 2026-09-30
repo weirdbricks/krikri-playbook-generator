@@ -30,6 +30,16 @@ module KrikriPlaybookGenerator
     # here keeps the seeding out of the compared output.
     TASKS_FILE = "#{FIXTURE_ROOT}/tasks.yml"
 
+    # A minimal role for the include_role/import_role actions, which resolve
+    # and RUN a role rather than reading a single file. It is seeded into
+    # both containers, and the generator names it by absolute path
+    # (ROLE_PATH): a bare `name:` is a role SEARCH that depends on each
+    # engine's own roles/ search path, an absolute path is a path the module
+    # is handed - the same value resolves identically on both sides. Same
+    # reasoning as TASKS_FILE above.
+    ROLE_NAME = "kpgrole"
+    ROLE_PATH = "#{FIXTURE_ROOT}/roles/#{ROLE_NAME}"
+
     SOURCE_DIRS = [
       "#{FIXTURE_ROOT}/dir",
     ]
@@ -72,6 +82,23 @@ module KrikriPlaybookGenerator
         ansible.builtin.debug:
           msg: kpg-fixture-task
       KPG_TASKS_EOF
+      mkdir -p #{ROLE_PATH}/tasks #{ROLE_PATH}/defaults #{ROLE_PATH}/vars #{ROLE_PATH}/handlers
+      cat > #{ROLE_PATH}/tasks/main.yml <<'KPG_ROLE_TASKS_EOF'
+      - name: kpg fixture role task
+        ansible.builtin.debug:
+          msg: kpg-fixture-role
+      KPG_ROLE_TASKS_EOF
+      cat > #{ROLE_PATH}/defaults/main.yml <<'KPG_ROLE_DEFAULTS_EOF'
+      kpg_role_default: one
+      KPG_ROLE_DEFAULTS_EOF
+      cat > #{ROLE_PATH}/vars/main.yml <<'KPG_ROLE_VARS_EOF'
+      kpg_role_var: one
+      KPG_ROLE_VARS_EOF
+      cat > #{ROLE_PATH}/handlers/main.yml <<'KPG_ROLE_HANDLERS_EOF'
+      - name: kpg fixture role handler
+        ansible.builtin.debug:
+          msg: kpg-fixture-role-handler
+      KPG_ROLE_HANDLERS_EOF
       chmod 0755 #{FIXTURE_ROOT}/script.sh
       chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt #{TASKS_FILE}
       BASH
