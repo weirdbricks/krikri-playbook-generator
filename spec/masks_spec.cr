@@ -29,7 +29,8 @@ module KrikriPlaybookGenerator
       other_suffix = %(msg: [Errno 2] No such file or directory: '/work/78/ansible.qgfgwzyx.cfg'\n)
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(other_suffix))
       custom_prefix = %(msg: [Errno 2] No such file or directory: '/work/78/pre_qgfgwzyx.txt'\n)
-      assert(ByteDiff.mask(custom_prefix).includes?("pre_qgfgwzyx"))
+      # a custom prefix is deterministic and stays; only the random 8 chars go
+      assert(ByteDiff.mask(custom_prefix).includes?("pre_<RND>.txt"))
     end
 
     it "sorts the invalid-option list of include_role (random Python set order in real)" do
@@ -39,6 +40,14 @@ module KrikriPlaybookGenerator
       # different membership must still differ
       c = %(msg: Invalid options for ansible.builtin.include_role: apply_bogus,name_bogus\n)
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(c))
+    end
+
+    it "masks the random mkstemp characters of a custom-prefix tempfile name" do
+      a = %(msg: [Errno 2] No such file or directory: '77/tmp_f673j131.txt'\n)
+      b = %(msg: [Errno 2] No such file or directory: '77/tmp_52amfxwl.txt'\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(b.sub("77/", "/work/77/")))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("tmp_", "pre_")))
     end
 
     it "masks which wrong-typed string option include_role reports first (random set order)" do
