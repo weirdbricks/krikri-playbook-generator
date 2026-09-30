@@ -184,5 +184,39 @@ module KrikriPlaybookGenerator
       assert(typo_keys.all? { |key| key == "acb" || key == "bac" })
       refute_empty(typo_keys)
     end
+
+    it "generates a free-form module's whole task body from its pool, with no args" do
+      generator = Generator.new(1, 0.0, ChaosKind.values, free_form_overrides)
+      tasks = generator.generate(ModuleSchema.new("meta", "ansible.builtin"), 10)
+
+      pool = %w[noop flush_handlers clear_facts refresh_inventory]
+      tasks.each do |task|
+        value = task.free_form
+        refute_nil(value)
+        assert_includes(pool, value || "missing free-form value")
+        assert_empty(task.args)
+        refute(task.chaos?)
+      end
+    end
+
+    it "mutates a free-form task body into an invalid action in chaos mode" do
+      generator = Generator.new(1, 100.0, ChaosKind.values, free_form_overrides)
+      tasks = generator.generate(ModuleSchema.new("meta", "ansible.builtin"), 5)
+
+      tasks.each do |task|
+        assert(task.chaos?)
+        assert((task.free_form || "missing").ends_with?("_bogus"))
+        assert_equal([{"free_form", ChaosKind::BadChoice}], task.mutations)
+      end
+    end
+
+    def free_form_overrides : Overrides
+      Overrides.new(<<-YAML)
+        modules:
+          meta:
+            free_form:
+              pool: [noop, flush_handlers, clear_facts, refresh_inventory]
+      YAML
+    end
   end
 end

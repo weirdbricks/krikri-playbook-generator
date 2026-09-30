@@ -130,6 +130,23 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "excludes modules marked expect_failure from the wasted-coverage metric" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "fail", divergent: false, ansible_failed: true,
+        ansible_error: "fatal: [target]: FAILED! => [kpg expected failure]")
+      write_result(dir, "b", "copy", divergent: false, ansible_failed: true,
+        ansible_error: "fatal: [target]: FAILED! => could not find src")
+
+      triage = Triage.new(dir)
+      quality = triage.quality
+      assert_equal(1, quality.size)
+      assert_equal("copy", quality.first.module_name)
+      assert_equal(["fail"], triage.expected_failures)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "reports per-module byte-identical rates" do
       dir = File.tempname("kpg-spec-triage")
       Dir.mkdir_p(dir)

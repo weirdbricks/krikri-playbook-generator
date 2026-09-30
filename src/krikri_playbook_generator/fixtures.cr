@@ -23,6 +23,13 @@ module KrikriPlaybookGenerator
       "#{FIXTURE_ROOT}/dir/inner.txt",
     ]
 
+    # A task file for the import_tasks/include_tasks actions, which resolve
+    # and run a playbook fragment rather than a fixture file. It lives in the
+    # fixture root so it is present in both containers before any playbook
+    # exists - the actions read it at play-parse/run time, and seeding it
+    # here keeps the seeding out of the compared output.
+    TASKS_FILE = "#{FIXTURE_ROOT}/tasks.yml"
+
     SOURCE_DIRS = [
       "#{FIXTURE_ROOT}/dir",
     ]
@@ -59,8 +66,14 @@ module KrikriPlaybookGenerator
         git clone -q --bare "$tmp/w" #{FIXTURE_ROOT}/repo.git
         rm -rf "$tmp"
       fi
+      cat > #{TASKS_FILE} <<'KPG_TASKS_EOF'
+      ---
+      - name: kpg fixture task
+        ansible.builtin.debug:
+          msg: kpg-fixture-task
+      KPG_TASKS_EOF
       chmod 0755 #{FIXTURE_ROOT}/script.sh
-      chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt
+      chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt #{TASKS_FILE}
       BASH
 
     # Best-effort for local (non-podman) runs: the local backend defaults to

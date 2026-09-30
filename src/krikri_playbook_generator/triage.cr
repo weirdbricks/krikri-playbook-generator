@@ -1,4 +1,5 @@
 require "json"
+require "./overrides"
 
 module KrikriPlaybookGenerator
   class TriageError < Exception
@@ -17,7 +18,9 @@ module KrikriPlaybookGenerator
   #   happy-path playbooks FAILED on real ansible (wasted coverage: real
   #   ansible is the reference engine, so if the reference can't even run
   #   the generated task, comparing engines tells you nothing) and the
-  #   first error line explaining why.
+  #   first error line explaining why. Modules whose whole purpose is to
+  #   fail (`fail`) carry an `expect_failure` override and are left out -
+  #   see `expected_failures`.
   # - `rates`: per-module byte-identical rate over all compared playbooks.
   class Triage
     record MutationEntry, option : String, kind : String
@@ -33,7 +36,7 @@ module KrikriPlaybookGenerator
     record Quality, module_name : String, failed : Int32, total : Int32, example_error : String
     record Rate, module_name : String, identical : Int32, total : Int32
 
-    def initialize(@results_dir : String)
+    def initialize(@results_dir : String, @overrides : Overrides = Overrides.load)
     end
 
     def report : Array(Finding)
@@ -57,15 +60,25 @@ module KrikriPlaybookGenerator
 
       result_lines.each do |line|
         next if line.chaos || line.errored
+        next if @overrides.expect_failure?(line.module_name)
         next unless line.ansible_failed
 
         groups[line.module_name] << line
       end
 
       groups.map do |module_name, entries|
-        total = result_lines.count { |line| !line.chaos && !line.errored && line.module_name == module_name }
+        total = result_lines.count do |line|
+          !line.chaos && !line.errored && line.module_name == module_name
+        end
         Quality.new(module_name, entries.size, total, entries.first.ansible_error || "unknown error")
       end.sort_by! { |quality| -quality.failed }
+    end
+
+    # Modules seen in the results that the override table marks as
+    # intentionally failing - reported alongside the quality section so
+    # the exclusion is visible rather than silent.
+    def expected_failures : Array(String)
+      result_lines.map(&.module_name).uniq.select { |name| @overrides.expect_failure?(name) }.sort
     end
 
     def rates : Array(Rate)

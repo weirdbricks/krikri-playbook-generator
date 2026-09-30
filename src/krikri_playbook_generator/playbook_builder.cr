@@ -51,7 +51,7 @@ module KrikriPlaybookGenerator
 
       task_body = {} of YAML::Any => YAML::Any
       task_body[YAML::Any.new("name")] = YAML::Any.new("#{task.module_name} ##{index}")
-      task_body[YAML::Any.new(task.fqcn)] = YAML::Any.new(args)
+      task_body[YAML::Any.new(task.fqcn)] = task.free_form ? YAML::Any.new(task.free_form) : YAML::Any.new(args)
       task_body[YAML::Any.new("register")] = YAML::Any.new("krikri_playbook_generator_result")
       task_body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
 

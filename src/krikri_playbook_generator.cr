@@ -76,7 +76,7 @@ module KrikriPlaybookGenerator
 
   private def self.print_full_report(triage : Triage) : Nil
     print_divergences(triage.report)
-    print_quality(triage.quality)
+    print_quality(triage.quality, triage.expected_failures)
     print_rates(triage.rates)
   end
 
@@ -99,16 +99,18 @@ module KrikriPlaybookGenerator
     end
   end
 
-  private def self.print_quality(quality : Array(Triage::Quality)) : Nil
+  private def self.print_quality(quality : Array(Triage::Quality), expected_failures : Array(String)) : Nil
     puts "== Generator quality (happy-path failures on real ansible) =="
     if quality.empty?
       puts "Every happy-path playbook ran successfully on real ansible."
-      return
+    else
+      quality.each do |entry|
+        puts "#{entry.module_name}: #{entry.failed}/#{entry.total} happy-path playbook(s) failed on real ansible (wasted coverage)"
+        puts "  first error: #{entry.example_error}"
+      end
     end
-
-    quality.each do |entry|
-      puts "#{entry.module_name}: #{entry.failed}/#{entry.total} happy-path playbook(s) failed on real ansible (wasted coverage)"
-      puts "  first error: #{entry.example_error}"
+    unless expected_failures.empty?
+      puts "Not counted as wasted coverage (expected to fail by design): #{expected_failures.join(", ")}"
     end
   end
 

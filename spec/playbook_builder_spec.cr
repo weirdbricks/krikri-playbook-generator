@@ -68,6 +68,32 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "emits a free-form module as a bare string, not an argument map" do
+      dir = File.tempname("kpg-spec")
+      task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")
+      path = PlaybookBuilder.new(dir).build([task]).first
+      doc = YAML.parse(File.read(path)).as_a
+
+      task_hash = doc.first["tasks"].as_a.first.as_h
+      assert_equal("noop", task_hash[YAML::Any.new("ansible.builtin.meta")].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "still marks a free-form chaos task as chaos in its meta.json" do
+      dir = File.tempname("kpg-spec")
+      task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any,
+        [{"free_form", ChaosKind::BadChoice}], "noop_bogus")
+      path = PlaybookBuilder.new(dir).build([task]).first
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+
+      assert_equal("meta", meta["module"].as_s)
+      assert_equal(true, meta["chaos"].as_bool)
+      assert_equal("free_form", meta["mutations"][0]["option"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "clears a previous batch's playbooks when rebuilding into the same directory" do
       dir = File.tempname("kpg-spec")
       Dir.mkdir_p(dir)

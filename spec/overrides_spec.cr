@@ -45,5 +45,47 @@ module KrikriPlaybookGenerator
       assert_equal(["state"], overrides.always("file"))
       assert_empty(overrides.always("copy"))
     end
+
+    it "exposes a module-level free-form pool" do
+      overrides = Overrides.load
+      assert_includes(overrides.free_form("meta"), "noop")
+      assert_empty(overrides.free_form("apt"))
+    end
+
+    it "still reads shell's free_form option as an excluded option, not a module key" do
+      overrides = Overrides.load
+      assert_empty(overrides.free_form("shell"))
+      assert(overrides.excluded?("shell", "free_form"))
+    end
+
+    it "keeps module-level keys out of the per-option override map" do
+      overrides = Overrides.load
+      assert_nil(overrides.for_option("meta", "free_form"))
+      assert_nil(overrides.for_option("fail", "expect_failure"))
+      assert_nil(overrides.for_option("file", "always"))
+      assert_nil(overrides.for_option("copy", "require_one_of"))
+    end
+
+    it "exposes expect_failure for modules whose purpose is to fail" do
+      overrides = Overrides.load
+      assert(overrides.expect_failure?("fail"))
+      refute(overrides.expect_failure?("apt"))
+    end
+
+    it "parses free-form and expect_failure from a custom yaml" do
+      overrides = Overrides.new(<<-YAML)
+        modules:
+          widget:
+            free_form:
+              pool: [go, stop]
+          broken:
+            expect_failure: true
+            msg: {kind: literal_pool, pool: ["boom"]}
+      YAML
+
+      assert_equal(["go", "stop"], overrides.free_form("widget"))
+      assert(overrides.expect_failure?("broken"))
+      refute(overrides.excluded?("broken", "msg"))
+    end
   end
 end

@@ -21,9 +21,12 @@ module KrikriPlaybookGenerator
     property collection : String
     property args : Hash(String, YAML::Any)
     property mutations : Array({String, ChaosKind})
+    # Set for the handful of actions whose task body is a bare string rather
+    # than an argument map (`meta: noop`), in which case `args` is empty.
+    property free_form : String?
 
     def initialize(@module_name, @collection = "ansible.builtin", @args = {} of String => YAML::Any,
-                   @mutations = [] of {String, ChaosKind})
+                   @mutations = [] of {String, ChaosKind}, @free_form = nil)
     end
 
     def fqcn : String
@@ -73,10 +76,27 @@ module KrikriPlaybookGenerator
     end
 
     private def build_task(schema : ModuleSchema) : GeneratedTask
+      return free_form_task(schema) unless @overrides.free_form(schema.module_name).empty?
+
       args = happy_baseline(schema)
       mutations = [] of {String, ChaosKind}
       apply_chaos!(schema, args, mutations)
       GeneratedTask.new(schema.module_name, schema.collection, args, mutations)
+    end
+
+    # Actions like `meta` take a bare string, not an argument map, so the
+    # whole task is generated at once from the module's free-form pool -
+    # valid action first, then (in chaos mode) an invalid one, which is the
+    # only meaningful mutation a free-form body has.
+    private def free_form_task(schema : ModuleSchema) : GeneratedTask
+      value = @overrides.free_form(schema.module_name).sample(@rng)
+      mutations = [] of {String, ChaosKind}
+      if chaos_triggered?
+        value = "#{value}_bogus"
+        mutations << {"free_form", ChaosKind::BadChoice}
+      end
+
+      GeneratedTask.new(schema.module_name, schema.collection, {} of String => YAML::Any, mutations, value)
     end
 
     # The valid baseline: included options get runnable happy-path values,

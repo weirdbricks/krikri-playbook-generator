@@ -29,7 +29,11 @@
 # Module-level keys: `exclude` (list) and `require_one_of` (list of
 # lists). `always` (list) forces options into every happy-path task -
 # needed when omitting the option fails, e.g. `file` without `state`
-# cannot set attributes on an absent path.
+# cannot set attributes on an absent path. `free_form` (a pool) is for
+# the actions whose task body is a bare string instead of an argument map
+# (`meta: noop`); the pool holds valid actions. `expect_failure` (bool)
+# marks a module that is SUPPOSED to fail on real ansible (`fail`), so
+# the quality report doesn't count its failures as wasted coverage.
 #
 # `names:` entries apply by option name to ANY module that doesn't
 # override that option itself; `modules:` entries win over `names:`.
@@ -54,6 +58,7 @@ modules:
     state: {choices: [touch, directory, absent]}
     always: [state]
     src: {exclude: true}
+    recurse: {exclude: true}
     access_time: {exclude: true}
     modification_time: {exclude: true}
     access_time_format: {kind: literal_pool, pool: ["%Y%m%d%H%M.%S"]}
@@ -79,14 +84,21 @@ modules:
     cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
     argv: {exclude: true}
     free_form: {exclude: true}
+    stdin: {exclude: true}
     chdir: {kind: work_dir}
     creates: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
     removes: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
 
+  # `cmd` is only required_one_of [_raw_params, cmd, argv] at runtime, not
+  # `required:` in DOCUMENTATION, so a 50%-random pick leaves it out and the
+  # task dies before reaching the module. `stdin` is a piped-in program
+  # string, not a flag - a random word there is a command-not-found failure.
   shell:
+    always: [cmd]
     cmd: {kind: literal_pool, pool: ["/bin/true", "echo kpg", "id -u", "pwd"]}
     argv: {exclude: true}
     free_form: {exclude: true}
+    stdin: {exclude: true}
     executable: {kind: literal_pool, pool: ["/bin/sh"]}
     chdir: {kind: work_dir}
     creates: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/never-created"]}
@@ -181,23 +193,76 @@ modules:
     split: {kind: literal_pool, pool: [":"]}
     fail_key: {kind: literal_pool, pool: ["true", "false"]}
 
+  # same reason as shell: cmd is a runtime requirement, stdin is a program
   script:
+    always: [cmd]
     cmd: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh", "/opt/kpg-fixtures/script.sh arg1"]}
+    stdin: {exclude: true}
     chdir: {kind: work_dir}
     creates: {kind: literal_pool, pool: ["/tmp/kpg-work/never-created"]}
     removes: {exclude: true}
     decrypt: {exclude: true}
     executable: {kind: literal_pool, pool: ["/bin/sh"]}
 
+  # non_unique is required_if: it needs an explicit gid to pass, and a gid
+  # that's already taken collides instead; gid_min/gid_max are a free-gid
+  # pool and the small ranges the generator would pick are fully allocated
+  # in the containers, leaving groupadd nothing to choose.
   group:
     name: {kind: username}
     gid: {exclude: true}
+    non_unique: {exclude: true}
+    gid_min: {exclude: true}
+    gid_max: {exclude: true}
     local: {exclude: true}
     system: {kind: literal_pool, pool: ["true", "false"]}
 
+  # `use: debian` is NOT the Debian file strategy in ansible-core 2.19:
+  # STRATS maps it to the Systemd strategy (hostnamectl), which fails with
+  # "System has not been booted with systemd as init system" in a plain
+  # container. Left unset, the module picks the platform strategy itself -
+  # FileStrategy (/etc/hostname) on a Debian container whose PID 1 isn't
+  # systemd, which is what the podman templates give us.
   hostname:
     name: {kind: literal_pool, pool: ["kpg-host", "kpg-host2"]}
-    use: {kind: literal_pool, pool: ["debian"]}
+    use: {exclude: true}
+    always: [name]
+
+  # the task body is the action name itself, not an argument map
+  meta:
+    free_form:
+      pool: [noop, flush_handlers, clear_facts, refresh_inventory]
+
+  # question/vtype/value are required_together at runtime, and a key is
+  # required whenever state isn't absent
+  debconf:
+    name: {kind: literal_pool, pool: ["kpgpkg", "kpg-pkg2"]}
+    question: {kind: literal_pool, pool: ["kpg/question"]}
+    vtype: {choices: [string, text, note, boolean, select, error]}
+    value: {kind: literal_pool, pool: ["kpg setting"]}
+    unseen: {kind: literal_pool, pool: ["false"]}
+    always: [question, vtype, value]
+
+  # `file:` is resolved by the engine itself, so it has to point at a task
+  # file seeded into both containers. Absolute, not relative: the playbooks
+  # live in /work inside the container and relative resolution is exactly
+  # the kind of engine difference this tool is looking for, not a property
+  # of the module.
+  import_tasks:
+    file: {kind: literal_pool, pool: ["/opt/kpg-fixtures/tasks.yml"]}
+    free-form: {exclude: true}
+    always: [file]
+
+  include_tasks:
+    file: {kind: literal_pool, pool: ["/opt/kpg-fixtures/tasks.yml"]}
+    free-form: {exclude: true}
+    apply: {exclude: true}
+    always: [file]
+
+  # failing is this module's job; Triage keeps it out of the quality metric
+  fail:
+    expect_failure: true
+    msg: {kind: literal_pool, pool: ["kpg expected failure"]}
 
   set_fact:
     cacheable: {kind: literal_pool, pool: ["false"]}
@@ -275,7 +340,9 @@ modules:
     name: {kind: literal_pool, pool: ["example.com"]}
     key: {kind: literal_pool, pool: ["example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]}
     path: {kind: literal_pool, pool: ["/tmp/kpg-work/known_hosts"]}
+    state: {choices: [present, absent]}
     hash_host: {kind: literal_pool, pool: ["false", "true"]}
+    always: [name, key, path, state]
 
   # the playbooks name this module systemd_service; mirror the systemd overrides
   systemd_service:
