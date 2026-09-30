@@ -57,6 +57,15 @@ module KrikriPlaybookGenerator
         "backup suffixes) differ on every run by construction",
       },
       {
+        Regex.new("(ansible\\.)[a-z0-9_]{8}([^'\"]*)(')"),
+        "\\1<RND>\\2\\3",
+        "tempfile's failure message quotes the name Python's mkstemp/mkdtemp would have " \
+        "picked: the module's default `ansible.` prefix, 8 random characters ([a-z0-9_]) " \
+        "and the suffix. Those 8 characters are random per run on both engines and can " \
+        "never match; only that run is masked (anchored on the prefix and exactly 8 " \
+        "characters, up to the closing quote)",
+      },
+      {
         Regex.new("\\b\\d{13,}\\b"),
         "N",
         "long digit runs are epoch-millis/nonce-class values (task IDs, temp suffixes) " \

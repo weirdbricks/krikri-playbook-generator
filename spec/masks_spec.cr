@@ -20,6 +20,18 @@ module KrikriPlaybookGenerator
       assert(ByteDiff.mask(other).includes?(%("ansible_facts": {"other": 1})))
     end
 
+    it "masks the 8 random characters of a tempfile mkstemp name, and nothing else" do
+      a = %(msg: [Errno 2] No such file or directory: '/work/78/ansible.qgfgwzyx.txt'\n)
+      b = %(msg: [Errno 2] No such file or directory: '/work/78/ansible.abc12_09.txt'\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+
+      # a different directory, prefix or suffix must still differ
+      other_suffix = %(msg: [Errno 2] No such file or directory: '/work/78/ansible.qgfgwzyx.cfg'\n)
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(other_suffix))
+      custom_prefix = %(msg: [Errno 2] No such file or directory: '/work/78/pre_qgfgwzyx.txt'\n)
+      assert(ByteDiff.mask(custom_prefix).includes?("pre_qgfgwzyx"))
+    end
+
     it "masks the per-process set order of convert_bool's valid-boolean list" do
       a = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 0, '1', 'on', 1, 'yes'\n)
       b = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 'yes', 1, 0, 'on', '1'\n)
