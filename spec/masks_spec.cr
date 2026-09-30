@@ -32,6 +32,15 @@ module KrikriPlaybookGenerator
       assert(ByteDiff.mask(custom_prefix).includes?("pre_qgfgwzyx"))
     end
 
+    it "sorts the invalid-option list of include_role (random Python set order in real)" do
+      a = %(msg: Invalid options for ansible.builtin.include_role: vars_from_bogus,apply_bogus,name_bogus\n)
+      b = %(msg: Invalid options for ansible.builtin.include_role: apply_bogus,name_bogus,vars_from_bogus\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      # different membership must still differ
+      c = %(msg: Invalid options for ansible.builtin.include_role: apply_bogus,name_bogus\n)
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(c))
+    end
+
     it "masks the per-process set order of convert_bool's valid-boolean list" do
       a = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 0, '1', 'on', 1, 'yes'\n)
       b = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 'yes', 1, 0, 'on', '1'\n)

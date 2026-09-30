@@ -74,8 +74,15 @@ module KrikriPlaybookGenerator
     ]
 
     def self.mask(text : String) : String
-      MASKS.reduce(text) do |acc, mask|
+      masked = MASKS.reduce(text) do |acc, mask|
         acc.gsub(mask[0], mask[1])
+      end
+      # include_role/import_role list several invalid options in Python
+      # set-iteration order, which is random per real process (string hash
+      # randomization), so compare the list sorted on both sides. Only the
+      # order is normalized; the membership must still match.
+      masked.gsub(/(Invalid options for [\w.]+: )([\w,]+)/) do |_, match|
+        "#{match[1]}#{match[2].split(',').sort.join(',')}"
       end
     end
 

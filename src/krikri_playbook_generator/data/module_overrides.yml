@@ -398,3 +398,12 @@ modules:
     path: {kind: literal_pool, pool: ["/tmp/kpg-work/authorized_keys"]}
     manage_dir: {kind: literal_pool, pool: ["false"]}
     always: [user, key]
+
+  # minutes|seconds are mutually exclusive and both are ints; a random string
+  # for either fails on real ansible before the pause ever runs
+  pause:
+    seconds: {kind: literal_pool, pool: ["0", "1"]}
+    minutes: {exclude: true}
+    prompt: {kind: literal_pool, pool: ["kpg pause"]}
+    echo: {kind: literal_pool, pool: ["true", "false"]}
+    always: [seconds]
