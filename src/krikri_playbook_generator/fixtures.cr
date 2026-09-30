@@ -58,6 +58,7 @@ module KrikriPlaybookGenerator
       printf 'kpg fixture bravo\\n' > #{FIXTURE_ROOT}/src2.txt
       printf 'kpg says {{ 1 + 1 }}\\n' > #{FIXTURE_ROOT}/template.j2
       printf '#!/bin/sh\\necho kpg-fixture-script\\n' > #{FIXTURE_ROOT}/script.sh
+      printf 'kpg_var: 1\\nkpg_list:\\n  - a\\n  - b\\n' > #{FIXTURE_ROOT}/vars.yml
       printf 'inner\\n' > #{FIXTURE_ROOT}/dir/inner.txt
       mkdir -p #{FIXTURE_ROOT}/frags #{WORK_ROOT}/tree
       printf 'frag one\n' > #{FIXTURE_ROOT}/frags/01-a.txt

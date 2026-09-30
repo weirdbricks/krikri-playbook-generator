@@ -430,3 +430,17 @@ modules:
     prompt: {kind: literal_pool, pool: ["kpg pause"]}
     echo: {kind: literal_pool, pool: ["true", "false"]}
     always: [seconds]
+
+  # include_vars needs a real vars file; the schema's free-form pseudo option
+  # is rejected by real ansible when given as a keyword
+  include_vars:
+    free-form: {exclude: true}
+    file: {kind: literal_pool, pool: ["/opt/kpg-fixtures/vars.yml"]}
+    dir: {exclude: true}
+    # directory-only options cannot be combined with `file`
+    depth: {exclude: true}
+    files_matching: {exclude: true}
+    ignore_files: {exclude: true}
+    ignore_unknown_extensions: {exclude: true}
+    extensions: {exclude: true}
+    always: [file]
