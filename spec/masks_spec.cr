@@ -41,6 +41,13 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(c))
     end
 
+    it "masks which wrong-typed string option include_role reports first (random set order)" do
+      a = %([ERROR]: Expected a string for tasks_from but got <class 'x'> instead\n)
+      b = %([ERROR]: Expected a string for vars_from but got <class 'x'> instead\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("'x'", "'y'")))
+    end
+
     it "masks the per-process set order of convert_bool's valid-boolean list" do
       a = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 0, '1', 'on', 1, 'yes'\n)
       b = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 'yes', 1, 0, 'on', '1'\n)

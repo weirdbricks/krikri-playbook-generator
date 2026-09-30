@@ -81,9 +81,15 @@ module KrikriPlaybookGenerator
       # set-iteration order, which is random per real process (string hash
       # randomization), so compare the list sorted on both sides. Only the
       # order is normalized; the membership must still match.
-      masked.gsub(/(Invalid options for [\w.]+: )([\w,]+)/) do |_, match|
+      masked = masked.gsub(/(Invalid options for [\w.]+: )([\w,]+)/) do |_, match|
         "#{match[1]}#{match[2].split(',').sort.join(',')}"
       end
+      # With several wrong-typed string options (defaults_from, handlers_from,
+      # tasks_from, vars_from) real reports whichever its set iteration hits
+      # first: random per process (verified: the same playbook alternates
+      # between tasks_from and vars_from). The option name is masked; the
+      # message text and type still have to match.
+      masked.gsub(/Expected a string for (?:defaults_from|handlers_from|tasks_from|vars_from) but got/, "Expected a string for <OPT> but got")
     end
 
     # Minimal LCS-based line diff. Output is a list of lines prefixed
