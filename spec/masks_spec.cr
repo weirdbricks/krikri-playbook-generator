@@ -82,6 +82,13 @@ module KrikriPlaybookGenerator
       assert_equal(ByteDiff.mask(stamped_a), ByteDiff.mask(stamped_b))
     end
 
+    it "masks the random container hostname in missing_required_lib messages only" do
+      a = "Failed to import the required Python library (libselinux-python) on 390f31e8df6a's Python /usr/bin/python3.13.\n"
+      b = "Failed to import the required Python library (libselinux-python) on f8fe8308b659's Python /usr/bin/python3.13.\n"
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("libselinux-python", "libsemanage-python")))
+    end
+
     it "does not mask short numbers that carry real meaning" do
       text = "rc=2 changed=1 port=22\n"
       assert_equal(text, ByteDiff.mask(text))

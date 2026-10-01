@@ -37,6 +37,14 @@ module KrikriPlaybookGenerator
         "execution by construction; the key itself must still match",
       },
       {
+        Regex.new("(on )[0-9a-f]{12}('s Python)"),
+        "\\1<CONTAINER-HOSTNAME>\\2",
+        "missing_required_lib() embeds platform.node() - the podman container's own " \
+        "random 12-hex hostname - and the two engines run in two different containers, " \
+        "so the hostname can never match by construction; the rest of the message " \
+        "(library name, interpreter path) must still match",
+      },
+      {
         Regex.new("ansible-tmp-\\d+(?:[.\\-]\\d+)*"),
         "ansible-tmp-N",
         "ansible's per-task temp directory embeds an epoch timestamp and a random " \
