@@ -31,6 +31,18 @@ module KrikriPlaybookGenerator
         "disagree byte-for-byte; the membership is fixed and covered by krikri's own specs",
       },
       {
+        Regex.new("(value of fstype must be one of: )[^\\n]*?(, got: )"),
+        "\\1<FSTYPE-SET-ORDER>\\2",
+        "community.general.filesystem builds its fstype choices from a Python set of " \
+        "strings (filesystem.py: `fstypes = set(FILESYSTEMS.keys()) - " \
+        "set(friendly_names.values()) | set(friendly_names.keys())`, then " \
+        "`choices=list(fstypes)`), so the list's order changes per process (string hash " \
+        "randomization) - five consecutive real ansible-playbook runs with the same bad " \
+        "fstype each printed a different order; the membership is fixed and covered by " \
+        "krikri's own specs. Anchored so only the list is masked - the surrounding text " \
+        "and the `got: <value>` tail must still match",
+      },
+      {
         Regex.new("\"delta\": \"\\d+:\\d{2}:\\d{2}(?:\\.\\d+)?\""),
         "\"delta\": \"<DELTA>\"",
         "command/shell results carry the run's duration (delta), different on every " \

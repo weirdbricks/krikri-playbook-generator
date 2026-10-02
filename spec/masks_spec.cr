@@ -72,6 +72,19 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("boolean. Valid", "boolean.  Valid")))
     end
 
+    it "masks the per-process set order of filesystem's fstype choices list" do
+      a = %(msg: Task failed: Module failed: value of fstype must be one of: vfat, reiserfs, ufs, ext4, ocfs2, lvm, xfs, btrfs, swap, f2fs, ext3, ext2, bcachefs, ext4dev, got: 43\n)
+      b = %(msg: Task failed: Module failed: value of fstype must be one of: btrfs, ext4, xfs, bcachefs, ext3, lvm, reiserfs, ocfs2, f2fs, ext2, ext4dev, swap, vfat, ufs, got: 43\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      # the `got:` tail and the surrounding text must still match
+      assert(ByteDiff.mask(a).includes?("<FSTYPE-SET-ORDER>, got: 43"))
+      # a different bad value must still differ
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("got: 43", "got: 44")))
+      # non-filesystem choice lists are not touched
+      untouched = %(msg: value of state must be one of: present, absent, got: bogus\n)
+      assert_equal(untouched, ByteDiff.mask(untouched))
+    end
+
     it "masks ansible temp dir names and timestamps identically" do
       a = "Using module file /root/.ansible/tmp/ansible-tmp-1727612345.123456-123456789012345/AnsiballZ_copy.py\n"
       b = "Using module file /root/.ansible/tmp/ansible-tmp-1727699999.999999-987654321098765/AnsiballZ_copy.py\n"
