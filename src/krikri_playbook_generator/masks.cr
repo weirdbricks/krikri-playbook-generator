@@ -31,6 +31,15 @@ module KrikriPlaybookGenerator
         "disagree byte-for-byte; the membership is fixed and covered by krikri's own specs",
       },
       {
+        Regex.new("\\b[0-9A-F]{16}(:error:[0-9A-F]{8}:)"),
+        "<OPENSSL-THREAD-ID>\\1",
+        "OpenSSL's ERR_print_errors prefixes each queued error line with the hex id of the " \
+        "thread that raised it (crypto/err/err_prn.c: `CRYPTO_THREAD_get_current_id()`), a " \
+        "per-process value that differs on every run and between the two engines' containers; " \
+        "the rest of the line (error code, library, function, reason, source file:line) must " \
+        "still match, so only the 16-hex-digit prefix before `:error:<8 hex>:` is masked",
+      },
+      {
         Regex.new("(value of fstype must be one of: )[^\\n]*?(, got: )"),
         "\\1<FSTYPE-SET-ORDER>\\2",
         "community.general.filesystem builds its fstype choices from a Python set of " \

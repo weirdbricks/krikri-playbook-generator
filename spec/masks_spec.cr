@@ -102,6 +102,13 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("libselinux-python", "libsemanage-python")))
     end
 
+    it "masks the OpenSSL thread-id prefix of queued error lines only" do
+      a = "40778CA7BB7F0000:error:0280007E:Diffie-Hellman routines:dh_builtin_genparams:modulus too small:../crypto/dh/dh_gen.c:169:\n"
+      b = "80D78C48697F0000:error:0280007E:Diffie-Hellman routines:dh_builtin_genparams:modulus too small:../crypto/dh/dh_gen.c:169:\n"
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("0280007E", "0280007F")))
+    end
+
     it "does not mask short numbers that carry real meaning" do
       text = "rc=2 changed=1 port=22\n"
       assert_equal(text, ByteDiff.mask(text))
