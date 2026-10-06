@@ -639,3 +639,61 @@ modules:
   yum_versionlock:
     name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
     always: [name]
+
+  # --- community.crypto / openssl info modules need REAL PEM material:
+  # the info modules parse the file on the target, so a random path
+  # failed every happy path on real ansible (kpg40: 15/15 wasted). The
+  # fixtures are a matching key/CSR/cert set seeded by Fixtures.
+  openssl_privatekey_info:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/privatekey.pem"]}
+    content: {exclude: true}
+    passphrase: {exclude: true}
+    always: [path]
+
+  openssl_publickey_info:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/publickey.pem"]}
+    content: {exclude: true}
+    format: {kind: literal_pool, pool: ["PEM"]}
+    always: [path]
+
+  openssl_csr_info:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/csr.pem"]}
+    content: {exclude: true}
+    always: [path]
+
+  x509_certificate_info:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/cert.pem"]}
+    content: {exclude: true}
+    always: [path]
+
+  # x509_certificate's happy path is a selfsigned issuance from the
+  # fixture CSR and its matching key
+  x509_certificate:
+    path: {kind: work_path}
+    csr_path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/csr.pem"]}
+    privatekey_path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/privatekey.pem"]}
+    provider: {kind: literal_pool, pool: ["selfsigned"]}
+    selfsigned_digest: {kind: literal_pool, pool: ["sha256"]}
+    ownca_path: {exclude: true}
+    ownca_privatekey_path: {exclude: true}
+    ownca_content: {exclude: true}
+    content: {exclude: true}
+    invalid_at: {exclude: true}
+    not_before: {exclude: true}
+    not_after: {exclude: true}
+    always: [path, csr_path, privatekey_path, provider]
+
+  # synchronize's group/owner are rsync-preserve BOOLS, not names - the
+  # global owner/group overrides set "root" and every happy path died in
+  # argument validation (kpg40: 7/7 wasted coverage)
+  synchronize:
+    src: {kind: source_path}
+    dest: {kind: work_path}
+    group: {exclude: true}
+    owner: {exclude: true}
+    private_key: {exclude: true}
+    link_dest: {exclude: true}
+    rsync_path: {exclude: true}
+    rsync_opts: {exclude: true}
+    ssh_args: {exclude: true}
+    always: [src, dest]
