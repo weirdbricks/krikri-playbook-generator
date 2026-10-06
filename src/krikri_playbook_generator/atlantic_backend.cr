@@ -99,7 +99,13 @@ module KrikriPlaybookGenerator
     PROFILES = {
       "rpm" => Profile.new(
         image: IMAGE_ROCKY,
-        packages: "python3-dnf python3-libdnf5 python3-dnf-plugin-versionlock dnf5",
+        # python3-libdnf5 and dnf5 do not exist in Rocky 10's repos (the
+        # RHEL family stays on dnf4 - verified live against BaseOS,
+        # AppStream, CRB and EPEL), so real ansible's dnf5 module fails at
+        # its import probe on these VMs; that failure is still comparable
+        # byte-for-byte (krikri probes the same python path), only the
+        # happy paths count as wasted coverage. versionlock IS in BaseOS.
+        packages: "python3-dnf-plugin-versionlock",
         prep: "",
       ),
       "db" => Profile.new(
@@ -388,7 +394,16 @@ module KrikriPlaybookGenerator
                                   done : Channel(NamedTuple(profile: String, results: Array(NamedTuple(playbook: String, ansible: Cmd::Result, krikri: Cmd::Result))))) : Nil
       results = [] of NamedTuple(playbook: String, ansible: Cmd::Result, krikri: Cmd::Result)
       begin
-        vm = provision_profile(creds, profile)
+        begin
+          vm = provision_profile(creds, profile)
+        rescue e : AtlanticProvisionError
+          # first-boot flakes happen (an Ubuntu VM once never reached SSH in
+          # 600s while an identical one came up immediately); a retry on a
+          # fresh VM is cheap next to a whole profile of errored results.
+          # The failed attempt's VM/key are still tracked and torn down.
+          STDERR.puts "warning: profile #{profile} provisioning failed (#{e.message}) - retrying once on a fresh VM"
+          vm = provision_profile(creds, profile)
+        end
         @profiles_used << profile
         playbooks.each do |path|
           outcome = run_playbook(vm, path)
