@@ -1,5 +1,6 @@
 require "./spec_helper"
 require "../src/krikri_playbook_generator/runner"
+require "../src/krikri_playbook_generator/atlantic_backend"
 require "../src/krikri_playbook_generator/playbook_builder"
 require "../src/krikri_playbook_generator/generator"
 require "file_utils"

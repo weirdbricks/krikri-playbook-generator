@@ -32,6 +32,7 @@ module KrikriPlaybookGenerator
     property krikri_bin : String
     property? allow_mutation : Bool
     property? run_on_podman : Bool
+    property? run_on_atlantic : Bool
     property? keep_going : Bool
     property engine_timeout : Int32
 
@@ -41,6 +42,7 @@ module KrikriPlaybookGenerator
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @allow_mutation = false, @run_on_podman = false,
+                   @run_on_atlantic = false,
                    @keep_going = false, @engine_timeout = 120)
     end
 
@@ -78,6 +80,7 @@ module KrikriPlaybookGenerator
         dsl.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = expand_tilde(v) }
         dsl.on("--allow-mutation", "run without --check: real modules may actually change the local host") { opts.allow_mutation = true }
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
+        dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
         dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
       end
@@ -88,6 +91,7 @@ module KrikriPlaybookGenerator
       opts.out_dir = expand_path(opts.out_dir)
       opts.results_dir = expand_path(opts.results_dir)
 
+      raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
       parse_chaos_kinds(opts.chaos_kinds)
       validate!(opts)
 

@@ -169,6 +169,7 @@ module KrikriPlaybookGenerator
                    @ansible_playbook_bin : String = "ansible-playbook",
                    @krikri_bin : String = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @check_mode : Bool = true, @run_on_podman : Bool = false,
+                   @run_on_atlantic : Bool = false,
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120)
     end
 
@@ -176,11 +177,51 @@ module KrikriPlaybookGenerator
       if @run_on_podman && !PodmanBackend.available?
         raise PodmanProvisionError.new("--run-on-podman was requested but `podman` isn't on PATH")
       end
+      if @run_on_atlantic && !AtlanticBackend.available?
+        raise AtlanticProvisionError.new("--run-on-atlantic was requested but the KeePass credential source isn't available")
+      end
 
       Dir.mkdir_p(@results_dir)
-      results = @run_on_podman ? run_via_podman : run_locally
+      results = if @run_on_atlantic
+                  run_via_atlantic
+                elsif @run_on_podman
+                  run_via_podman
+                else
+                  run_locally
+                end
       write_results(results)
       results
+    end
+
+    # Groups the batch by Atlantic profile (via each playbook's meta sidecar
+    # module name) and lets the backend run one VM per profile. Unlisted
+    # modules are a caller bug - refuse rather than silently running them
+    # somewhere that can't satisfy their happy path.
+    private def run_via_atlantic : Array(PlaybookResult)
+      groups = Hash(String, Array(String)).new
+      @playbook_paths.each do |path|
+        # doc's own `module` field (and therefore the meta sidecar) is the
+        # short name even when the schema was requested by FQCN
+        module_name = load_meta(path).try(&.module_name).try(&.split(".").last)
+        profile = module_name.try { |name| AtlanticBackend::PROFILE_FOR_MODULE[name]? }
+        raise AtlanticProvisionError.new("playbook #{File.basename(path)} (module #{module_name.inspect}) has no Atlantic profile") unless profile
+        (groups[profile.not_nil!] ||= [] of String) << path
+      end
+
+      backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts)
+      backend.run_groups(groups).map do |entry|
+        meta = load_meta(entry[:playbook])
+        # a profile that never provisioned must not look like a matched pair
+        # of engine failures - record it as an errored result instead
+        if entry[:ansible].rc == -1 && entry[:krikri].rc == -1 &&
+           entry[:ansible].stderr.includes?("profile provisioning failed")
+          PlaybookResult.errored(entry[:playbook], meta, entry[:ansible].stderr)
+        else
+          PlaybookResult.new(entry[:playbook],
+            to_engine_run("ansible", entry[:ansible]),
+            to_engine_run("krikri", entry[:krikri]), meta)
+        end
+      end
     end
 
     private def run_via_podman : Array(PlaybookResult)

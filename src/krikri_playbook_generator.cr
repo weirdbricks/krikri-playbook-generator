@@ -17,10 +17,10 @@ module KrikriPlaybookGenerator
       end
       playbooks = PlaybookBuilder.new(opts.out_dir).build(tasks)
 
-      if opts.run_on_podman?
+      if opts.run_on_podman? || opts.run_on_atlantic?
         results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
-          opts.krikri_bin, run_on_podman: true, keep_going: opts.keep_going?,
-          engine_timeout: opts.engine_timeout).run
+          opts.krikri_bin, run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
+          keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout).run
         print_run_summary(results)
         print_full_report(Triage.new(opts.results_dir))
         divergences?(results) ? 1 : 0
@@ -32,6 +32,7 @@ module KrikriPlaybookGenerator
       playbooks = playbook_paths_for_run(opts)
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, check_mode: !opts.allow_mutation?, run_on_podman: opts.run_on_podman?,
+        run_on_atlantic: opts.run_on_atlantic?,
         keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout).run
       print_run_summary(results)
       divergences?(results) ? 1 : 0
@@ -50,6 +51,9 @@ module KrikriPlaybookGenerator
     STDERR.puts "error: #{e.message}"
     1
   rescue e : PodmanProvisionError
+    STDERR.puts "error: #{e.message}"
+    1
+  rescue e : AtlanticProvisionError
     STDERR.puts "error: #{e.message}"
     1
   end
