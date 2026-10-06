@@ -69,6 +69,8 @@ module KrikriPlaybookGenerator
       printf 'tree b\n' > #{WORK_ROOT}/tree/b.conf
       printf 'hidden\n' > #{WORK_ROOT}/tree/.hidden
       tar -C #{FIXTURE_ROOT}/dir -cf #{FIXTURE_ROOT}/archive.tar inner.txt
+      printf 'FROM alpine:3.20\\nRUN touch /kpg-built\\n' > #{FIXTURE_ROOT}/Dockerfile
+      printf 'services:\\n  kpg-svc:\\n    image: alpine:3.20\\n    command: sleep 1\\n' > #{FIXTURE_ROOT}/compose.yml
       if command -v git >/dev/null 2>&1 && [ ! -d #{FIXTURE_ROOT}/repo.git ]; then
         export GIT_AUTHOR_NAME=kpg GIT_AUTHOR_EMAIL=kpg@example.com GIT_COMMITTER_NAME=kpg GIT_COMMITTER_EMAIL=kpg@example.com
         export GIT_AUTHOR_DATE='2020-01-01T00:00:00Z' GIT_COMMITTER_DATE='2020-01-01T00:00:00Z'

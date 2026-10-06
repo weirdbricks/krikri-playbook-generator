@@ -444,3 +444,198 @@ modules:
     ignore_unknown_extensions: {exclude: true}
     extensions: {exclude: true}
     always: [file]
+
+  # --- real-host (Atlantic) profiles: daemons and kernel modules live on
+  # the disposable VMs, so these pin the connection-ish options to the
+  # services the profile prep guarantees (see AtlanticBackend::PROFILES).
+
+  mysql_db:
+    login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
+    login_user: {kind: literal_pool, pool: ["root"]}
+    login_host: {exclude: true}
+    login_port: {exclude: true}
+    login_password: {exclude: true}
+    config_file: {exclude: true}
+    connect_timeout: {exclude: true}
+    collation: {exclude: true}
+    encoding: {kind: literal_pool, pool: ["utf8mb4"]}
+    always: [name]
+
+  mysql_user:
+    login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
+    login_user: {kind: literal_pool, pool: ["root"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    config_file: {exclude: true}
+    host: {kind: literal_pool, pool: ["localhost"]}
+    password: {kind: literal_pool, pool: ["kpg-pass-1", "kpg-pass-2"]}
+    always: [name]
+
+  mysql_info:
+    login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
+    login_user: {kind: literal_pool, pool: ["root"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    config_file: {exclude: true}
+    filter: {exclude: true}
+
+  mysql_variables:
+    login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
+    login_user: {kind: literal_pool, pool: ["root"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    config_file: {exclude: true}
+
+  mysql_query:
+    login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
+    login_user: {kind: literal_pool, pool: ["root"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    query: {kind: literal_pool, pool: ["SELECT 1 AS kpg_q", "SELECT CURRENT_USER()"]}
+    single_row: {kind: literal_pool, pool: ["true", "false"]}
+    always: [query]
+
+  postgresql_db:
+    login_unix_socket: {kind: literal_pool, pool: ["/var/run/postgresql"]}
+    login_user: {kind: literal_pool, pool: ["postgres"]}
+    login_host: {exclude: true}
+    login_port: {exclude: true}
+    login_password: {exclude: true}
+    ssl_mode: {exclude: true}
+    encoding: {kind: literal_pool, pool: ["UTF8"]}
+    always: [name]
+
+  postgresql_user:
+    login_unix_socket: {kind: literal_pool, pool: ["/var/run/postgresql"]}
+    login_user: {kind: literal_pool, pool: ["postgres"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    password: {kind: literal_pool, pool: ["kpg-pass-1", "kpg-pass-2"]}
+    always: [name]
+
+  postgresql_privs:
+    login_unix_socket: {kind: literal_pool, pool: ["/var/run/postgresql"]}
+    login_user: {kind: literal_pool, pool: ["postgres"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    # privs on the seeded fixture objects; db/roles/type/objs are the
+    # runtime-required quartet
+    db: {kind: literal_pool, pool: ["kpgdb"]}
+    roles: {kind: literal_pool, pool: ["kpguser"]}
+    type: {kind: literal_pool, pool: ["database"]}
+    objs: {kind: literal_pool, pool: ["kpgdb"]}
+    always: [db, roles, type, objs]
+
+  postgresql_query:
+    login_unix_socket: {kind: literal_pool, pool: ["/var/run/postgresql"]}
+    login_user: {kind: literal_pool, pool: ["postgres"]}
+    login_host: {exclude: true}
+    login_password: {exclude: true}
+    login_db: {kind: literal_pool, pool: ["kpgdb"]}
+    query: {kind: literal_pool, pool: ["SELECT 1 AS kpg_q", "SELECT CURRENT_USER()"]}
+    always: [login_db, query]
+
+  dnf:
+    name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
+    state: {kind: literal_pool, pool: ["present", "latest"]}
+    conf_file: {exclude: true}
+    disable_excludes: {exclude: true}
+    download_dir: {exclude: true}
+    download_only: {exclude: true}
+    enable_plugin: {exclude: true}
+    disable_plugin: {exclude: true}
+    disablerepo: {exclude: true}
+    enablerepo: {exclude: true}
+    releasever: {exclude: true}
+    use_backend: {exclude: true}
+    install_repoquery: {exclude: true}
+    installroot: {exclude: true}
+    always: [name, state]
+
+  docker_image:
+    name: {kind: literal_pool, pool: ["alpine:3.20", "busybox:latest"]}
+    source: {kind: literal_pool, pool: ["pull"]}
+    repository: {exclude: true}
+    always: [name, source]
+
+  docker_image_build:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures"]}
+    name: {kind: literal_pool, pool: ["kpg-built:latest", "kpg-built:2"]}
+    always: [path, name]
+
+  docker_container:
+    image: {kind: literal_pool, pool: ["alpine:3.20"]}
+    command: {kind: literal_pool, pool: ["sleep 60"]}
+    network_mode: {kind: literal_pool, pool: ["bridge"]}
+    always: [image, name]
+
+  docker_login:
+    registry_url: {kind: literal_pool, pool: ["localhost:5000"]}
+    username: {kind: literal_pool, pool: ["kpg"]}
+    password: {kind: literal_pool, pool: ["kpg-pass"]}
+    always: [username, password]
+
+  docker_network:
+    driver: {kind: literal_pool, pool: ["bridge"]}
+    always: [name]
+
+  docker_network_info:
+    always: [name]
+
+  docker_compose_v2:
+    definition: {kind: literal_pool, pool: ["/opt/kpg-fixtures/compose.yml"]}
+    project_src: {kind: work_dir}
+    build: {exclude: true}
+    always: [definition, project_src]
+
+  podman_image:
+    name: {kind: literal_pool, pool: ["docker.io/library/alpine:3.20", "docker.io/library/busybox:latest"]}
+    executable: {kind: literal_pool, pool: ["podman"]}
+    always: [name]
+
+  zfs:
+    name: {kind: literal_pool, pool: ["kpgpool/kpgds", "kpgpool/kpgds2"]}
+    always: [name]
+
+  snap:
+    name: {kind: literal_pool, pool: ["core20"]}
+    classic: {kind: literal_pool, pool: ["false"]}
+    always: [name]
+
+  rabbitmq_plugin:
+    new_only: {kind: literal_pool, pool: ["true"]}
+    prefix: {kind: literal_pool, pool: ["rabbitmq_"]}
+    always: [name]
+
+  rabbitmq_user:
+    password: {kind: literal_pool, pool: ["kpg-pass-1", "kpg-pass-2"]}
+    tags: {kind: literal_pool, pool: ["kpg-tag"]}
+    vhost: {kind: literal_pool, pool: ["/"]}
+    always: [name, password]
+
+  virt_net:
+    name: {kind: literal_pool, pool: ["kpgnet"]}
+    command: {kind: literal_pool, pool: ["define"]}
+    state: {exclude: true}
+    autostart: {exclude: true}
+    xml: {kind: literal_pool, pool: ["<network><name>kpgnet</name><bridge name='kpgbr0'/><forward mode='nat'/><ip address='192.168.123.1' netmask='255.255.255.0'></ip></network>"]}
+    always: [name, command, xml]
+
+  nsupdate:
+    server: {kind: literal_pool, pool: ["127.0.0.1"]}
+    zone: {kind: literal_pool, pool: ["kpg-test.zone"]}
+    type: {kind: literal_pool, pool: ["A"]}
+    value: {kind: literal_pool, pool: ["10.0.0.1", "10.0.0.2"]}
+    key_name: {exclude: true}
+    key_secret: {exclude: true}
+    key_algorithm: {exclude: true}
+    port: {exclude: true}
+    always: [server, zone, type, value]
+
+  dnf_versionlock:
+    name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
+    always: [name]
+
+  yum_versionlock:
+    name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
+    always: [name]
