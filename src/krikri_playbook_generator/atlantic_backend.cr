@@ -45,6 +45,7 @@ module KrikriPlaybookGenerator
     LOCATION     = "USEAST1"
     IMAGE_DEBIAN = "Debian-13.0.0_64bit"
     IMAGE_ROCKY  = "Rocky-10.0_64bit"
+    IMAGE_UBUNTU = "ubuntu-24.04_64bit"
 
     # Byte-parity needs the same ansible-core everywhere (the podman path
     # asserts 2.19.11); pip pins it on the VMs too.
@@ -124,10 +125,16 @@ module KrikriPlaybookGenerator
         PREP
       ),
       "misc" => Profile.new(
-        image: IMAGE_DEBIAN,
-        packages: "zfsutils-linux snapd rabbitmq-server python3-pika libvirt-daemon-system libvirt-clients python3-libvirt bind9 python3-dnspython",
+        # Ubuntu, not Debian 13: the Debian image's running kernel has no
+        # matching headers in the current repo (6.12.43 installed vs
+        # 6.12.107+ in the pool), so zfs-dkms can never build; Ubuntu 24.04
+        # ships the zfs module in its stock linux-modules-extra. Its glibc
+        # (2.39) still satisfies the binary's 2.38 maximum.
+        image: IMAGE_UBUNTU,
+        packages: "zfsutils-linux linux-modules-extra-$(uname -r) snapd rabbitmq-server python3-pika libvirt-daemon-system libvirt-clients python3-libvirt bind9 python3-dnspython",
         prep: <<-PREP
-          modprobe zfs || true
+          depmod -a
+          modprobe zfs
           if ! zpool list kpgpool >/dev/null 2>&1; then
             mkdir -p /tmp/kpg-zfs
             truncate -s 128M /tmp/kpg-zfs/pool.img
@@ -449,12 +456,12 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def wait_ssh(vm : Vm, timeout : Float64 = 420.0) : Nil
+    private def wait_ssh(vm : Vm, timeout : Float64 = 600.0) : Nil
       deadline = Time.instant + timeout.seconds
       loop do
         result = Cmd.run("timeout", ["60", "ssh"] + vm.ssh_base + ["root@#{vm.ip}", "echo up"], timeout: 70.0)
         return if result.rc == 0
-        raise AtlanticProvisionError.new("SSH never came up on #{vm.ip}") if Time.instant > deadline
+        raise AtlanticProvisionError.new("SSH never came up on #{vm.ip} after #{timeout.to_i}s") if Time.instant > deadline
         sleep 10.seconds
       end
     end
@@ -489,10 +496,13 @@ module KrikriPlaybookGenerator
         if command -v apt-get >/dev/null; then
           rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
           dpkg --configure -a
-          # zfsutils-linux lives in contrib; deb822 (debian.sources) and
-          # classic sources.list both need the component added
-          sed -i 's/^Components:.*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
-          sed -i 's/ main$/ main contrib non-free non-free-firmware/' /etc/apt/sources.list 2>/dev/null || true
+          # zfsutils-linux lives in contrib on Debian; deb822 (debian.sources)
+          # and classic sources.list both need the component added. Ubuntu
+          # has no contrib - leave its sources alone.
+          if grep -qi debian /etc/os-release; then
+            sed -i 's/^Components:.*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+            sed -i 's/main non-free-firmware/main contrib non-free non-free-firmware/' /etc/apt/sources.list 2>/dev/null || true
+          fi
           apt-get update -qq
           apt-get install -y -qq python3 python3-pip rsync sudo >/dev/null
           pip3 install --quiet --break-system-packages #{ANSIBLE_CORE_PIN}
