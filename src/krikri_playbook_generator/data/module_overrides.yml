@@ -697,3 +697,15 @@ modules:
     rsync_opts: {exclude: true}
     ssh_args: {exclude: true}
     always: [src, dest]
+
+  # sudoers writes its file via `path` (default /etc/sudoers.d/...); a
+  # random relative path failed 10/14 happy paths on real ansible (kpg42)
+  sudoers:
+    path: {kind: work_path}
+
+  # dpkg_divert diverts an EXISTING file; a random path failed 4/14 happy
+  # paths on real ansible (kpg42). The fixture file is harmless to divert.
+  dpkg_divert:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/opt/kpg-fixtures/src2.txt"]}
+    divert: {kind: work_path}
+    always: [path]
