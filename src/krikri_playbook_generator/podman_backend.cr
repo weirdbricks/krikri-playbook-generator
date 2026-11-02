@@ -42,7 +42,7 @@ module KrikriPlaybookGenerator
     IMAGE                    = "docker.io/library/debian:trixie-slim"
     EXPECTED_ANSIBLE_VERSION = "2.19.11"
     REAL_PACKAGES            = "ansible python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
-    KRIKRI_RUNTIME_LIBS      = "libxml2 libssl3 libyaml-0-2 libpcre2-8-0 python3-cryptography python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
+    KRIKRI_RUNTIME_LIBS      = "libxml2 libssl3 openssl libyaml-0-2 libpcre2-8-0 python3-cryptography python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
     INVENTORY                = "target ansible_connection=local\n"
     ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
 
@@ -59,7 +59,7 @@ module KrikriPlaybookGenerator
       result.stdout.lines.reject(&.blank?)
     end
 
-    def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120)
+    def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false)
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = "kpg-tpl-real#{@suffix}"
       @name_krikri = "kpg-tpl-krikri#{@suffix}"
@@ -104,14 +104,16 @@ module KrikriPlaybookGenerator
       begin
         start_from_image(@image_real, real)
         created << real
-        start_from_image(@image_krikri, krikri)
+        # --control: the "krikri" side is a second real-ansible container, so any
+        # divergence is run-to-run noise or a harness asymmetry, never krikri.
+        start_from_image(@control ? @image_real : @image_krikri, krikri)
         created << krikri
 
         copy_playbook(playbook_path, real)
         copy_playbook(playbook_path, krikri)
 
         {ansible: exec_engine(real, "ansible-playbook", playbook_path),
-         krikri:  exec_engine(krikri, "/opt/krikri/bin/krikri-playbook", playbook_path)}
+         krikri:  exec_engine(krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", playbook_path)}
       ensure
         unless created.empty?
           Cmd.run("podman", ["rm", "-f"] + created, timeout: 180.0)

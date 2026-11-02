@@ -34,6 +34,7 @@ module KrikriPlaybookGenerator
     property? run_on_podman : Bool
     property? run_on_atlantic : Bool
     property? keep_going : Bool
+    property? control : Bool
     property engine_timeout : Int32
 
     def initialize(@command, @modules = nil, @seed = 42, @count = 100,
@@ -43,7 +44,7 @@ module KrikriPlaybookGenerator
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @allow_mutation = false, @run_on_podman = false,
                    @run_on_atlantic = false,
-                   @keep_going = false, @engine_timeout = 120)
+                   @keep_going = false, @engine_timeout = 120, @control = false)
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -56,13 +57,7 @@ module KrikriPlaybookGenerator
     def self.parse(argv : Array(String)) : Options
       raise InvalidOptionsError.new("missing command (generate|run|report)") if argv.empty?
 
-      command = case argv[0]
-                when "generate" then Command::Generate
-                when "run"      then Command::Run
-                when "report"   then Command::Report
-                else
-                  raise InvalidOptionsError.new("unknown command #{argv[0].inspect} (expected generate|run|report)")
-                end
+      command = parse_command(argv[0])
 
       opts = Options.new(command)
       rest = argv[1..]
@@ -81,6 +76,7 @@ module KrikriPlaybookGenerator
         dsl.on("--allow-mutation", "run without --check: real modules may actually change the local host") { opts.allow_mutation = true }
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
         dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
+        dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }
         dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
       end
@@ -92,10 +88,21 @@ module KrikriPlaybookGenerator
       opts.results_dir = expand_path(opts.results_dir)
 
       raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
+      raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
       parse_chaos_kinds(opts.chaos_kinds)
       validate!(opts)
 
       opts
+    end
+
+    private def self.parse_command(arg : String) : Command
+      case arg
+      when "generate" then Command::Generate
+      when "run"      then Command::Run
+      when "report"   then Command::Report
+      else
+        raise InvalidOptionsError.new("unknown command #{arg.inspect} (expected generate|run|report)")
+      end
     end
 
     private def self.validate!(opts : Options) : Nil

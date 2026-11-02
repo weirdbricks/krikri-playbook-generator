@@ -107,7 +107,7 @@ the playbooks (still written to `--out` for later review either way),
 immediately runs them against both engines inside throwaway containers
 (a fresh pair per playbook), prints `[DIVERGENT]`/`[IDENTICAL]`/
 `[ERROR] <path>` per playbook as it goes, then the full report. **Exit
-code is non-zero iff divergences exist.**
+code is 2 iff divergences exist, 1 when the tool itself failed.**
 
     krikri-playbook-generator generate --modules apt,copy,user,cron --seed 42 \
       --count 500 --chaos-percentage 3 --out playbooks/ \

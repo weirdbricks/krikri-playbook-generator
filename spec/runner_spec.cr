@@ -60,6 +60,14 @@ module KrikriPlaybookGenerator
       assert_nil(result.signature)
     end
 
+    it "records a module real ansible cannot load as an error, not a divergence" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      missing = "[ERROR]: couldn't resolve module/action 'community.docker.docker_image'. This often indicates a misspelling"
+      result = Runner::PlaybookResult.new("p.yml", engine_run(nil, rc: 4, stderr: missing), engine_run(recap, stdout: "ok"), nil)
+      refute(result.divergent?)
+      assert((result.error || "").includes?("harness gap"))
+    end
+
     it "is divergent when the masked stdout differs even with matching recaps" do
       recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
       result = Runner::PlaybookResult.new("p.yml",

@@ -4,7 +4,7 @@ require "../src/krikri_playbook_generator/atlantic_backend"
 module KrikriPlaybookGenerator
   describe AtlanticBackend do
     it "maps every profile module to a defined profile" do
-      missing = AtlanticBackend::PROFILE_FOR_MODULE.values.uniq.reject { |profile| AtlanticBackend::PROFILES.has_key?(profile) }
+      missing = AtlanticBackend::PROFILE_FOR_MODULE.values.uniq!.reject { |profile| AtlanticBackend::PROFILES.has_key?(profile) }
       assert_equal [] of String, missing
     end
 

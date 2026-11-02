@@ -236,11 +236,11 @@ module KrikriPlaybookGenerator
 
     def free_form_overrides : Overrides
       Overrides.new(<<-YAML)
-        modules:
-          meta:
-            free_form:
-              pool: [noop, flush_handlers, clear_facts, refresh_inventory]
-      YAML
+          modules:
+            meta:
+              free_form:
+                pool: [noop, flush_handlers, clear_facts, refresh_inventory]
+        YAML
     end
   end
 end

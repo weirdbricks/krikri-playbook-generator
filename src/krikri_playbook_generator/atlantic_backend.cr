@@ -60,35 +60,35 @@ module KrikriPlaybookGenerator
     # path; Runner refuses to dispatch unlisted modules with
     # --run-on-atlantic rather than guessing.
     PROFILE_FOR_MODULE = {
-      "dnf"             => "rpm",
-      "dnf5"            => "rpm",
-      "yum"             => "rpm",
-      "yum_repository"  => "rpm",
-      "dnf_versionlock" => "rpm",
-      "yum_versionlock" => "rpm",
-      "mysql_db"        => "db",
-      "mysql_user"      => "db",
-      "mysql_info"      => "db",
-      "mysql_query"     => "db",
-      "mysql_variables" => "db",
-      "postgresql_db"   => "db",
-      "postgresql_user" => "db",
-      "postgresql_privs" => "db",
-      "postgresql_query" => "db",
-      "docker_container" => "containers",
-      "docker_image"     => "containers",
-      "docker_image_build" => "containers",
-      "docker_login"       => "containers",
-      "docker_network"     => "containers",
+      "dnf"                 => "rpm",
+      "dnf5"                => "rpm",
+      "yum"                 => "rpm",
+      "yum_repository"      => "rpm",
+      "dnf_versionlock"     => "rpm",
+      "yum_versionlock"     => "rpm",
+      "mysql_db"            => "db",
+      "mysql_user"          => "db",
+      "mysql_info"          => "db",
+      "mysql_query"         => "db",
+      "mysql_variables"     => "db",
+      "postgresql_db"       => "db",
+      "postgresql_user"     => "db",
+      "postgresql_privs"    => "db",
+      "postgresql_query"    => "db",
+      "docker_container"    => "containers",
+      "docker_image"        => "containers",
+      "docker_image_build"  => "containers",
+      "docker_login"        => "containers",
+      "docker_network"      => "containers",
       "docker_network_info" => "containers",
       "docker_compose_v2"   => "containers",
       "podman_image"        => "containers",
-      "zfs"            => "misc",
-      "snap"           => "misc",
-      "rabbitmq_plugin" => "misc",
-      "rabbitmq_user"  => "misc",
-      "virt_net"       => "misc",
-      "nsupdate"       => "misc",
+      "zfs"                 => "misc",
+      "snap"                => "misc",
+      "rabbitmq_plugin"     => "misc",
+      "rabbitmq_user"       => "misc",
+      "virt_net"            => "misc",
+      "nsupdate"            => "misc",
     }
 
     record Profile, image : String, packages : String, prep : String
@@ -111,15 +111,15 @@ module KrikriPlaybookGenerator
       "db" => Profile.new(
         image: IMAGE_DEBIAN,
         packages: "mariadb-server python3-pymysql postgresql python3-psycopg2",
-        prep: <<-PREP
+        prep: <<-'PREP'
           systemctl enable --now mariadb
           systemctl enable --now postgresql
           PGHBA=$(ls /etc/postgresql/*/main/pg_hba.conf | head -1)
-          sed -i '1i local all all trust\\nhost all all 127.0.0.1/32 trust\\nhost all all ::1/128 trust' "$PGHBA"
+          sed -i '1i local all all trust\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust' "$PGHBA"
           systemctl reload postgresql
           su postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='kpgdb'\" | grep -q 1 || psql -c 'CREATE DATABASE kpgdb'"
           su postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='kpguser'\" | grep -q 1 || psql -c 'CREATE USER kpguser'"
-        PREP
+          PREP
       ),
       "containers" => Profile.new(
         image: IMAGE_DEBIAN,
@@ -128,7 +128,7 @@ module KrikriPlaybookGenerator
           systemctl enable --now docker
           docker pull alpine:3.20 >/dev/null 2>&1 || true
           docker pull busybox:latest >/dev/null 2>&1 || true
-        PREP
+          PREP
       ),
       "misc" => Profile.new(
         # Ubuntu, not Debian 13: the Debian image's running kernel has no
@@ -157,7 +157,7 @@ module KrikriPlaybookGenerator
           };
           KPG_BIND_EOF
           systemctl enable --now named
-        PREP
+          PREP
       ),
     }
 
@@ -197,10 +197,10 @@ module KrikriPlaybookGenerator
       raise AtlanticProvisionError.new("CREDENTIALS_FAILED: KeePass unlock failed") if password.empty?
 
       user = Cmd.run("keepassxc-cli", ["show", "-s", "-a", "Username",
-        "/home/labros/Dropbox/Dirless/DirlessPasswords.kdbx", "atlanticnet"],
+                                       "/home/labros/Dropbox/Dirless/DirlessPasswords.kdbx", "atlanticnet"],
         input: password, timeout: 60.0).stdout.strip
       pass = Cmd.run("keepassxc-cli", ["show", "-s", "-a", "Password",
-        "/home/labros/Dropbox/Dirless/DirlessPasswords.kdbx", "atlanticnet"],
+                                       "/home/labros/Dropbox/Dirless/DirlessPasswords.kdbx", "atlanticnet"],
         input: password, timeout: 60.0).stdout.strip
       raise AtlanticProvisionError.new("CREDENTIALS_FAILED") if user.empty? || pass.empty? || pass == "PROTECTED"
 
@@ -345,7 +345,7 @@ module KrikriPlaybookGenerator
     def run_groups(groups : Hash(String, Array(String))) : Array(NamedTuple(
       profile: String, playbook: String, ansible: Cmd::Result, krikri: Cmd::Result))
       raise AtlanticProvisionError.new("no playbook groups to run") if groups.empty?
-      unknown = groups.keys.reject { |p| PROFILES.has_key?(p) }
+      unknown = groups.keys.reject { |profile| PROFILES.has_key?(profile) }
       raise AtlanticProvisionError.new("unknown profile(s): #{unknown.join(", ")}") unless unknown.empty?
 
       creds = fetch_credentials
@@ -415,8 +415,8 @@ module KrikriPlaybookGenerator
         playbooks.each do |path|
           next if already.includes?(path)
           results << {playbook: path,
-            ansible: Cmd::Result.new(-1, "", "profile provisioning failed: #{e.message}"),
-            krikri: Cmd::Result.new(-1, "", "profile provisioning failed: #{e.message}")}
+                      ansible:  Cmd::Result.new(-1, "", "profile provisioning failed: #{e.message}"),
+                      krikri:   Cmd::Result.new(-1, "", "profile provisioning failed: #{e.message}")}
         end
       end
       done.send({profile: profile, results: results})
@@ -428,7 +428,7 @@ module KrikriPlaybookGenerator
     # command as separate argv entries (Cmd.run never goes through a shell)
     private def ssh_options(key_path : String) : Array(String)
       ["-i", key_path, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=12", "-o", "ServerAliveInterval=30"]
+       "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=12", "-o", "ServerAliveInterval=30"]
     end
 
     private def provision_profile(creds : Credentials, profile : String) : Vm
@@ -463,7 +463,7 @@ module KrikriPlaybookGenerator
           instance = list_instances(creds).find { |i| i.id == instance_id || i.name == pending_name }
           ip = instance.try(&.ip)
           return ip if ip && !ip.empty?
-        rescue e : AtlanticProvisionError
+        rescue AtlanticProvisionError
           # transient list failure; keep polling until the deadline
         end
         raise AtlanticProvisionError.new("instance #{instance_id} had no IP after #{timeout.to_i}s") if Time.instant > deadline
@@ -527,7 +527,7 @@ module KrikriPlaybookGenerator
           pip3 install --quiet #{ANSIBLE_CORE_PIN}
         fi
         mkdir -p /work /opt/krikri/bin
-      PREP
+        PREP
     end
 
     private def run_script(vm : Vm, script : String, timeout : Float64) : Cmd::Result
@@ -589,7 +589,7 @@ module KrikriPlaybookGenerator
     def run_playbook(vm : Vm, playbook_path : String) : {ansible: Cmd::Result, krikri: Cmd::Result}
       basename = File.basename(playbook_path)
       copy = Cmd.run("scp", ["-i", vm.ssh_key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-        playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
+                             playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise AtlanticProvisionError.new("playbook upload failed: #{copy.stderr}") unless copy.rc == 0
 
       ansible = exec_engine(vm, "ansible-playbook", basename)

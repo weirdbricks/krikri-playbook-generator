@@ -57,6 +57,15 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--engine-timeout"))
     end
 
+    it "parses --control with --run-on-podman" do
+      assert(Options.parse(["run", "--run-on-podman", "--control"]).control?)
+    end
+
+    it "refuses --control without --run-on-podman" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--control"]) }
+      assert((err.message || "").includes?("--control"))
+    end
+
     it "parses --run-on-podman on generate" do
       opts = Options.parse(["generate", "--run-on-podman"])
       assert(opts.run_on_podman?)

@@ -74,14 +74,14 @@ module KrikriPlaybookGenerator
 
     it "parses free-form and expect_failure from a custom yaml" do
       overrides = Overrides.new(<<-YAML)
-        modules:
-          widget:
-            free_form:
-              pool: [go, stop]
-          broken:
-            expect_failure: true
-            msg: {kind: literal_pool, pool: ["boom"]}
-      YAML
+          modules:
+            widget:
+              free_form:
+                pool: [go, stop]
+            broken:
+              expect_failure: true
+              msg: {kind: literal_pool, pool: ["boom"]}
+        YAML
 
       assert_equal(["go", "stop"], overrides.free_form("widget"))
       assert(overrides.expect_failure?("broken"))

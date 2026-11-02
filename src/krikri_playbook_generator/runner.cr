@@ -70,6 +70,17 @@ module KrikriPlaybookGenerator
       getter error : String?
 
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil)
+        @error ||= PlaybookResult.reference_unresolved(@ansible)
+      end
+
+      UNRESOLVED = /couldn't resolve module\/action '[^']+'/
+
+      # Real ansible could not even load the module (its collection or python
+      # library is missing on the reference host): a harness gap, never a krikri
+      # finding, so it is recorded as an error rather than a divergence.
+      def self.reference_unresolved(run : EngineRun) : String?
+        line = (run.stdout + '\n' + run.stderr).lines.find(&.=~(UNRESOLVED))
+        "reference ansible cannot load the module (harness gap, not krikri): #{line.strip}" if line
       end
 
       def self.errored(playbook : String, meta : MetaInfo?, message : String) : PlaybookResult
@@ -170,7 +181,8 @@ module KrikriPlaybookGenerator
                    @krikri_bin : String = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @check_mode : Bool = true, @run_on_podman : Bool = false,
                    @run_on_atlantic : Bool = false,
-                   @keep_going : Bool = false, @engine_timeout : Int32 = 120)
+                   @keep_going : Bool = false, @engine_timeout : Int32 = 120,
+                   @control : Bool = false)
     end
 
     def run : Array(PlaybookResult)
@@ -205,7 +217,7 @@ module KrikriPlaybookGenerator
         module_name = load_meta(path).try(&.module_name).try(&.split(".").last)
         profile = module_name.try { |name| AtlanticBackend::PROFILE_FOR_MODULE[name]? }
         raise AtlanticProvisionError.new("playbook #{File.basename(path)} (module #{module_name.inspect}) has no Atlantic profile") unless profile
-        (groups[profile.not_nil!] ||= [] of String) << path
+        (groups[profile] ||= [] of String) << path
       end
 
       backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts)
@@ -225,7 +237,7 @@ module KrikriPlaybookGenerator
     end
 
     private def run_via_podman : Array(PlaybookResult)
-      backend = PodmanBackend.new(@krikri_bin, @engine_timeout)
+      backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control)
       begin
         backend.provision
         @playbook_paths.map { |path| guarded(path) { run_playbook_via_podman(backend, path) } }

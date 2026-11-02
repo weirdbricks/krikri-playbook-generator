@@ -120,7 +120,7 @@ module KrikriPlaybookGenerator
       # randomization), so compare the list sorted on both sides. Only the
       # order is normalized; the membership must still match.
       masked = masked.gsub(/(Invalid options for [\w.]+: )([\w,]+)/) do |_, match|
-        "#{match[1]}#{match[2].split(',').sort.join(',')}"
+        "#{match[1]}#{match[2].split(',').sort!.join(',')}"
       end
       # With several wrong-typed string options (defaults_from, handlers_from,
       # tasks_from, vars_from) real reports whichever its set iteration hits

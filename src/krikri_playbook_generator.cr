@@ -1,7 +1,10 @@
 require "./krikri_playbook_generator/**"
 
 module KrikriPlaybookGenerator
-  VERSION = "0.0.8"
+  VERSION = "0.0.9"
+
+  # Divergences found; 1 stays "the tool itself failed", so a caller (krikri-loop) can tell them apart.
+  DIVERGENT_EXIT = 2
 
   def self.main(argv : Array(String)) : Int32
     opts = Options.parse(argv)
@@ -20,10 +23,10 @@ module KrikriPlaybookGenerator
       if opts.run_on_podman? || opts.run_on_atlantic?
         results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
           opts.krikri_bin, run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
-          keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout).run
+          keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?).run
         print_run_summary(results)
         print_full_report(Triage.new(opts.results_dir))
-        divergences?(results) ? 1 : 0
+        divergences?(results) ? DIVERGENT_EXIT : 0
       else
         0
       end
@@ -33,13 +36,13 @@ module KrikriPlaybookGenerator
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, check_mode: !opts.allow_mutation?, run_on_podman: opts.run_on_podman?,
         run_on_atlantic: opts.run_on_atlantic?,
-        keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout).run
+        keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?).run
       print_run_summary(results)
-      divergences?(results) ? 1 : 0
+      divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
       triage = Triage.new(opts.results_dir)
       print_full_report(triage)
-      triage.report.empty? ? 0 : 1
+      triage.report.empty? ? 0 : DIVERGENT_EXIT
     end
   rescue e : InvalidOptionsError
     STDERR.puts "error: #{e.message}"

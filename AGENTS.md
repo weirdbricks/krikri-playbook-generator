@@ -182,7 +182,7 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   either way), it immediately runs them via `Runner` with
   `run_on_podman: true`, prints one `[DIVERGENT]`/`[IDENTICAL]`/
   `[ERROR] <path>` line per playbook, then the full report. Exit code is
-  non-zero iff divergences exist (for `generate --run-on-podman`, `run`,
+  2 iff divergences exist (for `generate --run-on-podman`, `run`,
   and `report`); errors always exit 1. Plain `run` still supports
   `--run-on-podman` on its own, for re-running an already-generated
   `--out` directory.

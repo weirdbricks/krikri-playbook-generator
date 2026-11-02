@@ -78,7 +78,7 @@ module KrikriPlaybookGenerator
     # intentionally failing - reported alongside the quality section so
     # the exclusion is visible rather than silent.
     def expected_failures : Array(String)
-      result_lines.map(&.module_name).uniq.select { |name| @overrides.expect_failure?(name) }.sort
+      result_lines.map(&.module_name).uniq!.select { |name| @overrides.expect_failure?(name) }.sort!
     end
 
     def rates : Array(Rate)
