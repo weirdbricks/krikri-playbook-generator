@@ -171,6 +171,12 @@ module KrikriPlaybookGenerator
       assert(parsed.as_h.has_key?("ansible_failed"))
       assert(parsed["diff"].as_h.has_key?("masked"))
       assert(parsed["diff"].as_h.has_key?("raw"))
+
+      versions = File.read_lines(File.join(results_dir, "versions.txt"))
+      assert_equal("tool: krikri-playbook-generator #{VERSION}", versions.first)
+      assert(versions.any?(&.starts_with?("krikri binary: ")))
+      assert(versions.any?(&.starts_with?("ansible-playbook: ")))
+      assert(versions.last == "control: false" || versions.last == Versions::STALE_WARNING)
     ensure
       FileUtils.rm_rf(playbook_dir) if playbook_dir
       FileUtils.rm_rf(results_dir) if results_dir

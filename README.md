@@ -128,7 +128,19 @@ engine is recorded with rc 124). The report has three sections:
   per module.
 
 `report` works on any results directory, including one produced by
-`generate --run-on-podman`.
+`generate --run-on-podman`. Add `--json` to print ONE JSON object on
+stdout instead of the human report — `results_dir`, `total`/`errored`/
+`divergent` counts, `findings` grouped by module + diff signature (each
+with its playbooks and an example carrying chaos/mutations, the masked
+diff and ansible's first error), `errors`, and per-module `rates`. Exit
+code is unchanged (0 none, 2 divergences); warnings stay on stderr.
+
+Every `run` also writes `versions.txt` next to `results.jsonl` — a
+best-effort provenance record (tool version, run start time, krikri
+binary path/mtime/`--version`/git commit + subject, ansible-playbook
+version, control flag) parsed by krikri-role-triager, including a
+warning line when the krikri binary is older than its checkout's last
+commit touching build inputs.
 
 Without `--run-on-podman`, `run` executes locally and defaults to Ansible
 `--check` mode (no real host mutation) since happy-path tasks are real

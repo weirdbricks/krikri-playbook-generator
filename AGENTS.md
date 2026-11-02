@@ -122,6 +122,19 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   batch; errored results are never counted as divergent.
   `--atlantic-hosts` is accepted and stored for a possible future remote/
   Atlantic.net backend but unused by either backend implemented here.
+- `src/krikri_playbook_generator/versions.cr` — `Versions`. **Implemented**:
+  writes `<results_dir>/versions.txt` (called from `Runner#run`, right
+  after results.jsonl) — a best-effort provenance record parsed by
+  krikri-role-triager, which splits each line on the first `": "`. One
+  `key: value` line each: tool version, run start (RFC3339 UTC), krikri
+  binary path/mtime/`--version`/git commit (+ ` (dirty)`)/commit subject,
+  ansible-playbook version, `control`. Plus, only when the krikri
+  binary's mtime is older than the committer date of the checkout's last
+  commit touching `src lib plugins scripts shard.yml shard.lock
+  build.sh`, the exact line `warning: krikri binary is older than its
+  checkout's last build-input commit`. Every probe is best-effort (30s
+  timeout, `"unavailable"` on failure, never fails the run); the command
+  runner is injectable as a `Proc` so the spec can fake it.
 - `src/krikri_playbook_generator/podman_backend.cr` — `PodmanBackend`.
   **Implemented (v0.0.8, rewritten for isolation)**: provisions ONE
   template pair from `docker.io/library/debian:trixie-slim`
@@ -162,11 +175,17 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   plus the first error line — happy-path failures on the reference engine
   are wasted coverage. `rates` gives per-module byte-identical counts.
   Malformed lines and legacy lines missing `module` are skipped, a
-  missing `results.jsonl` raises.
+  missing `results.jsonl` raises. `ResultLine` also keeps each line's
+  masked diff (from results.jsonl's `diff.masked`) and error text;
+  `report_json` renders the whole report as ONE JSON object (`report
+  --json`): results_dir, total/errored/divergent counts, findings in the
+  same grouping/order as `report` (each with playbooks and an example
+  carrying chaos/mutations/masked_diff/ansible_error), errors, rates.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the three
-  subcommands (`generate`, `run`, `report`), plus `--keep-going` and
+  subcommands (`generate`, `run`, `report`), plus `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
-  recorded with rc 124). Both `run <dir>` and `report <dir>` accept that
+  recorded with rc 124) and `--json` (valid only with `report`; error
+  otherwise). Both `run <dir>` and `report <dir>` accept that
   directory as a positional argument (falling back to `--out`/
   `--results-dir` otherwise), and `run <file.yml>` accepts a single
   playbook path (the repro form Triage prints), matching the CLI sketch
@@ -274,7 +293,7 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
 `playbook_builder_spec.cr`, `runner_spec.cr`, `podman_backend_spec.cr`,
-`triage_spec.cr`. `schema_spec.cr` shells out to
+`triage_spec.cr`, `versions_spec.cr` (fakes the command runner as a Proc). `schema_spec.cr` shells out to
 the real, locally-installed `ansible-doc`/`python3` — no fakes, since
 tracking whatever ansible-core is actually installed is the entire point —
 but skips exercising unfiltered discovery (`SchemaScanner.new.scan`, no

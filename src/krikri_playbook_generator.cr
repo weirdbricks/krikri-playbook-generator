@@ -1,8 +1,6 @@
 require "./krikri_playbook_generator/**"
 
 module KrikriPlaybookGenerator
-  VERSION = "0.0.9"
-
   # Divergences found; 1 stays "the tool itself failed", so a caller (krikri-loop) can tell them apart.
   DIVERGENT_EXIT = 2
 
@@ -41,7 +39,7 @@ module KrikriPlaybookGenerator
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
       triage = Triage.new(opts.results_dir)
-      print_full_report(triage)
+      print_report(triage, json: opts.json?)
       triage.report.empty? ? 0 : DIVERGENT_EXIT
     end
   rescue e : InvalidOptionsError
@@ -78,6 +76,14 @@ module KrikriPlaybookGenerator
     results.each do |result|
       verdict = result.error ? "ERROR" : (result.divergent? ? "DIVERGENT" : "IDENTICAL")
       puts "[#{verdict}] #{result.playbook}"
+    end
+  end
+
+  private def self.print_report(triage : Triage, json : Bool) : Nil
+    if json
+      puts triage.report_json
+    else
+      print_full_report(triage)
     end
   end
 

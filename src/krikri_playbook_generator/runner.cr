@@ -3,6 +3,7 @@ require "./cmd"
 require "./podman_backend"
 require "./masks"
 require "./fixtures"
+require "./versions"
 
 module KrikriPlaybookGenerator
   # Executes each generated playbook against both engines and records the
@@ -186,6 +187,7 @@ module KrikriPlaybookGenerator
     end
 
     def run : Array(PlaybookResult)
+      started = Time.utc
       if @run_on_podman && !PodmanBackend.available?
         raise PodmanProvisionError.new("--run-on-podman was requested but `podman` isn't on PATH")
       end
@@ -202,6 +204,7 @@ module KrikriPlaybookGenerator
                   run_locally
                 end
       write_results(results)
+      write_versions(started)
       results
     end
 
@@ -327,6 +330,16 @@ module KrikriPlaybookGenerator
       File.open(File.join(@results_dir, "results.jsonl"), "w") do |file|
         results.each { |result| file.puts(result_json(result)) }
       end
+    end
+
+    # Provenance for krikri-role-triager; a versions.txt failure is a lost
+    # metadata file, never a reason to lose the results.jsonl already on
+    # disk.
+    private def write_versions(started : Time) : Nil
+      Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
+        @control, started)
+    rescue e
+      STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end
 
     private def result_json(result : PlaybookResult) : String

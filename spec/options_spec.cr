@@ -100,6 +100,23 @@ module KrikriPlaybookGenerator
       assert_equal("ansible-playbook", opts.ansible_playbook_bin)
     end
 
+    it "parses --json with the report command" do
+      opts = Options.parse(["report", "--results-dir", "/tmp/r", "--json"])
+      assert(opts.json?)
+    end
+
+    it "defaults json? to false" do
+      refute(Options.parse(["report"]).json?)
+    end
+
+    it "refuses --json outside the report command" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--json"]) }
+      assert((err.message || "").includes?("--json"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--json"]) }
+      assert((err.message || "").includes?("--json"))
+    end
+
     it "raises on an empty argv" do
       err = assert_raises(InvalidOptionsError) { Options.parse([] of String) }
       assert((err.message || "").includes?("missing command"))

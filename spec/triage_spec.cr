@@ -9,7 +9,7 @@ module KrikriPlaybookGenerator
                      signature : String? = nil, chaos : Bool = false,
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
-                     error : String? = nil) : String
+                     error : String? = nil, masked_diff : String = "") : String
       playbook = File.join(dir, "#{name}.yml")
       File.write(playbook, "---\n")
 
@@ -23,6 +23,7 @@ module KrikriPlaybookGenerator
         "ansible_error"  => ansible_error,
         "mutations"      => mutations.map { |(option, kind)| {"option" => option, "kind" => kind} },
         "error"          => error,
+        "diff"           => {"masked" => masked_diff, "raw" => ""},
       }
       File.open(File.join(dir, "results.jsonl"), "a") { |file| file.puts(result.to_json) }
       playbook
@@ -189,6 +190,70 @@ module KrikriPlaybookGenerator
       end
 
       assert_empty(Triage.new(dir).report)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "renders the full JSON report shape from results.jsonl" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      playbook_a = write_result(dir, "a", "copy", divergent: true, signature: "abc",
+        chaos: true, mutations: [{"mode", "WrongType"}],
+        masked_diff: "stdout:\n--- a\n+++ b\n", ansible_error: "fatal: boom")
+      write_result(dir, "b", "copy", divergent: true, signature: "abc",
+        masked_diff: "stdout:\n--- a\n+++ c\n")
+      write_result(dir, "c", "apt", divergent: false)
+      write_result(dir, "d", "user", divergent: false, error: "podman died")
+
+      report = JSON.parse(Triage.new(dir).report_json)
+
+      assert_equal(File.expand_path(dir), report["results_dir"].as_s)
+      assert_equal(4, report["total"].as_i)
+      assert_equal(1, report["errored"].as_i)
+      assert_equal(2, report["divergent"].as_i)
+
+      findings = report["findings"].as_a
+      assert_equal(1, findings.size)
+      copy = findings.first
+      assert_equal("copy", copy["module"].as_s)
+      assert_equal("abc", copy["signature"].as_s)
+      assert_equal(2, copy["count"].as_i)
+      assert_equal([playbook_a, File.join(dir, "b.yml")], copy["playbooks"].as_a.map(&.as_s))
+
+      example = copy["example"]
+      assert_equal(playbook_a, example["playbook"].as_s)
+      assert_equal(true, example["chaos"].as_bool)
+      assert_equal([{"option" => "mode", "kind" => "WrongType"}],
+        example["mutations"].as_a.map { |entry| {"option" => entry["option"].as_s, "kind" => entry["kind"].as_s} })
+      assert(example["masked_diff"].as_s.includes?("+++ b"))
+      assert_equal("fatal: boom", example["ansible_error"].as_s)
+
+      errors = report["errors"].as_a
+      assert_equal(1, errors.size)
+      assert_equal(File.join(dir, "d.yml"), errors.first["playbook"].as_s)
+      assert_equal("user", errors.first["module"].as_s)
+      assert_equal("podman died", errors.first["error"].as_s)
+
+      rates = report["rates"].as_a
+      apt = rates.find { |rate| rate["module"].as_s == "apt" } || raise("missing apt")
+      assert_equal(1, apt["identical"].as_i)
+      assert_equal(1, apt["total"].as_i)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "renders nulls for a missing signature and ansible_error in the JSON report" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "apt", divergent: true)
+
+      report = JSON.parse(Triage.new(dir).report_json)
+      finding = report["findings"].as_a.first
+
+      assert(finding["signature"].raw.nil?)
+      assert(finding["example"]["ansible_error"].raw.nil?)
+      assert_equal("", finding["example"]["masked_diff"].as_s)
+      assert_equal(0, report["errors"].as_a.size)
     ensure
       FileUtils.rm_rf(dir) if dir
     end
