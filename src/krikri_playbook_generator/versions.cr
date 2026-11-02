@@ -84,7 +84,7 @@ module KrikriPlaybookGenerator
 
     private def self.flattened(runner : CommandRunner, command : String, args : Array(String)) : String
       text = probe(runner, command, args)
-      text ? text.strip.lines.join(" | ") : UNAVAILABLE
+      text ? text.strip.lines.reject(&.blank?).map(&.strip).join(" | ") : UNAVAILABLE
     end
 
     private def self.probe(runner : CommandRunner, command : String, args : Array(String)) : String?

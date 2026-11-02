@@ -167,7 +167,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   mutations are now embedded in each line by `Runner`, so sidecars aren't
   needed) and produces three sections. `report` groups divergent
   playbooks by `{module, signature}` — the stable root-cause hash
-  `ByteDiff#signature` computes from the masked diff — and each finding
+  `ByteDiff#signature` computes from the masked diff, keyed on the
+  ansible side's first `-` line (krikri's first `+` line only when there
+  is no `-` line at all, prefixed `ansible:`/`krikri:` so the two kinds
+  never collide; blank `-`/`+` lines never count as "first", and a bare
+  task-status `-` line — just a status word and a host — additionally
+  keys on krikri's first non-blank `+` line so different krikri failures
+  under an ansible success don't merge) — and each finding
   carries its count, one example playbook path and a copy-paste repro
   command (`Triage.repro_command`, backed by `run` accepting a single
   playbook file). `quality` is the generator-quality metric: per module,

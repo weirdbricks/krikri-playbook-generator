@@ -1,5 +1,6 @@
 require "./spec_helper"
 require "../src/krikri_playbook_generator/triage"
+require "../src/krikri_playbook_generator/masks"
 require "file_utils"
 require "json"
 
@@ -201,7 +202,7 @@ module KrikriPlaybookGenerator
         chaos: true, mutations: [{"mode", "WrongType"}],
         masked_diff: "stdout:\n--- a\n+++ b\n", ansible_error: "fatal: boom")
       write_result(dir, "b", "copy", divergent: true, signature: "abc",
-        masked_diff: "stdout:\n--- a\n+++ c\n")
+        masked_diff: "stdout:\n--- a\n+++ b\n")
       write_result(dir, "c", "apt", divergent: false)
       write_result(dir, "d", "user", divergent: false, error: "podman died")
 
@@ -216,7 +217,8 @@ module KrikriPlaybookGenerator
       assert_equal(1, findings.size)
       copy = findings.first
       assert_equal("copy", copy["module"].as_s)
-      assert_equal("abc", copy["signature"].as_s)
+      expected_signature = ByteDiff.signature("stdout:\n--- a\n+++ b\n") || raise("no signature")
+      assert_equal(expected_signature, copy["signature"].as_s)
       assert_equal(2, copy["count"].as_i)
       assert_equal([playbook_a, File.join(dir, "b.yml")], copy["playbooks"].as_a.map(&.as_s))
 
@@ -238,6 +240,18 @@ module KrikriPlaybookGenerator
       apt = rates.find { |rate| rate["module"].as_s == "apt" } || raise("missing apt")
       assert_equal(1, apt["identical"].as_i)
       assert_equal(1, apt["total"].as_i)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "recomputes the signature from the masked diff instead of the stored one" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, signature: "stale0000000",
+        masked_diff: "stdout:\n--- a\n+++ b\n")
+
+      finding = Triage.new(dir).report.first
+      assert_equal(ByteDiff.signature("stdout:\n--- a\n+++ b\n"), finding.signature)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

@@ -134,8 +134,129 @@ module KrikriPlaybookGenerator
       assert_equal(sig_a, sig_b)
     end
 
+    it "keys the signature on the ansible side: same - lines, different + lines" do
+      # krikri's status line varies with the other options (changed vs ok),
+      # but ansible's expected output is the same root cause
+      diff_a = ByteDiff.unified("fatal: [target]: mode 387 is invalid (must be octal)\n",
+        "fatal: [target]: bogus\nchanged: [target]\n")
+      diff_b = ByteDiff.unified("fatal: [target]: mode 999 is invalid (must be octal)\n",
+        "fatal: [target]: bogus\nok: [target]\n")
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      assert_equal(sig_a, sig_b)
+    end
+
+    it "gives different signatures to different ansible-side lines" do
+      diff_a = ByteDiff.unified("fatal: [target]: mode 387 is invalid\n", "ok: [target]\n")
+      diff_b = ByteDiff.unified("fatal: [target]: owner 999 does not exist\n", "ok: [target]\n")
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      refute_equal(sig_a, sig_b)
+    end
+
+    it "keeps a krikri-only diff distinct from an ansible diff with the same lines" do
+      diff_a = ByteDiff.unified("changed: [target]\n", "changed: [target]\nextra krikri output\n")
+      diff_b = ByteDiff.unified("extra krikri output\n", "ok: [target]\n")
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      refute_nil(sig_b)
+      refute_equal(sig_a, sig_b)
+    end
+
+    it "splits bare-status ansible lines by krikri's first changed line" do
+      diff_a = ByteDiff.unified("ok: [target]\n", "[ERROR]: X\n")
+      diff_b = ByteDiff.unified("ok: [target]\n", "[ERROR]: Y\n")
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      refute_equal(sig_a, sig_b)
+    end
+
+    it "merges bare-status ansible lines with the same krikri failure" do
+      diff_a = ByteDiff.unified("ok: [target]\n", "[ERROR]: X\nmode 387 bogus\n")
+      diff_b = ByteDiff.unified("ok: [target]\n", "[ERROR]: X\nmode 999 bogus\n")
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      assert_equal(sig_a, sig_b)
+    end
+
+    it "skips blank changed lines when picking the first changed line" do
+      diff_a = "-\n-fatal: [target]: boom\n+changed: [target]\n"
+      diff_b = "-fatal: [target]: boom\n+changed: [target]\n"
+      assert_equal(ByteDiff.signature(diff_b), ByteDiff.signature(diff_a))
+
+      diff_c = "+\n+extra krikri output\n"
+      diff_d = "+extra krikri output\n"
+      assert_equal(ByteDiff.signature(diff_d), ByteDiff.signature(diff_c))
+    end
+
     it "returns nil for a signature when there are no changed lines" do
       assert_nil(ByteDiff.signature(" stdout\n"))
+    end
+
+    it "gives one signature to unsupported-parameter errors whatever names they list" do
+      full = ->(names : String, supported : String) {
+        "Unsupported parameters for (ansible.posix.synchronize) module: #{names}. " \
+        "Supported parameters include: #{supported}.\n"
+      }
+      diff_a = ByteDiff.unified(full.call("moed, checksum_bogus, existin_gonly", "delimit, verify_host"),
+        full.call("other_bogus", "delimit, verify_host"))
+      diff_b = ByteDiff.unified(full.call("x_y_bogus, zzz", "private_key, links"),
+        full.call("qq_bogus", "private_key, links"))
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      assert_equal(sig_a, sig_b)
+    end
+
+    it "gives one signature to truncated unsupported-parameter errors too" do
+      truncated = ->(names : String) {
+        %(fatal: [t]: FAILED! => {"changed": false, "msg": "Unsupported parameters for (ansible.posix.synchronize) module: #{names}\n)
+      }
+      diff_a = ByteDiff.unified(truncated.call("moed, checksum_bogus"), truncated.call("other_bogus"))
+      diff_b = ByteDiff.unified(truncated.call("x_y_bogus"), truncated.call("zzz"))
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      assert_equal(sig_a, sig_b)
+    end
+
+    it "normalizes the singular unsupported-parameter form the same way" do
+      singular = ->(name : String, supported : String) {
+        "Unsupported parameter for (ansible.posix.synchronize) module: #{name}. " \
+        "Supported parameters include: #{supported}.\n"
+      }
+      diff_a = ByteDiff.unified(singular.call("moed", "delimit, verify_host"), singular.call("other", "delimit, verify_host"))
+      diff_b = ByteDiff.unified(singular.call("zzz", "private_key, links"), singular.call("qqq", "private_key, links"))
+
+      assert_equal(ByteDiff.signature(diff_a), ByteDiff.signature(diff_b))
+    end
+
+    it "still gives different signatures to unsupported-parameter errors that differ elsewhere" do
+      line = ->(mod : String, names : String) {
+        "Unsupported parameters for #{mod} module: #{names}. " \
+        "Supported parameters include: delimit, verify_host.\n"
+      }
+      diff_a = ByteDiff.unified(line.call("(ansible.posix.synchronize)", "moed, checksum_bogus"),
+        line.call("(ansible.posix.synchronize)", "other_bogus"))
+      diff_b = ByteDiff.unified(line.call("(ansible.builtin.copy)", "moed, checksum_bogus"),
+        line.call("(ansible.builtin.copy)", "other_bogus"))
+
+      sig_a = ByteDiff.signature(diff_a)
+      sig_b = ByteDiff.signature(diff_b)
+      refute_nil(sig_a)
+      refute_equal(sig_a, sig_b)
     end
   end
 end

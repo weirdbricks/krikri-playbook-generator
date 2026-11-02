@@ -1,4 +1,5 @@
 require "json"
+require "./masks"
 require "./overrides"
 
 module KrikriPlaybookGenerator
@@ -239,17 +240,28 @@ module KrikriPlaybookGenerator
       error_field = parsed["error"]?
       errored = error_field ? !error_field.raw.nil? : false
 
+      masked_diff = parse_masked_diff(parsed)
+
       ResultLine.new(
         playbook, module_name,
         parsed["chaos"]?.try(&.as_bool?) || false,
         parsed["divergent"]?.try(&.as_bool?) || false,
-        parsed["signature"]?.try(&.as_s?),
+        result_signature(masked_diff, parsed),
         parsed["ansible_failed"]?.try(&.as_bool?) || false,
         parsed["ansible_error"]?.try(&.as_s?),
         mutations,
         errored ? error_field.try(&.as_s?) : nil,
-        parse_masked_diff(parsed)
+        masked_diff
       )
+    end
+
+    # Recompute the signature from the stored masked diff rather than
+    # trusting the stored one: signature-shaping rules evolve (e.g.
+    # unsupported-parameter name normalization), and recomputing lets
+    # already-collected results benefit without re-running them. The
+    # stored signature is only a fallback for lines with no diff.
+    private def result_signature(masked_diff : String, parsed : Hash(String, JSON::Any)) : String?
+      ByteDiff.signature(masked_diff) || parsed["signature"]?.try(&.as_s?)
     end
 
     private def parse_masked_diff(parsed : Hash(String, JSON::Any)) : String

@@ -45,7 +45,7 @@ module KrikriPlaybookGenerator
       assert_equal("krikri --version: krikri 1.2.3", lines[4])
       assert_equal("krikri commit: abc123def (dirty)", lines[5])
       assert_equal("krikri commit subject: Add a thing", lines[6])
-      assert_equal("ansible-playbook: ansible-playbook [core 2.19.11] |   config file = None", lines[7])
+      assert_equal("ansible-playbook: ansible-playbook [core 2.19.11] | config file = None", lines[7])
       assert_equal("control: true", lines[8])
       assert_equal(9, lines.size)
     ensure
@@ -98,6 +98,25 @@ module KrikriPlaybookGenerator
 
       assert_equal("krikri commit: unavailable", text.lines[5])
       assert_equal("ansible-playbook: unavailable", text.lines[7])
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "flattens probe output dropping blank lines and stripping each line" do
+      dir = File.tempname("kpg-spec-versions")
+      Dir.mkdir_p(dir)
+      binary = make_binary(dir)
+      checkout = File.join(dir, "checkout")
+      handlers = {
+        "#{binary} --version"                   => Cmd::Result.new(0, "krikri 4.5.6\n\n  build: xyz \n", ""),
+        "git -C #{checkout} rev-parse HEAD"     => Cmd::Result.new(0, "abc123def\n", ""),
+        "git -C #{checkout} status --porcelain" => Cmd::Result.new(0, "", ""),
+      }
+
+      text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
+        "ansible-playbook", false, fake_runner(handlers))
+
+      assert_equal("krikri --version: krikri 4.5.6 | build: xyz", text.lines[4])
     ensure
       FileUtils.rm_rf(dir) if dir
     end

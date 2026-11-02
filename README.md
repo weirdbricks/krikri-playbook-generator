@@ -48,10 +48,16 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    (accepted and stored for a real disposable-host backend, not yet
    built).
 5. **triage** — reads `results.jsonl` and produces the full report:
-   divergences grouped by module + **diff signature** (changed lines with
-   digits/paths/random names generalized and hashed, so N playbooks hit
-   by the same root cause dedupe into one finding, sorted by descending
-   count, each with an example playbook and a copy-paste repro command),
+  divergences grouped by module + **diff signature** (changed lines with
+  digits/paths/random names generalized and hashed — keyed on the ansible
+  side's first `-` line when there is one, krikri's first `+` line only
+  when the reference engine printed nothing different — blank changed
+  lines are never counted as "first", and a bare task-status `-` line
+  (just `ok:`/`fatal:` etc. plus a host) additionally keys on krikri's
+  first non-blank `+` line, so different krikri failures under an
+  ansible success don't merge — so N playbooks hit
+  by the same root cause dedupe into one finding, sorted by descending
+  count, each with an example playbook and a copy-paste repro command),
    a generator-quality section (per module, how many happy-path playbooks
    failed on real ansible — wasted coverage — and the first error line),
    and per-module byte-identical rates.

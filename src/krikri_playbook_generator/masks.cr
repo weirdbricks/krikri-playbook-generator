@@ -171,13 +171,62 @@ module KrikriPlaybookGenerator
     # A stable root-cause signature for triage: the diff's changed lines
     # with digits, paths and quoted values generalized away, hashed. Two
     # playbooks diverging from the same bug produce the same signature
-    # even when the concrete values differ.
+    # even when the concrete values differ. Keyed on the ANSIBLE side:
+    # the first `-` line (the reference engine's first unexpected-from-
+    # krikri output line) when there is one, so krikri-side variation
+    # (e.g. `changed:` vs `ok:` status lines, or krikri lacking the
+    # origin block real prints) does not split one root cause into
+    # several signatures; the first `+` line is used only when there is
+    # no `-` line at all (krikri printed extra output). Blank changed
+    # lines (a lone `-`/`+`, or only whitespace after the sign) never
+    # count as "first". When the first `-` line is a bare task-status
+    # line (just a status word and a host - e.g. ansible printed `ok:`
+    # while krikri failed), the key also carries krikri's first non-blank
+    # `+` line, so different krikri failures under an ansible success
+    # don't merge into one signature. The "ansible:"/"krikri:" prefixes
+    # keep the two kinds from ever colliding.
+    private BARE_STATUS_LINE   = /\A-(?:ok|changed|skipping|failed|fatal)?:? ?\[[^\]]*\]\s*\z/
+    private BLANK_CHANGED_LINE = /\A[-+]\s*\z/
+
     def self.signature(masked_diff : String) : String?
-      changed = masked_diff.lines.select { |line| line.starts_with?('-') || line.starts_with?('+') }
+      changed = masked_diff.lines.select do |line|
+        (line.starts_with?('-') || line.starts_with?('+')) && line !~ BLANK_CHANGED_LINE
+      end
       return if changed.empty?
 
-      shaped = changed.map { |line| shape(line[1..]) }
-      Digest::SHA256.hexdigest(shaped.join('\n'))[0, 12]
+      first = changed.first
+      shaped = shape(normalize_unsupported_params(first[1..]))
+      if first.starts_with?('-') && BARE_STATUS_LINE.matches?("-#{shaped}")
+        key = "ansible:#{shaped}"
+        if plus = changed.find(&.starts_with?('+'))
+          key += "|krikri:#{shape(normalize_unsupported_params(plus[1..]))}"
+        end
+        return Digest::SHA256.hexdigest(key)[0, 12]
+      end
+
+      prefix = first.starts_with?('-') ? "ansible:" : "krikri:"
+      Digest::SHA256.hexdigest(prefix + shaped)[0, 12]
+    end
+
+    # Chaos playbooks inject made-up option names, so ansible's
+    # "Unsupported parameters for (mod) module: <names>. Supported
+    # parameters include: <list>." error lists different names per playbook
+    # while being one root cause. Normalized for the SIGNATURE only - the
+    # masked diff keeps the real text. The truncation form (no "Supported
+    # parameters include" suffix, e.g. a truncated "msg": "..." JSON line)
+    # runs the names to the end of the message (next `.` or `"`).
+    private def self.normalize_unsupported_params(line : String) : String
+      return line unless line.includes?("Unsupported parameter")
+
+      if line.includes?(". Supported parameters include: ")
+        line.gsub(/(Unsupported parameters? for (?:\([^)]*\) )?module: )[^\n]*?(\. Supported parameters include: )[^\n]*?([."])/) do |_, match|
+          "#{match[1]}<names>#{match[2]}<list>#{match[3]}"
+        end
+      else
+        line.gsub(/(Unsupported parameters? for (?:\([^)]*\) )?module: )[^\n]*?([."]|$)/) do |_, match|
+          "#{match[1]}<names>#{match[2]}"
+        end
+      end
     end
 
     private def self.shape(line : String) : String
