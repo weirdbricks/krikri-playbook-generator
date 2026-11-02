@@ -50,10 +50,12 @@ module KrikriPlaybookGenerator
   class SchemaScanner
     CONSTRAINT_EXTRACTOR = {{ read_file("#{__DIR__}/scripts/extract_constraints.py") }}
 
+    CORE_PREFIX = "ansible.builtin."
+
     class ScanError < Exception
     end
 
-    def initialize(@module_filter : Array(String)? = nil)
+    def initialize(@module_filter : Array(String)? = nil, @all_modules : Bool = false)
     end
 
     def scan : Array(ModuleSchema)
@@ -75,11 +77,26 @@ module KrikriPlaybookGenerator
       schemas
     end
 
+    # krikri's obligation is ansible.builtin core only (krikri-role-tester's
+    # SUPPORTED_COMMUNITY_MODULES is empty); collection modules are opt-in
+    # via --all-modules. Names are returned short ("copy", not
+    # "ansible.builtin.copy") since that's how the rest of the tool
+    # already addresses core modules.
+    def self.core_module_names(listing : JSON::Any) : Array(String)
+      listing.as_h.keys
+        .select(&.starts_with?(CORE_PREFIX))
+        .map(&.lchop(CORE_PREFIX))
+        .sort!
+    end
+
     private def discover_module_names : Array(String)
       result = Cmd.run("ansible-doc", ["--list", "-j", "-t", "module"])
       raise ScanError.new("ansible-doc --list failed: #{result.stderr}") unless Cmd.success?(result)
 
-      JSON.parse(result.stdout).as_h.keys
+      listing = JSON.parse(result.stdout)
+      return listing.as_h.keys if @all_modules
+
+      self.class.core_module_names(listing)
     end
 
     private def scan_module(name : String) : ModuleSchema?

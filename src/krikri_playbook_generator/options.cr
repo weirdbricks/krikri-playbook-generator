@@ -21,6 +21,7 @@ module KrikriPlaybookGenerator
 
     property command : Command
     property modules : Array(String)?
+    property? all_modules : Bool
     property seed : Int32
     property count : Int32
     property chaos_percentage : Float64
@@ -38,7 +39,7 @@ module KrikriPlaybookGenerator
     property? json : Bool
     property engine_timeout : Int32
 
-    def initialize(@command, @modules = nil, @seed = 42, @count = 100,
+    def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
                    @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint],
                    @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
@@ -66,6 +67,7 @@ module KrikriPlaybookGenerator
 
       parser = OptionParser.new do |dsl|
         dsl.on("--modules LIST", "comma-separated module names") { |v| opts.modules = v.split(',') }
+        dsl.on("--all-modules", "scan every installed module, collections included (default: ansible.builtin core only)") { opts.all_modules = true }
         dsl.on("--seed N", "RNG seed") { |v| opts.seed = parse_int(v, "--seed") }
         dsl.on("--count N", "generated tasks per module") { |v| opts.count = parse_int(v, "--count") }
         dsl.on("--chaos-percentage N", "per-option-slot chaos mutation probability") { |v| opts.chaos_percentage = parse_float(v, "--chaos-percentage") }
@@ -90,13 +92,18 @@ module KrikriPlaybookGenerator
       opts.out_dir = expand_path(opts.out_dir)
       opts.results_dir = expand_path(opts.results_dir)
 
-      raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
-      raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
-      raise InvalidOptionsError.new("--json is only valid with the report command") if opts.json? && !opts.command.report?
+      check_conflicts!(opts)
       parse_chaos_kinds(opts.chaos_kinds)
       validate!(opts)
 
       opts
+    end
+
+    private def self.check_conflicts!(opts : Options) : Nil
+      raise InvalidOptionsError.new("--all-modules conflicts with --modules") if opts.all_modules? && opts.modules
+      raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
+      raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
+      raise InvalidOptionsError.new("--json is only valid with the report command") if opts.json? && !opts.command.report?
     end
 
     private def self.parse_command(arg : String) : Command

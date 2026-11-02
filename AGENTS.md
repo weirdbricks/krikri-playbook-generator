@@ -289,11 +289,6 @@ above:
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is v2 per the proposal; `PlaybookBuilder` only ever emits one task per
   playbook.
-- `--modules` has no default derived from krikri's core+supported-community
-  list yet (the "Coverage scope" convention above) — every `generate`
-  invocation currently needs an explicit `--modules` list or accepts
-  ansible-core's *entire* installed module set (including modules krikri
-  has no obligation to support).
 
 ## Tests
 

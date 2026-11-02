@@ -175,5 +175,16 @@ module KrikriPlaybookGenerator
       err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--atlantic-hosts", "fleet"]) }
       assert((err.message || "").includes?("--atlantic-hosts"))
     end
+
+    it "parses --all-modules" do
+      opts = Options.parse(["generate", "--all-modules"])
+      assert(opts.all_modules?)
+    end
+
+    it "raises when --all-modules is combined with --modules" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--all-modules", "--modules", "copy"]) }
+      assert((err.message || "").includes?("--all-modules"))
+      assert((err.message || "").includes?("--modules"))
+    end
   end
 end

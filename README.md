@@ -87,8 +87,11 @@ open questions, and rationale for a separate repo.
 
 Same rule as `krikri-role-tester`'s Galaxy-role workflow: 100% bar for
 `ansible.builtin` core modules and modules krikri has deliberately chosen
-to support; zero obligation for the rest. The default `--modules` list is
-meant to be generated from that same source of truth, not hand-duplicated.
+to support; zero obligation for the rest. `generate`'s default module list
+follows that rule: without `--modules`, it scans every installed
+`ansible.builtin.*` module only (krikri-role-tester's
+`SUPPORTED_COMMUNITY_MODULES` is empty, so collection modules are opt-in
+via `--all-modules`, which restores scanning of every installed module).
 
 ## Build
 
@@ -107,6 +110,11 @@ The full pipeline is implemented end to end, as three separate steps:
     krikri-playbook-generator run playbooks/ --results-dir ~/scratch/kpg-results
 
     krikri-playbook-generator report ~/scratch/kpg-results
+
+`generate`'s default module list is every installed `ansible.builtin.*`
+module (short names, sorted); `--modules` narrows it explicitly and
+`--all-modules` scans every installed module, collections included
+(`--all-modules` and `--modules` are mutually exclusive).
 
 ...or fused into one call with `--run-on-podman` (needs `podman`): builds
 the playbooks (still written to `--out` for later review either way),
@@ -184,6 +192,5 @@ option, on the first try; a separate `--run-on-podman` run found a third
 happy path) measures per-module byte-identical rates against real
 ansible-playbook 2.19.11 in isolated container pairs. See `AGENTS.md`'s
 "Known gaps" for what's deliberately not built yet (a real
-disposable-host execution backend for wide/production batches,
-`required_if` violation, multi-task playbooks, and a default `--modules`
-list).
+disposable-host execution backend for wide/production batches and
+`required_if` violation, multi-task playbooks).

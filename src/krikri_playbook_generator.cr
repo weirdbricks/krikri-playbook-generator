@@ -10,7 +10,7 @@ module KrikriPlaybookGenerator
     case opts.command
     in Command::Generate
       Preflight.check!(opts.ansible_playbook_bin, opts.krikri_bin)
-      schemas = SchemaScanner.new(opts.modules).scan
+      schemas = SchemaScanner.new(opts.modules, all_modules: opts.all_modules?).scan
       chaos_kinds = Options.parse_chaos_kinds(opts.chaos_kinds)
       tasks = [] of GeneratedTask
       schemas.each do |schema|
