@@ -68,6 +68,17 @@ module KrikriPlaybookGenerator
       assert((result.error || "").includes?("harness gap"))
     end
 
+    it "records a missing reference-side python library as an error naming the library" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      lib_missing = "Failed to import the required Python library (idna) on target's Python /usr/bin/python3.13. This is required to transform IDNA DNS name \"kpg.example\" to Unicode."
+      result = Runner::PlaybookResult.new("p.yml", engine_run(nil, rc: 1, stdout: "PLAY RECAP\n", stderr: lib_missing), engine_run(recap, stdout: "ok"), nil)
+      refute(result.divergent?)
+      error = result.error || ""
+      assert(error.includes?("harness gap"))
+      assert(error.includes?("REAL_PACKAGES"))
+      assert(error.includes?("idna"))
+    end
+
     it "is divergent when the masked stdout differs even with matching recaps" do
       recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
       result = Runner::PlaybookResult.new("p.yml",

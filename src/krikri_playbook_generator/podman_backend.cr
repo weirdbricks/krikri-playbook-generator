@@ -41,13 +41,20 @@ module KrikriPlaybookGenerator
   class PodmanBackend
     IMAGE                    = "docker.io/library/debian:trixie-slim"
     EXPECTED_ANSIBLE_VERSION = "2.19.11"
-    REAL_PACKAGES            = "ansible python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
+    REAL_PACKAGES            = "ansible python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo python3-idna"
     KRIKRI_RUNTIME_LIBS      = "libxml2 libssl3 openssl libyaml-0-2 libpcre2-8-0 python3-cryptography python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
     INVENTORY                = "target ansible_connection=local\n"
     ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
+    OWNER_LABEL              = "krikri-owner-pid"
 
     def self.available? : Bool
       !!Process.find_executable("podman")
+    end
+
+    # Every container this tool starts carries `OWNER_LABEL=<pid>` so external
+    # tooling can tell a live kpg run's containers from abandoned ones.
+    def self.run_args(image : String, name : String) : Array(String)
+      ["run", "-d", "--privileged", "--label", "#{OWNER_LABEL}=#{Process.pid}", "--name", name, image, "sleep", "infinity"]
     end
 
     # Any kpg-* container still listed by `podman ps -a` after teardown is
@@ -139,13 +146,13 @@ module KrikriPlaybookGenerator
     end
 
     private def start_container(name : String) : Nil
-      result = Cmd.run("podman", ["run", "-d", "--privileged", "--name", name, IMAGE, "sleep", "infinity"], timeout: 300.0)
+      result = Cmd.run("podman", PodmanBackend.run_args(IMAGE, name), timeout: 300.0)
       raise PodmanProvisionError.new("podman run failed for #{name}: #{result.stderr}") unless Cmd.success?(result)
       @started_names << name
     end
 
     private def start_from_image(image : String, name : String) : Nil
-      result = Cmd.run("podman", ["run", "-d", "--privileged", "--name", name, image, "sleep", "infinity"], timeout: 300.0)
+      result = Cmd.run("podman", PodmanBackend.run_args(image, name), timeout: 300.0)
       raise PodmanProvisionError.new("podman run failed for #{name}: #{result.stderr}") unless Cmd.success?(result)
       @started_names << name
     end

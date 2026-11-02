@@ -6,6 +6,12 @@ require "file_utils"
 
 module KrikriPlaybookGenerator
   describe PodmanBackend do
+    it "labels every container it starts with the owner pid" do
+      args = PodmanBackend.run_args(PodmanBackend::IMAGE, "kpg-real-1")
+
+      assert_equal(["run", "-d", "--privileged", "--label", "#{PodmanBackend::OWNER_LABEL}=#{Process.pid}", "--name", "kpg-real-1", PodmanBackend::IMAGE, "sleep", "infinity"], args)
+    end
+
     it "reports available? true when podman is on PATH" do
       assert_equal(!!Process.find_executable("podman"), PodmanBackend.available?)
     end

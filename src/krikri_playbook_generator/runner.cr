@@ -71,17 +71,21 @@ module KrikriPlaybookGenerator
       getter error : String?
 
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil)
-        @error ||= PlaybookResult.reference_unresolved(@ansible)
+        @error ||= PlaybookResult.reference_harness_gap(@ansible)
       end
 
-      UNRESOLVED = /couldn't resolve module\/action '[^']+'/
+      UNRESOLVED      = /couldn't resolve module\/action '[^']+'/
+      MISSING_LIBRARY = /Failed to import the required Python library \(([^)]+)\)/
 
-      # Real ansible could not even load the module (its collection or python
-      # library is missing on the reference host): a harness gap, never a krikri
-      # finding, so it is recorded as an error rather than a divergence.
-      def self.reference_unresolved(run : EngineRun) : String?
+      # Real ansible could not even run the task (its module or a python
+      # library it needs is missing on the reference host): a harness gap,
+      # never a krikri finding, so it is recorded as an error rather than a
+      # divergence.
+      def self.reference_harness_gap(run : EngineRun) : String?
         line = (run.stdout + '\n' + run.stderr).lines.find(&.=~(UNRESOLVED))
-        "reference ansible cannot load the module (harness gap, not krikri): #{line.strip}" if line
+        return "reference ansible cannot load the module (harness gap, not krikri): #{line.strip}" if line
+        lib_line = (run.stdout + '\n' + run.stderr).lines.find(&.=~(MISSING_LIBRARY))
+        "reference ansible is missing a python library (harness gap, not krikri; add it to REAL_PACKAGES): #{lib_line.try(&.strip)}" if lib_line
       end
 
       def self.errored(playbook : String, meta : MetaInfo?, message : String) : PlaybookResult

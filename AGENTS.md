@@ -230,6 +230,11 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   names, long epoch-class digit runs, backup file names). Every entry
   needs a justification comment. Never mask anything else; an unexplained
   difference after masking IS a finding.
+- **Reference-side harness gaps**: a missing package/library on the
+  reference (real ansible) side — unresolved module/action or `Failed to
+  import the required Python library (<name>)` — is a harness gap, never
+  a divergence: it's recorded as an error and fixed by adding the package
+  to `PodmanBackend::REAL_PACKAGES`, never masked.
 - **Coverage scope**: 100% bar for `ansible.builtin` core + krikri's
   chosen community modules; zero obligation for the rest. The default
   `--modules` list should be derived from the same source of truth the
@@ -259,7 +264,11 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   krikri-role-tester's) for wide/production batches is a known gap, not
   built here — see `runner.cr`'s own comment for why role-tester itself
   couldn't be reused directly. Podman fills the "fast local iteration"
-  niche, not the "hundreds of hosts" one.
+  niche, not the "hundreds of hosts" one. Every `podman run` this backend
+  issues (template pair and per-playbook pair alike) carries
+  `--label krikri-owner-pid=<Process.pid>` (`OWNER_LABEL` in
+  `podman_backend.cr`) so external cleanup tooling can tell a live run's
+  containers from abandoned ones.
 
 ## Known gaps
 
