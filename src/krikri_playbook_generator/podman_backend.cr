@@ -41,11 +41,15 @@ module KrikriPlaybookGenerator
   class PodmanBackend
     IMAGE                    = "docker.io/library/debian:trixie-slim"
     EXPECTED_ANSIBLE_VERSION = "2.19.11"
-    REAL_PACKAGES            = "ansible python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo python3-idna"
-    KRIKRI_RUNTIME_LIBS      = "libxml2 libssl3 openssl libyaml-0-2 libpcre2-8-0 python3-cryptography python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
-    INVENTORY                = "target ansible_connection=local\n"
-    ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
-    OWNER_LABEL              = "krikri-owner-pid"
+    # python3-pexpect: expect's real-ansible reference imports it; without
+    # it every expect playbook is a harness gap rather than a test. Krikri's
+    # own expect implementation needs it too (it shells to python pexpect),
+    # so KRIKRI_RUNTIME_LIBS carries it as well.
+    REAL_PACKAGES       = "ansible python3 python3-pexpect procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo python3-idna"
+    KRIKRI_RUNTIME_LIBS = "libxml2 libssl3 openssl libyaml-0-2 libpcre2-8-0 python3-cryptography python3-pexpect python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
+    INVENTORY           = "target ansible_connection=local\n"
+    ENGINE_ENV_STRIP    = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
+    OWNER_LABEL         = "krikri-owner-pid"
 
     def self.available? : Bool
       !!Process.find_executable("podman")

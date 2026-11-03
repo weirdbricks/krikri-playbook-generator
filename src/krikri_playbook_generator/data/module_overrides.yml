@@ -186,6 +186,22 @@ modules:
     dest: {kind: literal_pool, pool: ["/tmp/kpg-work/fetched/", "/tmp/kpg-work/fetched2/"]}
     fail_on_missing: {kind: literal_pool, pool: ["true"]}
 
+  # checksum's schema is a free string but the module demands
+  # "<algorithm>:<checksum>", and the choices live in the module's
+  # argument_spec rather than DOCUMENTATION, so the scan can't see them;
+  # random values were rejected before the task did anything. Excluding it
+  # keeps the default (no checksum check), which is runnable and still
+  # exercises the dest logic in --check.
+  get_url:
+    checksum: {exclude: true}
+
+  # follow_redirects' choices also live only in argument_spec; the random
+  # strings the generator produced were rejected at validation time, so
+  # nearly every uri happy path failed on real ansible (wasted coverage).
+  # The default (safe) is the runnable baseline.
+  uri:
+    follow_redirects: {exclude: true}
+
   getent:
     database: {kind: literal_pool, pool: ["passwd", "group"]}
     key: {kind: literal_pool, pool: ["root", "daemon"]}
@@ -709,3 +725,26 @@ modules:
     path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/opt/kpg-fixtures/src2.txt"]}
     divert: {kind: work_path}
     always: [path]
+
+  # expect runs the `command` and waits on it; a random command string died
+  # with "No such file or directory" (it is exec'd directly, no shell), and
+  # `chdir` was being pointed at a fixture FILE, not a directory. The
+  # fixture script prints and exits, so empty responses just run it to EOF.
+  # timeout's schema value was also not int-convertible; pin small ints.
+  # removes pre-deletes a path: point it at a pre-seeded work file.
+  expect:
+    command: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh"]}
+    chdir: {kind: work_dir}
+    timeout: {kind: literal_pool, pool: ["10", "30"]}
+    creates: {kind: literal_pool, pool: ["/tmp/kpg-work/never-created"]}
+    removes: {kind: literal_pool, pool: ["/tmp/kpg-work/out1.txt"]}
+
+  # raw execs `executable` directly (no shell) to run free_form; a random
+  # executable name failed 8/8 happy paths on real ansible with a
+  # non-zero return code before the command ever ran. Pin /bin/sh and a
+  # runnable free_form command (a random command fails rc!=0, which the
+  # quality report counts as a failed happy path); chaos mutates both.
+  raw:
+    executable: {kind: literal_pool, pool: ["/bin/sh"]}
+    free_form: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh", "echo kpg-raw"]}
+    always: [executable]
