@@ -56,9 +56,16 @@ module KrikriPlaybookGenerator
     end
 
     # Every container this tool starts carries `OWNER_LABEL=<pid>` so external
-    # tooling can tell a live kpg run's containers from abandoned ones.
+    # tooling can tell a live kpg run's containers from abandoned ones, and
+    # boots the fixture http.server (Fixtures::HTTP_PORT) before sleeping:
+    # get_url/uri happy paths need a URL that resolves identically on both
+    # engine sides. The template containers start it before python3 is
+    # installed - the background job just fails there, and every container
+    # started FROM the committed images (python3 installed) gets a live
+    # server.
     def self.run_args(image : String, name : String) : Array(String)
-      ["run", "-d", "--privileged", "--label", "#{OWNER_LABEL}=#{Process.pid}", "--name", name, image, "sleep", "infinity"]
+      bootstrap = "python3 -m http.server #{Fixtures::HTTP_PORT} --bind 127.0.0.1 --directory #{Fixtures::FIXTURE_ROOT} >/dev/null 2>&1 & exec sleep infinity"
+      ["run", "-d", "--privileged", "--label", "#{OWNER_LABEL}=#{Process.pid}", "--name", name, image, "sh", "-c", bootstrap]
     end
 
     # Any kpg-* container still listed by `podman ps -a` after teardown is

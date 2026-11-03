@@ -48,5 +48,19 @@ module KrikriPlaybookGenerator
         assert parsed.as_a?, "role tasks file is not a YAML sequence"
       end
     end
+
+    # The generator's get_url/uri happy paths point at Fixtures::HTTP_URLS,
+    # served by the backend's http.server out of the fixture root; every
+    # URL must map to a file the seed script actually creates, or the happy
+    # path 404s instead of exercising the module.
+    it "http fixture URLs resolve to files the seed script creates" do
+      with_seeded_fixtures do |fixture_root|
+        Fixtures::HTTP_URLS.each do |url|
+          relative = url.sub("http://127.0.0.1:#{Fixtures::HTTP_PORT}/", "")
+          path = File.join(fixture_root, relative)
+          assert File.file?(path), "http fixture URL #{url} has no seeded file at #{path}"
+        end
+      end
+    end
   end
 end

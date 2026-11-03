@@ -6,10 +6,14 @@ require "file_utils"
 
 module KrikriPlaybookGenerator
   describe PodmanBackend do
-    it "labels every container it starts with the owner pid" do
+    it "labels every container it starts with the owner pid and boots the fixture http server" do
       args = PodmanBackend.run_args(PodmanBackend::IMAGE, "kpg-real-1")
 
-      assert_equal(["run", "-d", "--privileged", "--label", "#{PodmanBackend::OWNER_LABEL}=#{Process.pid}", "--name", "kpg-real-1", PodmanBackend::IMAGE, "sleep", "infinity"], args)
+      assert_equal(
+        ["run", "-d", "--privileged", "--label", "#{PodmanBackend::OWNER_LABEL}=#{Process.pid}", "--name", "kpg-real-1",
+         PodmanBackend::IMAGE, "sh", "-c",
+         "python3 -m http.server #{Fixtures::HTTP_PORT} --bind 127.0.0.1 --directory #{Fixtures::FIXTURE_ROOT} >/dev/null 2>&1 & exec sleep infinity"],
+        args)
     end
 
     it "reports available? true when podman is on PATH" do

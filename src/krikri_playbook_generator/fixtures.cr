@@ -51,6 +51,23 @@ module KrikriPlaybookGenerator
       "#{WORK_ROOT}/sub",
     ]
 
+    # get_url/uri need a URL that actually serves something: a random URL
+    # fails DNS/connection before the module logic runs, which the quality
+    # report counts as wasted coverage. The podman backend starts a python
+    # http.server on this fixed loopback port at container start (in every
+    # fresh pair as well as the templates) serving the read-only fixture
+    # root, so these URLs resolve identically on both engine sides and
+    # without touching the network. The paths must stay files the seed
+    # script really creates.
+    HTTP_PORT = 18888
+
+    HTTP_URLS = [
+      "http://127.0.0.1:#{HTTP_PORT}/src.txt",
+      "http://127.0.0.1:#{HTTP_PORT}/src2.txt",
+      "http://127.0.0.1:#{HTTP_PORT}/template.j2",
+      "http://127.0.0.1:#{HTTP_PORT}/dir/inner.txt",
+    ]
+
     SEED_SCRIPT = <<-BASH
       set -e
       mkdir -p #{FIXTURE_ROOT}/dir #{WORK_ROOT}

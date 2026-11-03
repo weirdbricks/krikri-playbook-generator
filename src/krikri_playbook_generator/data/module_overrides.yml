@@ -191,16 +191,43 @@ modules:
   # argument_spec rather than DOCUMENTATION, so the scan can't see them;
   # random values were rejected before the task did anything. Excluding it
   # keeps the default (no checksum check), which is runnable and still
-  # exercises the dest logic in --check.
+  # exercises the dest logic in --check. url points at the backend's
+  # fixture http.server (Fixtures::HTTP_URLS): a random URL failed at the
+  # connection layer before any module logic ran.
   get_url:
     checksum: {exclude: true}
+    url: {kind: literal_pool, pool: ["http://127.0.0.1:18888/src.txt", "http://127.0.0.1:18888/src2.txt", "http://127.0.0.1:18888/template.j2", "http://127.0.0.1:18888/dir/inner.txt"]}
+    # TLS material the schema happily points at junk work files: python
+    # dies loading a non-PEM "certificate" before the request starts.
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
+    tmp_dest: {kind: work_dir}
+    # TLS 1.3 cipher list: random strings die at ssl setup with "No cipher
+    # can be selected" before the request starts.
+    ciphers: {exclude: true}
 
   # follow_redirects' choices also live only in argument_spec; the random
   # strings the generator produced were rejected at validation time, so
   # nearly every uri happy path failed on real ansible (wasted coverage).
-  # The default (safe) is the runnable baseline.
+  # The default (safe) is the runnable baseline. url points at the fixture
+  # http.server for the same reason as get_url.
   uri:
     follow_redirects: {exclude: true}
+    url: {kind: literal_pool, pool: ["http://127.0.0.1:18888/src.txt", "http://127.0.0.1:18888/src2.txt", "http://127.0.0.1:18888/template.j2", "http://127.0.0.1:18888/dir/inner.txt"]}
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
+    ca_path: {exclude: true}
+    # same cipher story as get_url; body as a raw string only works with
+    # body_format raw (schema picks any body_format, form-multipart wants a
+    # mapping); unix_socket pointed at a plain file; a random status_code
+    # list makes a 200 response fail the task; removes/creates pointed at
+    # seeded files, which skips the task instead of running it.
+    ciphers: {exclude: true}
+    body: {exclude: true}
+    unix_socket: {exclude: true}
+    status_code: {exclude: true}
+    removes: {exclude: true}
+    creates: {kind: literal_pool, pool: ["/tmp/kpg-work/never-created"]}
 
   getent:
     database: {kind: literal_pool, pool: ["passwd", "group"]}
