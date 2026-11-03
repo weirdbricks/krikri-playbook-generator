@@ -51,6 +51,26 @@ module KrikriPlaybookGenerator
     ENGINE_ENV_STRIP    = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
     OWNER_LABEL         = "krikri-owner-pid"
 
+    # The rpm-family modules (dnf, dnf5, yum...) need rpm tooling and python
+    # dnf bindings the Debian template can never have; they run against a
+    # Rocky template pair instead, mirroring AtlanticBackend's "rpm" VM
+    # profile (same Rocky major, same package set, same import-probe
+    # behavior). Rocky 10's glibc (2.39) runs the trixie-built krikri
+    # binary - AtlanticBackend stages the same binary onto its Rocky-10 VMs.
+    IMAGE_RPM = "quay.io/rockylinux/rockylinux:10"
+    # python3-dnf-plugin-versionlock mirrors the Atlantic rpm profile;
+    # versionlock IS in Rocky's repos. dnf5's python bindings do not exist
+    # in Rocky 10's repos, so real ansible's dnf5 fails its import probe -
+    # that failure is still comparable byte-for-byte (krikri probes the
+    # same python path), only the dnf5 happy paths count as wasted coverage.
+    RPM_PACKAGES     = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp"
+    ANSIBLE_CORE_PIN = "ansible-core==#{EXPECTED_ANSIBLE_VERSION}"
+
+    enum Profile
+      Debian
+      Rpm
+    end
+
     def self.available? : Bool
       !!Process.find_executable("podman")
     end
@@ -79,30 +99,47 @@ module KrikriPlaybookGenerator
 
     def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false)
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
-      @name_real = "kpg-tpl-real#{@suffix}"
-      @name_krikri = "kpg-tpl-krikri#{@suffix}"
-      @image_real = "kpg-img-real#{@suffix}"
-      @image_krikri = "kpg-img-krikri#{@suffix}"
+      @name_real = ""
+      @name_krikri = ""
+      @image_real = ""
+      @image_krikri = ""
       @started_names = [] of String
       @run_index = 0
-      @provisioned = false
+      @provisioned_profiles = [] of Profile
+      @committed_images = [] of String
     end
 
-    def provision : Nil
-      start_container(@name_real)
-      start_container(@name_krikri)
+    def provision(profile : Profile = Profile::Debian) : Nil
+      case profile
+      when Profile::Debian
+        @name_real = "kpg-tpl-real#{@suffix}"
+        @name_krikri = "kpg-tpl-krikri#{@suffix}"
+        @image_real = "kpg-img-real#{@suffix}"
+        @image_krikri = "kpg-img-krikri#{@suffix}"
+        start_container(@name_real)
+        start_container(@name_krikri)
+        install(@name_real, REAL_PACKAGES)
+        install(@name_krikri, KRIKRI_RUNTIME_LIBS)
+      when Profile::Rpm
+        @name_real = "kpg-rpmtpl-real#{@suffix}"
+        @name_krikri = "kpg-rpmtpl-krikri#{@suffix}"
+        @image_real = "kpg-img-real-rpm#{@suffix}"
+        @image_krikri = "kpg-img-krikri-rpm#{@suffix}"
+        start_container(@name_real, IMAGE_RPM)
+        start_container(@name_krikri, IMAGE_RPM)
+        install_rpm(@name_real, with_ansible: true)
+        install_rpm(@name_krikri, with_ansible: false)
+      end
 
-      install(@name_real, REAL_PACKAGES)
-      install(@name_krikri, KRIKRI_RUNTIME_LIBS)
       stage_krikri_binary
       seed_fixtures
       prepare_workdir
-
       assert_ansible_version!
+      assert_krikri_binary!
       commit_templates
       drop_templates
 
-      @provisioned = true
+      @provisioned_profiles << profile
     end
 
     # Runs one playbook in a fresh container pair started from the
@@ -111,8 +148,8 @@ module KrikriPlaybookGenerator
     # ANSIBLE_NOCOLOR=1, the caching/gathering env vars stripped, stdin
     # </dev/null, and a per-engine `timeout` so a hang is its own result
     # (rc 124) instead of wedging the batch.
-    def run_playbook(playbook_path : String) : {ansible: Cmd::Result, krikri: Cmd::Result}
-      raise PodmanProvisionError.new("provision was never called") unless @provisioned
+    def run_playbook(playbook_path : String, profile : Profile = Profile::Debian) : {ansible: Cmd::Result, krikri: Cmd::Result}
+      raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       @run_index += 1
       real = "kpg-real-#{@run_index}#{@suffix}"
@@ -151,13 +188,13 @@ module KrikriPlaybookGenerator
         @started_names.clear
       end
 
-      [@image_real, @image_krikri].each do |image|
+      @committed_images.each do |image|
         Cmd.run("podman", ["rmi", "-f", image], timeout: 180.0)
       end
     end
 
-    private def start_container(name : String) : Nil
-      result = Cmd.run("podman", PodmanBackend.run_args(IMAGE, name), timeout: 300.0)
+    private def start_container(name : String, image : String = IMAGE) : Nil
+      result = Cmd.run("podman", PodmanBackend.run_args(image, name), timeout: 300.0)
       raise PodmanProvisionError.new("podman run failed for #{name}: #{result.stderr}") unless Cmd.success?(result)
       @started_names << name
     end
@@ -174,6 +211,16 @@ module KrikriPlaybookGenerator
       # py3compile first so the install (and the collections) succeed.
       prep = packages.split.includes?("ansible") ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-minimal >/dev/null && dpkg-divert --local --rename --add /usr/bin/py3compile >/dev/null && ln -sf /bin/true /usr/bin/py3compile && " : "export DEBIAN_FRONTEND=noninteractive; "
       exec!(name, "#{prep}apt-get update -qq && apt-get install -y -qq --no-install-recommends #{packages} >/dev/null", 900.0)
+    end
+
+    # The rpm template pair shares one prep: dnf packages everywhere, the
+    # pinned ansible-core only where the real engine runs (the version
+    # assertion below would fail on a distro ansible-core otherwise).
+    private def install_rpm(name : String, with_ansible : Bool) : Nil
+      script = "dnf makecache -q 2>/dev/null || dnf makecache; " \
+               "dnf install -y -q #{RPM_PACKAGES} >/dev/null"
+      script += " && pip3 install --quiet #{ANSIBLE_CORE_PIN}" if with_ansible
+      exec!(name, script, 900.0)
     end
 
     private def stage_krikri_binary : Nil
@@ -228,10 +275,21 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # The krikri container shares the template pair's OS, and the binary was
+    # linked on the build host - a smoke check here catches a glibc/lib
+    # mismatch at provision time instead of as 10 mysterious engine errors.
+    private def assert_krikri_binary! : Nil
+      result = Cmd.run("podman", ["exec", @name_krikri, "/opt/krikri/bin/krikri-playbook", "--version"], timeout: 120.0)
+      unless Cmd.success?(result)
+        raise PodmanProvisionError.new("staged krikri binary fails to run in the container (glibc/lib mismatch?): #{result.stderr}")
+      end
+    end
+
     private def commit_templates : Nil
       [{@name_real, @image_real}, {@name_krikri, @image_krikri}].each do |(container, image)|
         result = Cmd.run("podman", ["commit", container, image], timeout: 300.0)
         raise PodmanProvisionError.new("podman commit #{container} -> #{image} failed: #{result.stderr}") unless Cmd.success?(result)
+        @committed_images << image
       end
     end
 

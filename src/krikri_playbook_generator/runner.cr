@@ -1,6 +1,7 @@
 require "json"
 require "./cmd"
 require "./podman_backend"
+require "./atlantic_backend"
 require "./masks"
 require "./fixtures"
 require "./versions"
@@ -246,16 +247,36 @@ module KrikriPlaybookGenerator
     private def run_via_podman : Array(PlaybookResult)
       backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control)
       begin
-        backend.provision
-        @playbook_paths.map { |path| guarded(path) { run_playbook_via_podman(backend, path) } }
+        # rpm-family modules need the Rocky template pair; everything else
+        # stays on Debian. A mixed batch provisions both templates and runs
+        # each playbook against its own.
+        profiles = Hash(PodmanBackend::Profile, Array(String)).new do |hash, profile|
+          hash[profile] = [] of String
+        end
+        @playbook_paths.each do |path|
+          profiles[podman_profile_for(path)] << path
+        end
+        profiles.each_key { |profile| backend.provision(profile) }
+        profiles.flat_map do |profile, paths|
+          paths.map { |path| guarded(path) { run_playbook_via_podman(backend, path, profile) } }
+        end
       ensure
         backend.teardown
         report_leaks
       end
     end
 
-    private def run_playbook_via_podman(backend : PodmanBackend, path : String) : PlaybookResult
-      outcome = backend.run_playbook(path)
+    private def podman_profile_for(path : String) : PodmanBackend::Profile
+      module_name = load_meta(path).try(&.module_name).try(&.split(".").last)
+      if module_name && AtlanticBackend::PROFILE_FOR_MODULE[module_name]? == "rpm"
+        PodmanBackend::Profile::Rpm
+      else
+        PodmanBackend::Profile::Debian
+      end
+    end
+
+    private def run_playbook_via_podman(backend : PodmanBackend, path : String, profile : PodmanBackend::Profile) : PlaybookResult
+      outcome = backend.run_playbook(path, profile)
       PlaybookResult.new(path, to_engine_run("ansible", outcome[:ansible]),
         to_engine_run("krikri", outcome[:krikri]), load_meta(path))
     end
