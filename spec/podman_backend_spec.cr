@@ -6,6 +6,48 @@ require "file_utils"
 
 module KrikriPlaybookGenerator
   describe PodmanBackend do
+    it "names the cached template images with a stable repository and the fingerprint as tag" do
+      real, krikri = PodmanBackend.image_names(PodmanBackend::Profile::Debian, "abc123")
+      assert_equal("kpg-img-real-debian:abc123", real)
+      assert_equal("kpg-img-krikri-debian:abc123", krikri)
+
+      real, krikri = PodmanBackend.image_names(PodmanBackend::Profile::Rpm, "abc123")
+      assert_equal("kpg-img-real-rpm:abc123", real)
+      assert_equal("kpg-img-krikri-rpm:abc123", krikri)
+    end
+
+    it "fingerprints deterministically and changes whenever an input changes" do
+      bin = File.tempname("kpg-spec-bin")
+      File.write(bin, "fake krikri binary v1")
+      deps = Dependencies.new(<<-YAML)
+        deb_modules:
+          both: [ansible, python3]
+        rpm_modules:
+          both: []
+        YAML
+      backend = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: deps)
+      original = backend.fingerprint_for_test
+      assert_equal(original, backend.fingerprint_for_test,
+        "the fingerprint must be deterministic for unchanged inputs")
+
+      File.write(bin, "fake krikri binary v2")
+      rebuilt = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: deps)
+      refute_equal(original, rebuilt.fingerprint_for_test,
+        "a changed krikri binary must change the fingerprint")
+
+      deps_extra = Dependencies.new(<<-YAML)
+        deb_modules:
+          both: [ansible, python3, sudo]
+        rpm_modules:
+          both: []
+        YAML
+      wider = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: deps_extra)
+      refute_equal(original, wider.fingerprint_for_test,
+        "a changed package set must change the fingerprint")
+    ensure
+      File.delete(bin) if bin
+    end
+
     it "includes the union dependency packages in the template installs" do
       deps = Dependencies.new(<<-YAML)
         supported: [community.general.sudoers]
@@ -44,6 +86,14 @@ module KrikriPlaybookGenerator
 
     it "reports available? true when podman is on PATH" do
       assert_equal(!!Process.find_executable("podman"), PodmanBackend.available?)
+    end
+
+    it "attributes leftover containers to their owner pid and keeps live ones" do
+      live = "kpg-tpl-real-1793857125-#{Process.pid}"
+      dead = "kpg-tpl-krikri-1793854840-999999998"
+      unparsed = "kpg-mystery"
+
+      assert_equal([dead], PodmanBackend.stale_containers([live, dead, unparsed]))
     end
 
     it "runs each playbook on its own profile's template image, even after another profile was provisioned" do
@@ -97,6 +147,36 @@ module KrikriPlaybookGenerator
         assert(outcome[:krikri].stdout.includes?("PLAY RECAP"))
       ensure
         backend.teardown
+      end
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "serves the second provision from the template image cache instead of rebuilding" do
+      skip("podman not available on this machine") unless PodmanBackend.available?
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      skip("no krikri-playbook binary to stage into the container") unless File.exists?(krikri_bin)
+
+      dir = File.tempname("kpg-spec-podman")
+      Dir.mkdir_p(dir)
+      task = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("podman cache spec")})
+      playbook_path = PlaybookBuilder.new(dir).build([task]).first
+
+      backend = PodmanBackend.new(krikri_bin)
+      backend.provision
+      backend.teardown
+
+      cached = PodmanBackend.new(krikri_bin)
+      cached.provision
+      assert(cached.cache_hit?(PodmanBackend::Profile::Debian),
+        "the second provision must hit the image cache (teardown keeps the committed images)")
+      begin
+        outcome = cached.run_playbook(playbook_path)
+        assert_equal(0, outcome[:ansible].rc)
+        assert_equal(0, outcome[:krikri].rc)
+      ensure
+        cached.teardown
       end
     ensure
       FileUtils.rm_rf(dir) if dir
