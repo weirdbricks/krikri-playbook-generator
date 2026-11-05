@@ -613,9 +613,12 @@ modules:
     name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
     state: {kind: literal_pool, pool: ["present", "latest"]}
     # same argument_spec-only exclusivities as dnf: name|list, and
-    # best|nobest (nobest is the deprecated alias).
+    # best|nobest (nobest is the deprecated alias). autoremove, like dnf,
+    # is only valid alone or with state=absent - real ansible rejects the
+    # combination before doing anything.
     list: {exclude: true}
     nobest: {exclude: true}
+    autoremove: {exclude: true}
     conf_file: {exclude: true}
     # dnf4-only option: on dnf5 it triggers real ansible's deprecation
     # warning path, which the module never gets to exercise anyway.
