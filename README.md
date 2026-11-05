@@ -55,7 +55,12 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
   container's ansible-core is exactly 2.19.11, failing loudly otherwise,
   commits it to images, and then starts a **fresh container pair per
   playbook** — so users, files and state created by one playbook never
-  leak into the next. Both engines get the identical invocation (same
+  leak into the next. The committed template images are kept as a
+  content-addressed cache (tag `<name>:<fingerprint>` over the package
+  lists, ansible-core pin, krikri binary/plugins digests and the fixture
+  seed script): a later run with the same inputs skips provisioning
+  entirely, and `--refresh-podman-templates` forces a rebuild and prunes
+  the stale tags. Both engines get the identical invocation (same
   absolute playbook path and cwd, `ANSIBLE_NOCOLOR=1`,
   caching/gathering env vars stripped, stdin `</dev/null`, per-engine
   `timeout` so a hang is its own result, rc 124). Raw stdout/stderr/rc
@@ -261,9 +266,9 @@ Prints `krikri-playbook-generator <VERSION>` and exits 0 without needing a subco
 
 Runs log timestamped progress to **stderr** (stdout stays parseable):
 
-    04:58:45 pid=2512368 [runner] starting 1 playbook(s) (backend=local, results=...)
-    04:58:45 pid=2512368 [runner] executing 1 playbook(s) (local) ...
-    04:58:45 pid=2512368 [runner] executing 1 playbook(s) (local) done in 0.6s (started 04:58:45)
-    04:58:45 pid=2512368 [runner] batch complete: 1 playbook(s), 0 divergent, 0 errored
+    04:58:45 [runner] starting 1 playbook(s) (backend=local, results=...)
+    04:58:45 [runner] executing 1 playbook(s) (local) ...
+    04:58:45 [runner] executing 1 playbook(s) (local) done in 0.6s (started 04:58:45)
+    04:58:45 [runner] batch complete: 1 playbook(s), 0 divergent, 0 errored
 
 The podman backend logs each template step (`starting ...`, `installing ... packages`, `committing ...`, `ready`) with the same `Log.phase` start/done stamping (`src/krikri_playbook_generator/log.cr` — the only diagnostic channel for run/provision paths).

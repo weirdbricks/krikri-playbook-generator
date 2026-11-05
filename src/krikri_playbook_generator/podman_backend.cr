@@ -1,3 +1,4 @@
+require "digest"
 require "./cmd"
 require "./dependencies"
 require "./fixtures"
@@ -21,9 +22,21 @@ module KrikriPlaybookGenerator
   # images, so nothing leaks between playbooks: users created by playbook
   # N don't exist for playbook N+1, /tmp/kpg-work starts empty every time,
   # and a hang or crash can't poison the next comparison. Each per-playbook
-  # pair is removed in `ensure`, teardown removes whatever is left plus
-  # the committed images, and `leak_check` verifies at the end that no
-  # kpg-* container survived.
+  # pair is removed in `ensure`, teardown removes whatever containers are
+  # left, and `leak_check` verifies at the end that no kpg-* container
+  # survived.
+  #
+  # The committed template images are a content-addressed CACHE, not
+  # throwaways: each is tagged `<stable-name>:<fingerprint>`, where the
+  # fingerprint is a SHA-256 over everything the template's content depends
+  # on (profile, base image, package sets, expected ansible-core version,
+  # krikri binary + plugins digests, the fixture seed script). When both
+  # images for a profile's current fingerprint already exist, provisioning
+  # is skipped entirely and the pair is started from the cached images;
+  # only `--refresh-podman-templates` forces a rebuild (and then prunes
+  # every other tag of the stable names). The version/binary assertions
+  # still ran inside whatever build produced that tag, because a fingerprint
+  # covers exactly the inputs those assertions check.
   #
   # Unlike podman-diff, this installs a UNION dependency set (the base
   # lists plus Dependencies#supported's extras) once per profile rather
@@ -63,6 +76,15 @@ module KrikriPlaybookGenerator
       Rpm
     end
 
+    # Stable repository names for the content-addressed template image
+    # cache: the fingerprint (a SHA-256 over the template's inputs) is the
+    # tag, so an existing tag proves the image was built from exactly
+    # today's package lists, binary and fixtures.
+    IMAGE_NAME_REAL_DEBIAN   = "kpg-img-real-debian"
+    IMAGE_NAME_KRIKRI_DEBIAN = "kpg-img-krikri-debian"
+    IMAGE_NAME_REAL_RPM      = "kpg-img-real-rpm"
+    IMAGE_NAME_KRIKRI_RPM    = "kpg-img-krikri-rpm"
+
     def self.available? : Bool
       !!Process.find_executable("podman")
     end
@@ -89,70 +111,111 @@ module KrikriPlaybookGenerator
       result.stdout.lines.reject(&.blank?)
     end
 
+    # Startup cleanup: every kpg-* container name ends in `-<unix>-<pid>`
+    # (the naming suffix), so a leftover from a killed run can be
+    # attributed to its owner pid and removed when that pid is no longer
+    # alive - without the previous runs' ERROR noise in every later run.
+    # Containers whose pid cannot be parsed are left alone (leak_check
+    # still reports them); a live run's containers are never touched.
+    def self.cleanup_stale : Array(String)
+      stale = stale_containers(leak_check)
+      return stale if stale.empty?
+
+      Cmd.run("podman", ["rm", "-f"] + stale, timeout: 180.0)
+      Log.info("podman", "startup: removed #{stale.size} stale container(s) from dead run(s): #{stale.join(", ")}")
+      stale
+    end
+
+    # Visible for specs: filters the kpg-* names down to the ones whose
+    # owner pid is dead (or unparseable names are kept out of removal).
+    def self.stale_containers(names : Array(String)) : Array(String)
+      names.select do |name|
+        pid = name.split("-").last.to_i?
+        pid && !Process.exists?(pid)
+      end
+    end
+
+    def self.image_names(profile : Profile, fingerprint : String) : {String, String}
+      if profile.debian?
+        {"#{IMAGE_NAME_REAL_DEBIAN}:#{fingerprint}", "#{IMAGE_NAME_KRIKRI_DEBIAN}:#{fingerprint}"}
+      else
+        {"#{IMAGE_NAME_REAL_RPM}:#{fingerprint}", "#{IMAGE_NAME_KRIKRI_RPM}:#{fingerprint}"}
+      end
+    end
+
     def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false,
-                   @module_fqcns : Array(String) = [] of String, @dependencies : Dependencies = Dependencies.load)
+                   @module_fqcns : Array(String) = [] of String, @dependencies : Dependencies = Dependencies.load,
+                   @refresh_templates : Bool = false)
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = ""
       @name_krikri = ""
-      @image_real = ""
-      @image_krikri = ""
       @images = {} of Profile => {String, String}
       @started_names = [] of String
       @run_index = 0
       @provisioned_profiles = [] of Profile
-      @committed_images = [] of String
+      @cache_hits = [] of Profile
+      @stale_cleaned = false
     end
 
     def provision(profile : Profile = Profile::Debian) : Nil
+      cleanup_stale_once
       label = profile.debian? ? "debian" : "rpm"
       Log.phase("podman", "#{label} template provisioning start") do
         provision_inner(profile)
       end
     end
 
+    # Runs once per backend instance, right before the first provision -
+    # before any container of this run exists, so this run's own
+    # containers can never be swept by it.
+    private def cleanup_stale_once : Nil
+      return if @stale_cleaned
+
+      @stale_cleaned = true
+      PodmanBackend.cleanup_stale
+    end
+
     private def provision_inner(profile : Profile) : Nil
       label = profile.debian? ? "debian" : "rpm"
+      fingerprint = fingerprint(profile)
+      real_image, krikri_image = PodmanBackend.image_names(profile, fingerprint)
+
+      if !@refresh_templates && image_exists?(real_image) && image_exists?(krikri_image)
+        Log.info("podman", "#{label} template cache hit (#{fingerprint}) - skipping provisioning")
+        @images[profile] = {real_image, krikri_image}
+        @provisioned_profiles << profile
+        @cache_hits << profile
+        return
+      end
+
+      @name_real = "kpg-tpl-real#{@suffix}"
+      @name_krikri = "kpg-tpl-krikri#{@suffix}"
+      sets = package_sets
       case profile
       when Profile::Debian
-        @name_real = "kpg-tpl-real#{@suffix}"
-        @name_krikri = "kpg-tpl-krikri#{@suffix}"
-        @image_real = "kpg-img-real#{@suffix}"
-        @image_krikri = "kpg-img-krikri#{@suffix}"
         Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE})")
         start_container(@name_real)
         start_container(@name_krikri)
-        sets = package_sets
         Log.info("podman", "#{label} template: installing #{sets.real_debian.size + sets.krikri_debian.size} packages " \
                            "(real #{sets.real_debian.size}, krikri #{sets.krikri_debian.size})")
         install(@name_real, sets.real_debian.join(" "))
         install(@name_krikri, sets.krikri_debian.join(" "))
-        unless sets.python.empty?
-          Log.info("podman", "#{label} template: pip installing #{sets.python.join(" ")} (real side)")
-          install_python(@name_real, sets.python)
-        end
-        unless sets.collections.empty?
-          Log.info("podman", "#{label} template: galaxy installing #{sets.collections.join(" ")} (real side)")
-          install_collections(@name_real, sets.collections)
-        end
       when Profile::Rpm
         @name_real = "kpg-rpmtpl-real#{@suffix}"
         @name_krikri = "kpg-rpmtpl-krikri#{@suffix}"
-        @image_real = "kpg-img-real-rpm#{@suffix}"
-        @image_krikri = "kpg-img-krikri-rpm#{@suffix}"
         Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE_RPM})")
         start_container(@name_real, IMAGE_RPM)
         start_container(@name_krikri, IMAGE_RPM)
-        sets = package_sets
         install_rpm(@name_real, with_ansible: true, packages: sets.real_rpm.join(" "))
         install_rpm(@name_krikri, with_ansible: false, packages: sets.krikri_rpm.join(" "))
-        unless sets.python.empty?
-          Log.info("podman", "#{label} template: pip installing #{sets.python.join(" ")} (real side)")
-          install_python_rpm(@name_real, sets.python)
-        end
-        unless sets.collections.empty?
-          Log.info("podman", "#{label} template: galaxy installing #{sets.collections.join(" ")} (real side)")
-          install_collections(@name_real, sets.collections)
-        end
+      end
+      unless sets.python.empty?
+        Log.info("podman", "#{label} template: pip installing #{sets.python.join(" ")} (real side)")
+        install_python(@name_real, sets.python)
+      end
+      unless sets.collections.empty?
+        Log.info("podman", "#{label} template: galaxy installing #{sets.collections.join(" ")} (real side)")
+        install_collections(@name_real, sets.collections)
       end
 
       Log.info("podman", "#{label} template: staging krikri-playbook binary")
@@ -164,11 +227,15 @@ module KrikriPlaybookGenerator
       Log.info("podman", "#{label} template: asserting ansible-core == #{EXPECTED_ANSIBLE_VERSION} / krikri binary")
       assert_ansible_version!
       assert_krikri_binary!
-      Log.info("podman", "#{label} template: committing #{@image_real} + #{@image_krikri}")
-      commit_templates
+      Log.info("podman", "#{label} template: committing #{real_image} + #{krikri_image}")
+      commit_templates(real_image, krikri_image)
       drop_templates
-      Log.info("podman", "#{label} template: ready (#{@image_real})")
-      @images[profile] = {@image_real, @image_krikri}
+      if @refresh_templates
+        prune_other_tags(real_image)
+        prune_other_tags(krikri_image)
+      end
+      Log.info("podman", "#{label} template: ready (#{real_image})")
+      @images[profile] = {real_image, krikri_image}
       @provisioned_profiles << profile
     end
 
@@ -214,21 +281,15 @@ module KrikriPlaybookGenerator
     # Whatever actually started gets removed, even if provisioning failed
     # halfway through (e.g. the second container never came up) - otherwise
     # the already-running --privileged container would leak permanently.
-    # The committed images are removed too: they're just frozen templates,
-    # not results worth keeping.
+    # The committed template images are deliberately KEPT: they are the
+    # content-addressed cache the next run provision (or the next batch)
+    # starts from, not results worth cleaning up.
     def teardown : Nil
-      unless @started_names.empty?
-        Log.info("podman", "teardown: removing #{@started_names.size} leftover container(s)")
-        Cmd.run("podman", ["rm", "-f"] + @started_names, timeout: 180.0)
-        @started_names.clear
-      end
+      return if @started_names.empty?
 
-      unless @committed_images.empty?
-        Log.info("podman", "teardown: removing #{@committed_images.size} committed template image(s)")
-        @committed_images.each do |image|
-          Cmd.run("podman", ["rmi", "-f", image], timeout: 180.0)
-        end
-      end
+      Log.info("podman", "teardown: removing #{@started_names.size} leftover container(s)")
+      Cmd.run("podman", ["rm", "-f"] + @started_names, timeout: 180.0)
+      @started_names.clear
     end
 
     private def start_container(name : String, image : String = IMAGE) : Nil
@@ -346,12 +407,79 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def commit_templates : Nil
-      [{@name_real, @image_real}, {@name_krikri, @image_krikri}].each do |(container, image)|
-        result = Cmd.run("podman", ["commit", container, image], timeout: 300.0)
+    private def commit_templates(real_image : String, krikri_image : String) : Nil
+      [{@name_real, real_image}, {@name_krikri, krikri_image}].each do |(container, image)|
+        result = Cmd.run("podman", ["commit", container, image], timeout: 600.0)
         raise PodmanProvisionError.new("podman commit #{container} -> #{image} failed: #{result.stderr}") unless Cmd.success?(result)
-        @committed_images << image
       end
+    end
+
+    # Only called in --refresh mode: a deliberate rebuild drops every other
+    # tag of the stable repository name, so the cache resets to exactly the
+    # freshly built fingerprint instead of accumulating stale ones.
+    private def prune_other_tags(image : String) : Nil
+      repository = image.split(":").first
+      result = Cmd.run("podman", ["images", "--filter", "reference=#{repository}:*",
+                                  "--format", "{{.Repository}}:{{.Tag}}"], timeout: 60.0)
+      return unless Cmd.success?(result)
+
+      stale = result.stdout.lines.reject!(&.blank?).uniq!.reject { |ref| ref == image }
+      stale.each do |ref|
+        Cmd.run("podman", ["rmi", ref], timeout: 300.0)
+      end
+    end
+
+    private def image_exists?(reference : String) : Bool
+      Cmd.success?(Cmd.run("podman", ["image", "exists", reference], timeout: 60.0))
+    end
+
+    # The cache key: a SHA-256 over every input the template's CONTENT
+    # depends on. A change in any of them (package lists in
+    # module_dependencies.yml, the ansible-core pin, the krikri binary or
+    # plugins, the fixture seed script) yields a new tag and forces a
+    # rebuild; everything else hits. Visible for specs - it is pure
+    # computation, no podman involved.
+    def fingerprint_for_test(profile : Profile = Profile::Debian) : String
+      fingerprint(profile)
+    end
+
+    # Visible for specs: which profiles were satisfied from the image
+    # cache rather than freshly provisioned.
+    def cache_hit?(profile : Profile) : Bool
+      @cache_hits.includes?(profile)
+    end
+
+    private def fingerprint(profile : Profile) : String
+      sets = package_sets
+      parts = [
+        profile.to_s,
+        profile.debian? ? IMAGE : IMAGE_RPM,
+        EXPECTED_ANSIBLE_VERSION,
+        ANSIBLE_CORE_PIN,
+        sets.real_debian.join(","), sets.krikri_debian.join(","),
+        sets.real_rpm.join(","), sets.krikri_rpm.join(","),
+        sets.python.join(","), sets.collections.join(","),
+        INVENTORY,
+        content_digest(@krikri_bin),
+        plugins_digest,
+        Digest::SHA256.hexdigest(Fixtures::SEED_SCRIPT),
+      ]
+      Digest::SHA256.hexdigest(parts.join("\n"))[0, 16]
+    end
+
+    private def content_digest(path : String) : String
+      Digest::SHA256.hexdigest(File.read(path))
+    rescue e : Exception
+      raise PodmanProvisionError.new("cannot fingerprint #{path.inspect}: #{e.message}")
+    end
+
+    # The krikri plugins dir is staged next to the binary; a missing one is
+    # a provisioning error later, but the fingerprint just hashes what is
+    # (or would be) staged.
+    private def plugins_digest : String
+      plugins_dir = File.join(File.dirname(@krikri_bin), "plugins")
+      files = Dir.glob("#{plugins_dir}/*").select! { |path| File.file?(path) }.sort!
+      files.join("\n") { |path| "#{File.basename(path)}:#{content_digest(path)}" }
     end
 
     private def drop_templates : Nil
