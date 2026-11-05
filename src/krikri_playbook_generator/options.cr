@@ -39,8 +39,11 @@ module KrikriPlaybookGenerator
     property? keep_going : Bool
     property? control : Bool
     property? json : Bool
+    property? refresh_podman_templates : Bool
     property engine_timeout : Int32
     property min_happy_success : Float64?
+    property tasks_per_playbook : Int32
+    property? seed_given : Bool
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
                    @supported_community = false,
@@ -51,7 +54,8 @@ module KrikriPlaybookGenerator
                    @allow_mutation = false, @run_on_podman = false,
                    @run_on_atlantic = false,
                    @keep_going = false, @engine_timeout = 120, @control = false,
-                   @json = false, @min_happy_success = nil)
+                   @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
+                   @tasks_per_playbook = 1, @seed_given = false)
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -73,7 +77,10 @@ module KrikriPlaybookGenerator
         dsl.on("--modules LIST", "comma-separated module names") { |v| opts.modules = v.split(',') }
         dsl.on("--all-modules", "scan every installed module, collections included (default: ansible.builtin core only)") { opts.all_modules = true }
         dsl.on("--supported-community", "also scan the community modules chosen for support (data/module_dependencies.yml: supported)") { opts.supported_community = true }
-        dsl.on("--seed N", "RNG seed") { |v| opts.seed = parse_int(v, "--seed") }
+        dsl.on("--seed N", "RNG seed (default: a fresh random seed, echoed in the log and in each playbook's first-line comment)") do |v|
+          opts.seed = parse_int(v, "--seed")
+          opts.seed_given = true
+        end
         dsl.on("--count N", "generated tasks per module") { |v| opts.count = parse_int(v, "--count") }
         dsl.on("--chaos-percentage N", "per-option-slot chaos mutation probability") { |v| opts.chaos_percentage = parse_float(v, "--chaos-percentage") }
         dsl.on("--chaos-kinds LIST", "comma-separated chaos kinds") { |v| opts.chaos_kinds = v.split(',') }
@@ -86,12 +93,20 @@ module KrikriPlaybookGenerator
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
         dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
         dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }
+        dsl.on("--refresh-podman-templates", "ignore the podman template image cache and rebuild the templates from scratch") { opts.refresh_podman_templates = true }
         dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
         dsl.on("--min-happy-success PCT", "exit 1 when the happy-path success rate is below PCT (report, or generate with a run backend)") { |v| opts.min_happy_success = parse_float(v, "--min-happy-success") }
         dsl.on("--json", "print the report as a single JSON object on stdout (report only)") { opts.json = true }
+        dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
       end
       parser.parse(rest)
+
+      # A seedless generate gets a fresh random seed per invocation - the
+      # playbook files themselves are the repro artifact (each one carries
+      # the seed in its first-line comment), so determinism by default
+      # would only replay stale coverage.
+      opts.seed = random_seed unless opts.seed_given?
 
       opts.out_dir = expand_path(rest.first) if opts.command.run? && !rest.empty?
       opts.results_dir = expand_path(rest.first) if opts.command.report? && !rest.empty?
@@ -112,6 +127,7 @@ module KrikriPlaybookGenerator
       check_scope_conflicts!(opts)
       raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
       raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
+      raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman?
       raise InvalidOptionsError.new("--json is only valid with the report command") if opts.json? && !opts.command.report?
 
       check_happy_gate_target!(opts)
@@ -134,6 +150,10 @@ module KrikriPlaybookGenerator
       raise InvalidOptionsError.new("--min-happy-success needs a report, or a generate that runs a backend (--run-on-podman/--run-on-atlantic)")
     end
 
+    private def self.random_seed : Int32
+      Random.new.rand(1..1073741823)
+    end
+
     private def self.parse_command(arg : String) : Command
       case arg
       when "generate" then Command::Generate
@@ -146,6 +166,7 @@ module KrikriPlaybookGenerator
     private def self.validate!(opts : Options) : Nil
       raise InvalidOptionsError.new("--seed must be zero or a positive integer, got #{opts.seed}") if opts.seed.negative?
       raise InvalidOptionsError.new("--count must be zero or a positive integer, got #{opts.count}") if opts.count.negative?
+      raise InvalidOptionsError.new("--tasks-per-playbook must be a positive integer, got #{opts.tasks_per_playbook}") if opts.tasks_per_playbook < 1
       raise InvalidOptionsError.new("--engine-timeout must be a positive integer, got #{opts.engine_timeout}") if opts.engine_timeout <= 0
       unless opts.chaos_percentage.in?(0.0..100.0)
         raise InvalidOptionsError.new("--chaos-percentage must be between 0 and 100, got #{opts.chaos_percentage}")

@@ -63,7 +63,16 @@ module KrikriPlaybookGenerator
     record EngineRun, engine : String, rc : Int32, recap : Recap?, stdout : String, stderr : String,
       timed_out : Bool = false
 
-    record MetaInfo, module_name : String, chaos : Bool, mutations : Array({String, String})
+    # `module_name` is the playbook's primary module (the first task's;
+    # for a v2 multi-task playbook, `module_names` carries every task's
+    # module so profile selection and the supported-community check cover
+    # the whole playbook, not just its first task).
+    record MetaInfo, module_name : String, chaos : Bool, mutations : Array({String, String}),
+      module_names : Array(String) do
+      def self.primary(module_name : String, chaos : Bool, mutations : Array({String, String})) : MetaInfo
+        MetaInfo.new(module_name, chaos, mutations, [module_name])
+      end
+    end
 
     class PlaybookResult
       getter playbook : String
@@ -189,7 +198,7 @@ module KrikriPlaybookGenerator
                    @check_mode : Bool = true, @run_on_podman : Bool = false,
                    @run_on_atlantic : Bool = false,
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120,
-                   @control : Bool = false)
+                   @control : Bool = false, @refresh_podman_templates : Bool = false)
     end
 
     def run : Array(PlaybookResult)
@@ -233,11 +242,13 @@ module KrikriPlaybookGenerator
       groups = Hash(String, Array(String)).new
       @playbook_paths.each do |path|
         # doc's own `module` field (and therefore the meta sidecar) is the
-        # short name even when the schema was requested by FQCN
-        module_name = load_meta(path).try(&.module_name).try(&.split(".").last)
-        profile = module_name.try { |name| AtlanticBackend::PROFILE_FOR_MODULE[name]? }
-        raise AtlanticProvisionError.new("playbook #{File.basename(path)} (module #{module_name.inspect}) has no Atlantic profile") unless profile
-        (groups[profile] ||= [] of String) << path
+        # short name even when the schema was requested by FQCN; a v2
+        # multi-task playbook needs a profile for EVERY task's module
+        names = load_meta(path).try(&.module_names).try(&.map(&.split(".").last)) || [] of String
+        raise AtlanticProvisionError.new("playbook #{File.basename(path)} has no meta module list") if names.empty?
+        missing = names.find { |name| !AtlanticBackend::PROFILE_FOR_MODULE[name]? }
+        raise AtlanticProvisionError.new("playbook #{File.basename(path)} (module #{missing.inspect}) has no Atlantic profile") if missing
+        (groups[AtlanticBackend::PROFILE_FOR_MODULE[names.first]] ||= [] of String) << path
       end
 
       backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts)
@@ -258,11 +269,15 @@ module KrikriPlaybookGenerator
 
     private def run_via_podman : Array(PlaybookResult)
       fqcns = @playbook_paths.compact_map do |path|
-        name = load_meta(path).try(&.module_name)
-        next unless name
-        name.includes?(".") ? name : "ansible.builtin.#{name}"
-      end
-      backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, fqcns.uniq)
+        meta = load_meta(path)
+        next unless meta
+
+        meta.module_names.compact_map do |name|
+          name.includes?(".") ? name : "ansible.builtin.#{name}"
+        end
+      end.flatten
+      backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, fqcns.uniq,
+        refresh_templates: @refresh_podman_templates)
       begin
         # rpm-family modules need the Rocky template pair; everything else
         # stays on Debian. A mixed batch provisions both templates and runs
@@ -286,9 +301,13 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # A multi-task playbook runs on the Rpm image when ANY of its tasks
+    # needs the rpm-family profile - the Debian image cannot satisfy an
+    # rpm task, while the Rocky image runs Debian tasks via its union
+    # dependency set.
     private def podman_profile_for(path : String) : PodmanBackend::Profile
-      module_name = load_meta(path).try(&.module_name).try(&.split(".").last)
-      if module_name && AtlanticBackend::PROFILE_FOR_MODULE[module_name]? == "rpm"
+      names = load_meta(path).try(&.module_names) || [] of String
+      if names.any? { |name| AtlanticBackend::PROFILE_FOR_MODULE[name.split(".").last]? == "rpm" }
         PodmanBackend::Profile::Rpm
       else
         PodmanBackend::Profile::Debian
@@ -305,9 +324,14 @@ module KrikriPlaybookGenerator
       supported = Dependencies.load.supported
       @playbook_paths.each do |path|
         meta = load_meta(path)
-        fqcn = meta.try { |info| info.module_name.includes?(".") ? info.module_name : "ansible.builtin.#{info.module_name.split(".").last}" }
-        if fqcn && !fqcn.starts_with?("ansible.builtin.") && !supported.includes?(fqcn)
-          raise PodmanProvisionError.new("playbook #{File.basename(path)} (module #{fqcn.inspect}) is a community module outside the supported set; use --run-on-podman or promote it in data/module_dependencies.yml")
+        fqcns = (meta.try(&.module_names) || [] of String).map do |name|
+          name.includes?(".") ? name : "ansible.builtin.#{name.split(".").last}"
+        end
+        unsupported = fqcns.find do |fqcn|
+          !fqcn.starts_with?("ansible.builtin.") && !supported.includes?(fqcn)
+        end
+        if unsupported
+          raise PodmanProvisionError.new("playbook #{File.basename(path)} (module #{unsupported.inspect}) is a community module outside the supported set; use --run-on-podman or promote it in data/module_dependencies.yml")
         end
       end
       Fixtures.seed_local
@@ -352,7 +376,7 @@ module KrikriPlaybookGenerator
 
       # fall back to the batch naming convention when no sidecar exists
       match = File.basename(path).match(/\A\d{6}-(.+)-(happy|chaos)\.yml\z/)
-      match.try { |filename_match| MetaInfo.new(filename_match[1], filename_match[2] == "chaos", [] of {String, String}) }
+      match.try { |filename_match| MetaInfo.primary(filename_match[1], filename_match[2] == "chaos", [] of {String, String}) }
     end
 
     private def parse_meta(text : String) : MetaInfo?
@@ -374,7 +398,15 @@ module KrikriPlaybookGenerator
         end
       end || [] of {String, String}
 
-      MetaInfo.new(module_name, chaos, mutations)
+      # A v2 multi-task sidecar carries one entry per task; fall back to
+      # the primary module alone when it is absent (v1 sidecars).
+      module_names = parsed["modules"]?.try(&.as_a?).try do |entries|
+        entries.compact_map(&.as_h?.try { |task| task["module"]?.try(&.as_s?) })
+      end
+      module_names = [module_name] if !module_names || module_names.empty?
+      module_names.unshift(module_name) unless module_names.includes?(module_name)
+
+      MetaInfo.new(module_name, chaos, mutations, module_names)
     rescue JSON::ParseException
       nil
     end
@@ -424,6 +456,9 @@ module KrikriPlaybookGenerator
       meta = result.meta
       if meta
         json.field "module", meta.module_name
+        if meta.module_names.size > 1
+          json.field "modules", meta.module_names
+        end
         json.field "chaos", meta.chaos
         json.field "mutations" do
           json.array do

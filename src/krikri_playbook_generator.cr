@@ -18,7 +18,8 @@ module KrikriPlaybookGenerator
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, check_mode: !opts.allow_mutation?, run_on_podman: opts.run_on_podman?,
         run_on_atlantic: opts.run_on_atlantic?,
-        keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?).run
+        keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
+        refresh_podman_templates: opts.refresh_podman_templates?).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -60,16 +61,45 @@ module KrikriPlaybookGenerator
     Log.info("generate", "scanning module schemas " \
                          "(modules=#{opts.modules.try(&.join(",")) || "default"}, all=#{opts.all_modules?}, " \
                          "supported_community=#{opts.supported_community?}, count=#{opts.count}, " \
-                         "chaos=#{opts.chaos_percentage}%, seed=#{opts.seed})")
+                         "chaos=#{opts.chaos_percentage}%, seed=#{opts.seed}#{opts.seed_given? ? "" : ", random"})")
     schemas = SchemaScanner.new(opts.modules, all_modules: opts.all_modules?, supported_community: supported).scan
     chaos_kinds = Options.parse_chaos_kinds(opts.chaos_kinds)
-    tasks = [] of GeneratedTask
-    schemas.each do |schema|
-      tasks.concat(Generator.new(opts.seed, opts.chaos_percentage, chaos_kinds).generate(schema, opts.count))
+    generator = Generator.new(opts.seed, opts.chaos_percentage, chaos_kinds)
+    if opts.tasks_per_playbook > 1
+      playbooks = build_multi_task_playbooks(opts, generator, schemas)
+    else
+      tasks = [] of GeneratedTask
+      schemas.each do |schema|
+        tasks.concat(generator.generate(schema, opts.count))
+      end
+      Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
+      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed).build(tasks)
     end
-    Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
-    playbooks = PlaybookBuilder.new(opts.out_dir).build(tasks)
     run_generated(opts, playbooks)
+  end
+
+  # v2 multi-task generation: `--tasks-per-playbook N` (N >= 2) assembles
+  # playbooks of N tasks from N distinct scanned modules, wired with
+  # register/when chains, loops and handlers. Needs at least two scanned
+  # modules to be meaningful; a smaller pool falls back to the
+  # single-task shape rather than repeating a module inside one play.
+  private def self.build_multi_task_playbooks(opts : Options, generator : Generator,
+                                              schemas : Array(ModuleSchema)) : Array(String)
+    per_playbook = Math.min(opts.tasks_per_playbook, schemas.size)
+    if per_playbook < 2
+      Log.info("generate", "warning: only #{schemas.size} module(s) scanned; " \
+                           "--tasks-per-playbook needs at least 2 - falling back to single-task playbooks")
+      tasks = [] of GeneratedTask
+      schemas.each { |schema| tasks.concat(generator.generate(schema, opts.count)) }
+      Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
+      return PlaybookBuilder.new(opts.out_dir, opts.seed).build(tasks)
+    end
+
+    Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
+                         "(#{per_playbook} tasks each, chaos=#{opts.chaos_percentage}%, seed=#{opts.seed})")
+    scenarios = generator.generate_scenarios(schemas, per_playbook, opts.count)
+    Log.info("generate", "building #{scenarios.size} playbook(s) into #{opts.out_dir}")
+    PlaybookBuilder.new(opts.out_dir, opts.seed).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32
@@ -85,7 +115,8 @@ module KrikriPlaybookGenerator
 
     results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
       opts.krikri_bin, run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
-      keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?).run
+      keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
+      refresh_podman_templates: opts.refresh_podman_templates?).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)
@@ -110,7 +141,8 @@ module KrikriPlaybookGenerator
   private def self.print_run_summary(results : Array(Runner::PlaybookResult)) : Nil
     results.each do |result|
       verdict = result.error ? "ERROR" : (result.divergent? ? "DIVERGENT" : "IDENTICAL")
-      puts "[#{verdict}] #{result.playbook}"
+      color = result.error ? Log::RED : (result.divergent? ? Log::RED : Log::GREEN)
+      puts Log.paint(color, "[#{verdict}] #{result.playbook}")
     end
   end
 

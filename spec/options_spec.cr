@@ -7,7 +7,6 @@ module KrikriPlaybookGenerator
     it "parses the generate command with defaults" do
       opts = Options.parse(["generate"])
       assert_equal(Command::Generate, opts.command)
-      assert_equal(42, opts.seed)
       assert_equal(0.0, opts.chaos_percentage)
       assert_nil(opts.modules)
     end
@@ -64,6 +63,12 @@ module KrikriPlaybookGenerator
     it "refuses --control without --run-on-podman" do
       err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--control"]) }
       assert((err.message || "").includes?("--control"))
+    end
+
+    it "parses --refresh-podman-templates with --run-on-podman and refuses it without" do
+      assert(Options.parse(["run", "--run-on-podman", "--refresh-podman-templates"]).refresh_podman_templates?)
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--refresh-podman-templates"]) }
+      assert((err.message || "").includes?("--refresh-podman-templates"))
     end
 
     it "parses --run-on-podman on generate" do
@@ -190,6 +195,31 @@ module KrikriPlaybookGenerator
 
       err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--min-happy-success", "90"]) }
       assert((err.message || "").includes?("--min-happy-success"))
+    end
+
+    it "defaults tasks_per_playbook to 1 (the v1 single-task shape)" do
+      assert_equal(1, Options.parse(["generate"]).tasks_per_playbook)
+    end
+
+    it "parses --tasks-per-playbook" do
+      opts = Options.parse(["generate", "--tasks-per-playbook", "3"])
+      assert_equal(3, opts.tasks_per_playbook)
+    end
+
+    it "raises on --tasks-per-playbook below 1" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--tasks-per-playbook", "0"]) }
+      assert((err.message || "").includes?("--tasks-per-playbook"))
+    end
+
+    it "defaults to a fresh random seed when --seed is not passed" do
+      seeds = [Options.parse(["generate"]).seed, Options.parse(["generate"]).seed]
+      refute_equal(seeds[0], seeds[1])
+      refute_equal(42, seeds[0])
+    end
+
+    it "keeps an explicit --seed" do
+      assert_equal(7, Options.parse(["generate", "--seed", "7"]).seed)
+      assert(Options.parse(["generate", "--seed", "7"]).seed_given?)
     end
 
     it "raises on an out-of-range --min-happy-success" do

@@ -24,6 +24,26 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "writes the seed as a first-line comment when one is given" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, 1234).build([sample_task]).first
+
+      assert(File.read(path).starts_with?("# krikri-playbook-generator seed=1234\n"))
+      doc = YAML.parse(File.read(path)).as_a
+      assert_equal(1, doc.size)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "omits the seed comment when no seed is given" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir).build([sample_task]).first
+
+      refute(File.read(path).starts_with?("#"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a playbook YAML real ansible/krikri can parse: one play, one task, fully-qualified module name" do
       dir = File.tempname("kpg-spec")
       path = PlaybookBuilder.new(dir).build([sample_task]).first
@@ -78,6 +98,86 @@ module KrikriPlaybookGenerator
       assert_equal("noop", task_hash[YAML::Any.new("ansible.builtin.meta")].as_s)
     ensure
       FileUtils.rm_rf(dir) if dir
+    end
+
+    describe "multi-task scenarios (v2)" do
+      def scenario : Array(GeneratedTask)
+        first = GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new(Fixtures::SOURCE_FILES.first)})
+        second = GeneratedTask.new("copy", "ansible.builtin",
+          {"src" => YAML::Any.new("{{ item }}"), "dest" => YAML::Any.new(Fixtures::DEST_PATHS.first)},
+          [{"mode", ChaosKind::BadChoice}], loop_option: "src", loop_items: Fixtures::SOURCE_FILES,
+          notify: "kpg handler")
+        third = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")},
+          when_condition: "kpg_task_1 is succeeded")
+        [first, second, third]
+      end
+
+      it "writes one playbook with every task wired into the scenario" do
+        dir = File.tempname("kpg-spec")
+        path = PlaybookBuilder.new(dir).build_scenarios([scenario]).first
+
+        assert(File.basename(path).starts_with?("000000-multi-stat-"))
+        doc = YAML.parse(File.read(path)).as_a
+        assert_equal(1, doc.size)
+        play = doc.first
+        assert_equal("all", play["hosts"].as_s)
+        assert_equal(false, play["gather_facts"].as_bool)
+
+        tasks = play["tasks"].as_a
+        assert_equal(3, tasks.size)
+        tasks.each_with_index do |task, index|
+          assert_equal("kpg_task_#{index}", task["register"].as_s)
+          assert_equal(true, task["ignore_errors"].as_bool)
+        end
+        assert_equal("kpg_task_1 is succeeded", tasks[2]["when"].as_s)
+        assert_equal(Fixtures::SOURCE_FILES, tasks[1]["loop"].as_a.map(&.as_s))
+        assert_equal("kpg handler", tasks[1]["notify"].as_s)
+        assert_equal("{{ item }}", tasks[1]["ansible.builtin.copy"]["src"].as_s)
+
+        handlers = play["handlers"].as_a
+        assert_equal(1, handlers.size)
+        assert_equal("kpg handler", handlers.first["name"].as_s)
+        assert_equal("kpg multi-task handler ran", handlers.first["ansible.builtin.debug"]["msg"].as_s)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
+
+      it "omits the handlers section when no task notifies" do
+        dir = File.tempname("kpg-spec")
+        plain = [GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")}),
+                 GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new("/tmp/kpg-work/out1.txt")})]
+        doc = YAML.parse(File.read(PlaybookBuilder.new(dir).build_scenarios([plain]).first)).as_a
+
+        assert_nil(doc.first["handlers"]?)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
+
+      it "records the primary module, per-task metadata and wiring in the sidecar" do
+        dir = File.tempname("kpg-spec")
+        path = PlaybookBuilder.new(dir).build_scenarios([scenario]).first
+        meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+
+        assert_equal("stat", meta["module"].as_s)
+        assert_equal(true, meta["chaos"].as_bool)
+        aggregated = meta["mutations"].as_a
+        assert_equal(1, aggregated.size)
+        assert_equal("t1:mode", aggregated[0]["option"].as_s)
+        assert_equal("BadChoice", aggregated[0]["kind"].as_s)
+
+        modules = meta["modules"].as_a
+        assert_equal(3, modules.size)
+        assert_equal("stat", modules[0]["module"].as_s)
+        assert_equal("copy", modules[1]["module"].as_s)
+        assert_equal(true, modules[1]["chaos"].as_bool)
+        assert_equal("mode", modules[1]["mutations"][0]["option"].as_s)
+        assert_empty(modules[0]["wiring"].as_a)
+        assert_equal("loop:src", modules[1]["wiring"][0].as_s)
+        assert_equal("notify:kpg handler", modules[1]["wiring"][1].as_s)
+        assert_equal("when:kpg_task_1 is succeeded", modules[2]["wiring"][0].as_s)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
     end
 
     it "still marks a free-form chaos task as chaos in its meta.json" do

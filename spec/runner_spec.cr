@@ -192,5 +192,29 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(playbook_dir) if playbook_dir
       FileUtils.rm_rf(results_dir) if results_dir
     end
+
+    it "runs a v2 multi-task playbook and records every task's module" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      first = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("krikri-playbook-generator multi")})
+      second = GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new("/tmp/kpg-work/out1.txt")},
+        when_condition: "kpg_task_0 is succeeded")
+      playbook_path = PlaybookBuilder.new(playbook_dir).build_scenarios([[first, second]]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin).run
+
+      assert_equal(1, results.size)
+      meta = results.first.meta
+      refute_nil(meta)
+      assert_equal(["debug", "stat"], meta.as(Runner::MetaInfo).module_names)
+      parsed = JSON.parse(File.read_lines(File.join(results_dir, "results.jsonl")).first)
+      assert_equal(%w[debug stat], parsed["modules"].as_a.map(&.as_s))
+      assert_equal("debug", parsed["module"].as_s)
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
   end
 end

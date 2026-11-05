@@ -29,6 +29,12 @@ module KrikriPlaybookGenerator
       schema
     end
 
+    def debug_schema : ModuleSchema
+      schema = ModuleSchema.new("debug", "ansible.builtin")
+      schema.options["msg"] = OptionSchema.new("msg", "str")
+      schema
+    end
+
     it "generates the requested count of tasks" do
       tasks = Generator.new(1).generate(apt_schema, 5)
       assert_equal(5, tasks.size)
@@ -45,6 +51,58 @@ module KrikriPlaybookGenerator
       a = Generator.new(42, 5.0).generate(apt_schema, 10).map(&.args.to_s)
       b = Generator.new(42, 5.0).generate(apt_schema, 10).map(&.args.to_s)
       assert_equal(a, b)
+    end
+
+    it "generates multi-task scenarios of distinct modules" do
+      scenarios = Generator.new(9, 0.0).generate_scenarios([apt_schema, copy_schema, debug_schema], 3, 5)
+
+      assert_equal(5, scenarios.size)
+      scenarios.each do |tasks|
+        assert_equal(3, tasks.size)
+        assert_equal(3, tasks.map(&.module_name).uniq!.size)
+      end
+    end
+
+    it "chains each task's when condition onto the previous task's register" do
+      Generator.new(2, 0.0).generate_scenarios([apt_schema, copy_schema, debug_schema], 3, 10).each do |tasks|
+        refute(tasks.first.when_condition)
+        tasks[1..].each_with_index do |task, offset|
+          condition = task.when_condition
+          refute_nil(condition)
+          expected_register = "kpg_task_#{offset}"
+          assert(condition.to_s.starts_with?("#{expected_register} is "))
+        end
+      end
+    end
+
+    it "wires a fixture-source-path argument into a loop over the fixture sources" do
+      scenarios = Generator.new(4, 0.0).generate_scenarios([copy_schema, debug_schema], 2, 30)
+      looped = scenarios.flatten.select(&.loop_option)
+
+      refute(looped.empty?, "expected at least one loop-wired copy task across the batch")
+      looped.each do |task|
+        assert_equal("src", task.loop_option)
+        assert_equal("{{ item }}", task.args["src"].as_s)
+        assert_equal(Fixtures::SOURCE_FILES, task.loop_items)
+      end
+    end
+
+    it "raises for multi-task scenarios without two distinct modules" do
+      err = assert_raises(ArgumentError) { Generator.new(1).generate_scenarios([apt_schema], 2, 1) }
+      assert((err.message || "").includes?("at least 2"))
+
+      err = assert_raises(ArgumentError) { Generator.new(1).generate_scenarios([apt_schema, copy_schema], 1, 1) }
+      assert((err.message || "").includes?("per_playbook"))
+    end
+
+    it "is deterministic for a given seed across scenarios too" do
+      schemas = [apt_schema, copy_schema, debug_schema]
+      shape = ->(seed : Int32) do
+        Generator.new(seed, 5.0).generate_scenarios(schemas, 3, 6).map do |tasks|
+          tasks.map { |task| "#{task.module_name}:#{task.when_condition}:#{task.loop_option}:#{task.notify}:#{task.args}" }.join("|")
+        end
+      end
+      assert_equal(shape.call(11), shape.call(11))
     end
 
     it "produces a choice value from the schema at 0% chaos" do

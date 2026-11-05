@@ -25,9 +25,18 @@ module KrikriPlaybookGenerator
     # Set for the handful of actions whose task body is a bare string rather
     # than an argument map (`meta: noop`), in which case `args` is empty.
     property free_form : String?
+    # v2 multi-task wiring (nil for the single-task playbook shape):
+    # a `when:` condition referencing the previous task's register, a
+    # `loop:` (with `loop_option` naming the argument replaced by
+    # `{{ item }}`), and a `notify:` target in the play's handlers.
+    property when_condition : String?
+    property loop_option : String?
+    property loop_items : Array(String)?
+    property notify : String?
 
     def initialize(@module_name, @collection = "ansible.builtin", @args = {} of String => YAML::Any,
-                   @mutations = [] of {String, ChaosKind}, @free_form = nil)
+                   @mutations = [] of {String, ChaosKind}, @free_form = nil,
+                   @when_condition = nil, @loop_option = nil, @loop_items = nil, @notify = nil)
     end
 
     def fqcn : String
@@ -85,6 +94,59 @@ module KrikriPlaybookGenerator
 
     def generate(schema : ModuleSchema, count : Int32) : Array(GeneratedTask)
       Array(GeneratedTask).new(count) { build_task(schema) }
+    end
+
+    # v2 multi-task scenarios: `count` playbooks of `per_playbook` tasks
+    # each, every task from a DIFFERENT module (sampled without
+    # replacement from the scanned pool), then wired into an interaction
+    # chain - every task registers `kpg_task_<i>`, tasks after the first
+    # run under a `when:` on the previous task's register, one task whose
+    # args carry a fixture source path iterates that path over the
+    # fixture source list with `loop:`, and tasks may `notify:` a
+    # play-level handler. Wiring is structural (recorded in the sidecar
+    # as wiring, never as a chaos mutation); chaos is still applied per
+    # task exactly as in the single-task shape.
+    def generate_scenarios(schemas : Array(ModuleSchema), per_playbook : Int32,
+                           count : Int32) : Array(Array(GeneratedTask))
+      raise ArgumentError.new("multi-task scenarios need per_playbook >= 2, got #{per_playbook}") if per_playbook < 2
+      raise ArgumentError.new("multi-task scenarios need at least 2 scanned modules, got #{schemas.size}") if schemas.size < 2
+
+      per = Math.min(per_playbook, schemas.size)
+      Array(Array(GeneratedTask)).new(count) do
+        tasks = schemas.sample(per, @rng).map { |schema| build_task(schema) }
+        wire_scenario!(tasks)
+        tasks
+      end
+    end
+
+    private def wire_scenario!(tasks : Array(GeneratedTask)) : Nil
+      tasks.each_with_index do |task, index|
+        if index > 0
+          previous = "kpg_task_#{index - 1}"
+          task.when_condition = ["#{previous} is succeeded", "#{previous} is not skipped"].sample(@rng)
+        end
+        apply_loop_wiring!(task)
+        task.notify = "kpg handler" if @rng.rand < 0.4
+      end
+    end
+
+    # A task whose baseline args point at one of the read-only fixture
+    # source files gets that argument templated as `{{ item }}` and a
+    # `loop:` over the whole fixture source list - the loop interaction
+    # (per-item templating of one slot) without inventing new values.
+    private def apply_loop_wiring!(task : GeneratedTask) : Nil
+      return if task.free_form
+
+      hit = task.args.find do |_, value|
+        raw = value.raw
+        raw.is_a?(String) && Fixtures::SOURCE_FILES.includes?(raw)
+      end
+      return unless hit
+
+      name, _ = hit
+      task.args[name] = YAML::Any.new("{{ item }}")
+      task.loop_option = name
+      task.loop_items = Fixtures::SOURCE_FILES.dup
     end
 
     private def build_task(schema : ModuleSchema) : GeneratedTask

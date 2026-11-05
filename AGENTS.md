@@ -44,7 +44,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   krikri-role-tester's external-command wrapper; also how the constraint
   extractor's script body reaches `python3 -` via `input:`.
 - `src/krikri_playbook_generator/generator.cr` — `ChaosKind` enum,
-  `GeneratedTask` (args + mutation metadata), `Generator#generate`.
+  `GeneratedTask` (args + mutation metadata + optional v2 wiring:
+  `when_condition`/`loop_option`/`loop_items`/`notify`), `Generator#generate`
+  and `Generator#generate_scenarios`.
   **Implemented (v0.0.8, rewritten)**: the happy path is now a *runnable*
   valid baseline, not just schema-valid: path-typed options point at
   pre-seeded fixture files (`Fixtures` — read-only sources under
@@ -81,7 +83,16 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   required option or excluded, which would trip an unrelated check).
   Deterministic per seed (`Random::PCG32`);
   every mutation is recorded in `GeneratedTask#mutations`, never applied
-  silently.
+  silently. `generate_scenarios(schemas, per_playbook, count)` is the v2
+  multi-task entry point: per scenario it samples `per_playbook` DISTINCT
+  module schemas, builds one task each through the same baseline+chaos
+  path, then wires the chain — every task registers `kpg_task_<i>` (the
+  builder writes it), tasks after the first get a `when:` on the previous
+  register (`is succeeded` / `is not skipped`), a task whose baseline args
+  point at a fixture source file gets that argument templated as
+  `{{ item }}` with a `loop:` over the whole fixture source list, and tasks
+  roll a `notify:` on a shared play-level handler. Wiring is structural:
+  recorded in the sidecar as wiring, never as a chaos mutation.
 - `src/krikri_playbook_generator/fixtures.cr` — `Fixtures`. **Implemented**:
   fixture layout (source files + a Jinja template + an executable script
   under `/opt/kpg-fixtures`, writable dests under `/tmp/kpg-work`) and the
@@ -103,14 +114,24 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   in the compared output); local runs seed the host best-effort and warn
   if that fails (e.g. `/opt` not writable).
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
-  **Implemented**: v1 scope is single-task-per-module playbooks (one play,
-  one task, `hosts: all`, `gather_facts: false`, `register:` +
-  `ignore_errors: true` so a batch keeps going past individual failures) —
-  multi-task interaction fuzzing (register/when chains, loops, handlers)
-  is a v2 concern per the proposal, not built here. Each `<n>-<module>-
-  happy|chaos.yml` gets a sibling `<n>-<module>-happy|chaos.meta.json`
-  (module/collection/chaos?/mutations) since the playbook YAML alone
-  doesn't say which slots were mutated or how — `Triage` reads this back.
+  **Implemented**: two shapes. v1 (the default, `build`) is
+  single-task-per-module playbooks (one play, one task, `hosts: all`,
+  `gather_facts: false`, `register:` + `ignore_errors: true` so a batch
+  keeps going past individual failures). v2 (`--tasks-per-playbook N`,
+  `build_scenarios`) assembles one play of N tasks from N DIFFERENT
+  modules, every task registering `kpg_task_<i>`, tasks after the first
+  gated by `when:` on the previous register, a fixture-source argument
+  iterated via `loop:` + `{{ item }}`, and tasks `notify:`ing a shared
+  play-level `ansible.builtin.debug` handler (the handlers section only
+  appears when some task notifies) — the multi-task interaction fuzzing
+  the proposal deferred to v2. Each `<n>-<module>-happy|chaos.yml` (v2
+  names `<n>-multi-<first module>-happy|chaos.yml`) gets a sibling
+  `<n>-...meta.json` (module/collection/chaos?/mutations) since the
+  playbook YAML alone doesn't say which slots were mutated or how; for v2
+  the sidecar keeps the FIRST task's module as top-level `module` (runner
+  profile selection and Triage keep working unchanged), aggregates all
+  tasks' mutations with `t<i>:` prefixes, and adds a `modules` array with
+  each task's own module/chaos/mutations/wiring — `Triage` reads this back.
   Verified live: a generated chaos playbook fails against real
   `ansible-playbook --check` with exactly the mutation the generator
   recorded (a `mutually exclusive` error matching a real
@@ -137,6 +158,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   best-effort on the host), podman (`--run-on-podman`, fresh container
   pair per playbook via committed template images) and Atlantic.net
   (`--run-on-atlantic`, one disposable VM per module profile).
+  `MetaInfo` carries `module_names` (every task's module for a v2
+  multi-task playbook, falling back to just the primary one for v1
+  sidecars): podman picks the Rpm profile when ANY task needs it, the
+  Atlantic grouping requires a profile for EVERY task's module, the local
+  supported-community check covers every task, and the podman
+  dependency-union list includes every task's fqcn. results.jsonl gains a
+  `modules` array for multi-task playbooks (`module` stays the primary).
   `--keep-going` turns
   per-playbook failures into errored results instead of aborting the
   batch; errored results are never counted as divergent.
@@ -163,7 +191,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   the identical `Fixtures` tree into both, asserts the container's
   ansible-core version equals `EXPECTED_ANSIBLE_VERSION` (2.19.11 —
   fails loudly otherwise), then `podman commit`s both templates into
-  images and removes the templates. Every `run_playbook` call starts a
+  content-addressed cache images (tag
+  `kpg-img-{real,krikri}-{debian,rpm}:<fingerprint>`, a SHA-256 over the
+  package sets, the ansible-core pin, the krikri binary + plugins
+  digests, the inventory and the fixture seed script — a cache hit skips
+  provisioning entirely; `--refresh-podman-templates` rebuilds and prunes
+  the stale tags) and removes the templates. Every `run_playbook` call starts a
   FRESH pair from the committed images for the playbook's OWN profile
   (`kpg-real-<n>…`, `kpg-krikri-<n>…`; the per-profile image pairs are kept
   in a map, so a mixed Debian/rpm batch never runs apt modules on Rocky),
@@ -173,7 +206,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1 timeout <N>
   <engine> -i inventory.ini /work/<basename> </dev/null>"`); the pair is
   `podman rm -f`'d in `ensure` immediately after. `teardown` removes
-  remaining containers AND the committed images; `PodmanBackend.leak_check`
+  remaining containers but KEEPS the committed images (they are the
+  cache the next run starts from); `PodmanBackend.leak_check`
   lists any leftover `kpg-*` containers via `podman ps -a` so Runner can
   report leaks at the end of a batch. Raises `PodmanProvisionError` up
   front if `--run-on-podman` is passed but `podman` isn't on PATH. Every
@@ -217,8 +251,16 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   subcommands (`generate`, `run`, `report`), plus `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
   recorded with rc 124), `--json` (valid only with `report`; error
-  otherwise) and `--min-happy-success PCT` (the happy-path success gate;
-  valid with `report`, or a `generate` that runs a backend). Both
+  otherwise), `--min-happy-success PCT` (the happy-path success gate;
+  valid with `report`, or a `generate` that runs a backend) and
+  `--tasks-per-playbook N` (v2 multi-task playbooks; default 1 = the v1
+  single-task shape; needs at least 2 scanned modules, otherwise
+  `generate` falls back to single-task with a logged warning) and a seed
+  that is RANDOM by default — the default was fixed at 42, which meant
+  every seedless batch replayed identical playbooks forever; the
+  playbook files are the repro artifact anyway, so each one now carries
+  `# krikri-playbook-generator seed=<N>` as its first line and the log
+  echoes the effective seed, with `--seed N` still forcing a known one. Both
   `run <dir>` and `report <dir>` accept that
   directory as a positional argument (falling back to `--out`/
   `--results-dir` otherwise), and `run <file.yml>` accepts a single
@@ -325,8 +367,11 @@ Documented deliberately, not silently:
   in `module_overrides.yml` as `not_applicable: true`, never as a
   silent exclusion.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
-  is v2 per the proposal; `PlaybookBuilder` only ever emits one task per
-  playbook. `async_status` is only testable at all because `Fixtures` seeds
+  is now BUILT (`--tasks-per-playbook N`) — but still one play per
+  playbook (no multi-PLAY playbooks, no role plays), and the batch-level
+  metadata (results.jsonl `module`, triage grouping, podman/Atlantic
+  profile keys beyond the any-rpm rule) stays keyed on the FIRST task's
+  module. `async_status` is only testable at all because `Fixtures` seeds
   a finished job under `$HOME/.ansible_async`.
 
 ## Tests
@@ -350,12 +395,21 @@ but skips exercising unfiltered discovery (`SchemaScanner.new.scan`, no
 installed modules; verify that path live. `generator_spec.cr` builds a
 small hand-written `ModuleSchema` fixture rather than going through
 `SchemaScanner`, so it stays fast and doesn't depend on any particular
-module's real constraints. `playbook_builder_spec.cr` parses the written
+module's real constraints; it also covers the v2 scenarios (distinct
+modules per scenario, when-chain register naming, the fixture-source
+loop wiring, determinism, and the two ArgumentError guards).
+`playbook_builder_spec.cr` parses the written
 YAML back with `YAML.parse` and the sidecar with `JSON.parse` rather than
-string-matching the file. `runner_spec.cr` unit-tests `Recap`/
-`PlaybookResult#divergent?` directly, plus one real integration case
-(`ansible.builtin.debug`, always safe/fast/idempotent) that runs both real
-engines end to end and checks `results.jsonl`'s shape — not a fake, same
+string-matching the file, including the v2 shape (register names,
+when/loop/notify wiring, the conditional handlers section, the sidecar's
+aggregated `t<i>:` mutations and per-task `modules` array) and writes
+the generator's seed as a first-line comment when one is passed (the
+random-by-default seed needs the file itself to carry it).
+`runner_spec.cr` unit-tests `Recap`/
+`PlaybookResult#divergent?` directly, plus real integration cases (a
+single-task `ansible.builtin.debug` — always safe/fast/idempotent — and a
+v2 debug+stat multi-task playbook) that run both real
+engines end to end and check `results.jsonl`'s shape — not a fake, same
 reasoning as `schema_spec.cr`; it passes `run_on_podman: false` (now the
 Runner default anyway) explicitly so it stays fast even if that default
 ever changes. `podman_backend_spec.cr` is a real integration test too
