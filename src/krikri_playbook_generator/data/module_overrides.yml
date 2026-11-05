@@ -21,6 +21,8 @@
 #   literal_pool - sample one of the listed exact values
 #   work_dir     - an existing directory (for chdir-type options): the
 #                  work root itself or the pre-seeded fixture directory
+#   empty_dict   - `{}` for an option the DOCUMENTATION leaves untyped but
+#                  the module validates as a dict (validate_argument_spec)
 #   exclude      - never include this option in a happy-path task (values
 #                  the schema accepts but that reliably fail in practice,
 #                  e.g. uid collisions or runtime-mutually-exclusive
@@ -34,6 +36,10 @@
 # (`meta: noop`); the pool holds valid actions. `expect_failure` (bool)
 # marks a module that is SUPPOSED to fail on real ansible (`fail`), so
 # the quality report doesn't count its failures as wasted coverage.
+# `not_applicable` (bool) marks a module a single-task local playbook
+# cannot exercise at all (`reboot` would reboot the control node;
+# `apt_key`'s tooling no longer exists in the reference image), so its
+# happy-path failure is neither a generator bug nor wasted coverage.
 #
 # `names:` entries apply by option name to ANY module that doesn't
 # override that option itself; `modules:` entries win over `names:`.
@@ -805,3 +811,148 @@ modules:
     executable: {kind: literal_pool, pool: ["/bin/sh"]}
     free_form: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh", "echo kpg-raw"]}
     always: [executable]
+
+  # apt_key shells out to apt-key, which apt 3.0 (Debian trixie) removed -
+  # no package provides it, so this module cannot have a happy path on the
+  # reference image at all. Not counted as wasted coverage (and still
+  # chaos-fuzzed).
+  apt_key:
+    not_applicable: true
+
+  # reboot refuses to run over a local connection ("would reboot the
+  # control node"), which is exactly the connection this tool uses.
+  reboot:
+    not_applicable: true
+
+  # apt_repository's `repo` is its free-form line; a random word is not a
+  # valid deb line. `update_cache` defaults to TRUE in the module's
+  # argument_spec, so it must be turned off explicitly or every happy path
+  # runs `apt-get update` against the fixture http server (kpg-gate run:
+  # "Failed to update apt cache after 5 retries").
+  apt_repository:
+    repo: {kind: literal_pool, pool: ["deb [trusted=yes] http://127.0.0.1:18888/ kpg main"]}
+    codename: {kind: literal_pool, pool: ["kpg"]}
+    filename: {kind: literal_pool, pool: ["kpg-fixture"]}
+    state: {kind: literal_pool, pool: ["present"]}
+    mode: {kind: mode, pool: ["0644"]}
+    update_cache: {kind: literal_pool, pool: ["false"]}
+    always: [update_cache]
+    install_python_apt: {exclude: true}
+    update_cache_retries: {exclude: true}
+    update_cache_retry_max_delay: {exclude: true}
+
+  # deb822_repository validates uris/suites/components/types; random words
+  # fail validation before anything is written.
+  deb822_repository:
+    name: {kind: literal_pool, pool: ["kpg-fixture"]}
+    uris: {kind: literal_pool, pool: ["http://127.0.0.1:18888/"]}
+    suites: {kind: literal_pool, pool: ["kpg"]}
+    components: {kind: literal_pool, pool: ["main"]}
+    types: {kind: literal_pool, pool: ["deb"]}
+    state: {kind: literal_pool, pool: ["present"]}
+    mode: {kind: mode, pool: ["0644"]}
+    signed_by: {exclude: true}
+    inrelease_path: {exclude: true}
+
+  # async_status needs an existing job id; this tool only emits single-task
+  # playbooks, so Fixtures seeds a finished job under $HOME/.ansible_async.
+  # The global `mode` override must not apply here (status|cleanup).
+  async_status:
+    jid: {kind: literal_pool, pool: ["kpgjob"]}
+    mode: {kind: literal_pool, pool: ["status", "cleanup"]}
+
+  # iptables cannot take a dozen random words at once ("can only join an
+  # iterable"); a happy path is one simple, valid rule on the filter table.
+  iptables:
+    chain: {kind: literal_pool, pool: ["INPUT"]}
+    jump: {kind: literal_pool, pool: ["ACCEPT"]}
+    protocol: {kind: literal_pool, pool: ["tcp"]}
+    state: {kind: literal_pool, pool: ["present"]}
+    action: {kind: literal_pool, pool: ["append"]}
+    ip_version: {kind: literal_pool, pool: ["ipv4"]}
+    table: {kind: literal_pool, pool: ["filter"]}
+    exclude: [chain_management, comment, ctstate, destination, destination_port,
+              destination_ports, dst_range, flush, fragment, gateway, gid_owner,
+              goto, icmp_type, in_interface, limit, limit_burst, log_level,
+              log_prefix, match, match_set, match_set_flags, numeric,
+              out_interface, policy, reject_with, rule_num, set_counters,
+              set_dscp_mark, set_dscp_mark_class, source, source_port,
+              src_range, syn, tcp_flags, to_destination, to_ports, to_source,
+              uid_owner, wait]
+
+  # package's name/state are untyped in DOCUMENTATION (random words fail
+  # validation); an already-installed package makes the happy path a no-op.
+  package:
+    name: {kind: literal_pool, pool: ["bash"]}
+    state: {kind: literal_pool, pool: ["present"]}
+    use: {exclude: true}
+
+  # rpm_key imports a key with gpg2 (the rpm template pair provides it);
+  # a random key path is not a key.
+  rpm_key:
+    key: {kind: literal_pool, pool: ["/opt/kpg-fixtures/pgpkey.asc"]}
+    state: {kind: literal_pool, pool: ["present"]}
+    fingerprint: {exclude: true}
+    validate_certs: {exclude: true}
+
+  # setup's gather_subset only accepts known subset names ("Bad subset
+  # 'yfmrnc'"), and fact_path must be a real directory.
+  setup:
+    gather_subset: {kind: literal_pool, pool: ["min"]}
+    gather_timeout: {kind: literal_pool, pool: ["10"]}
+    fact_path: {exclude: true}
+
+  # subversion checks out a real repository (Fixtures seeds a local one);
+  # `executable` is a path-typed option, which otherwise pointed at a
+  # random work file, and random operation booleans conflict with each
+  # other.
+  subversion:
+    repo: {kind: literal_pool, pool: ["file:///opt/kpg-fixtures/svnrepo"]}
+    dest: {kind: literal_pool, pool: ["/tmp/kpg-work/svnco"]}
+    executable: {kind: literal_pool, pool: ["/usr/bin/svn"]}
+    revision: {kind: literal_pool, pool: ["HEAD"]}
+    checkout: {kind: literal_pool, pool: ["true"]}
+    always: [repo, dest]
+    exclude: [export, switch, update, in_place, force, username, password]
+
+  # sysvinit needs an existing init script; cron is installed in both
+  # containers. `arguments`/`pattern`/`runlevels` are passed straight
+  # through and a random value breaks the service call.
+  sysvinit:
+    name: {kind: literal_pool, pool: ["cron"]}
+    state: {kind: literal_pool, pool: ["started"]}
+    enabled: {kind: literal_pool, pool: ["false"]}
+    exclude: [arguments, pattern, runlevels, sleep, daemonize]
+
+  # validate_argument_spec validates the dict it is handed; the
+  # DOCUMENTATION leaves both options untyped, so the generator emitted a
+  # random string ("Incorrect type for argument_spec, expected dict").
+  validate_argument_spec:
+    argument_spec: {kind: empty_dict}
+    provided_arguments: {kind: empty_dict}
+
+  # wait_for_connection's delay/timeout are seconds; a random delay of up
+  # to 100s outlives the engine timeout, so the happy path was recorded as
+  # a hang (rc 124) rather than a connection check.
+  wait_for_connection:
+    delay: {kind: literal_pool, pool: ["0"]}
+    timeout: {kind: literal_pool, pool: ["5"]}
+    connect_timeout: {kind: literal_pool, pool: ["5"]}
+    sleep: {kind: literal_pool, pool: ["1"]}
+
+  # yum_repository requires description for state=present; it runs on the
+  # rpm (Rocky) template pair, where /etc/yum.repos.d exists. The 50%
+  # happy-path inclusion rule may otherwise omit description (kpg-gate run:
+  # "state is present but all of the following are missing: description"),
+  # so the whole valid set is `always`.
+  yum_repository:
+    name: {kind: literal_pool, pool: ["kpg-fixture"]}
+    description: {kind: literal_pool, pool: ["kpg fixture repo"]}
+    baseurl: {kind: literal_pool, pool: ["http://127.0.0.1:18888/"]}
+    file: {kind: literal_pool, pool: ["kpg-fixture"]}
+    state: {kind: literal_pool, pool: ["present"]}
+    mode: {kind: mode, pool: ["0644"]}
+    always: [name, description, baseurl, file, state]
+    exclude: [reposdir, mirrorlist, metalink, gpgkey, gpgcakey, username,
+              password, proxy, proxy_username, proxy_password, sslclientcert,
+              sslclientkey, sslcacert]

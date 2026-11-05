@@ -1,5 +1,6 @@
 require "json"
 require "./cmd"
+require "./log"
 require "./podman_backend"
 require "./atlantic_backend"
 require "./masks"
@@ -32,14 +33,14 @@ module KrikriPlaybookGenerator
   #   differ between them.
   # - **Podman** (opt-in via `--run-on-podman`, requires `podman` on PATH)
   #   - `PodmanBackend`, which is where byte-parity claims actually hold.
+  # - **Atlantic.net** (opt-in via `--run-on-atlantic`) - `AtlanticBackend`,
+  #   one disposable VM per module profile, for the modules that need a real
+  #   service or kernel (packages, databases, containers, zfs, ...).
   #
   # With `keep_going: true` a per-playbook failure (e.g. a podman error
   # mid-batch) is recorded as an errored result and the batch continues;
   # with it false (the default) the error aborts the run.
   #
-  # `@atlantic_hosts` is accepted and stored for a possible future
-  # remote/Atlantic.net backend but unused by either backend implemented
-  # here.
   class Runner
     record Recap, ok : Int32, changed : Int32, unreachable : Int32, failed : Int32,
       skipped : Int32, ignored : Int32 do
@@ -200,17 +201,28 @@ module KrikriPlaybookGenerator
         raise AtlanticProvisionError.new("--run-on-atlantic was requested but the KeePass credential source isn't available")
       end
 
+      Log.info("runner", "starting #{@playbook_paths.size} playbook(s) " \
+                         "(backend=#{backend_label}, results=#{@results_dir})")
       Dir.mkdir_p(@results_dir)
-      results = if @run_on_atlantic
-                  run_via_atlantic
-                elsif @run_on_podman
-                  run_via_podman
-                else
-                  run_locally
-                end
+      results = Log.phase("runner", "executing #{@playbook_paths.size} playbook(s) (#{backend_label})") do
+        if @run_on_atlantic
+          run_via_atlantic
+        elsif @run_on_podman
+          run_via_podman
+        else
+          run_locally
+        end
+      end
+      Log.info("runner", "writing results.jsonl + versions.txt")
       write_results(results)
       write_versions(started)
+      divergent = results.count(&.divergent?)
+      Log.info("runner", "batch complete: #{results.size} playbook(s), #{divergent} divergent, #{results.count(&.error)} errored")
       results
+    end
+
+    private def backend_label : String
+      @run_on_atlantic ? "atlantic" : (@run_on_podman ? "podman" : "local")
     end
 
     # Groups the batch by Atlantic profile (via each playbook's meta sidecar
@@ -245,7 +257,12 @@ module KrikriPlaybookGenerator
     end
 
     private def run_via_podman : Array(PlaybookResult)
-      backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control)
+      fqcns = @playbook_paths.compact_map do |path|
+        name = load_meta(path).try(&.module_name)
+        next unless name
+        name.includes?(".") ? name : "ansible.builtin.#{name}"
+      end
+      backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, fqcns.uniq)
       begin
         # rpm-family modules need the Rocky template pair; everything else
         # stays on Debian. A mixed batch provisions both templates and runs
@@ -257,6 +274,9 @@ module KrikriPlaybookGenerator
           profiles[podman_profile_for(path)] << path
         end
         profiles.each_key { |profile| backend.provision(profile) }
+        profile_counts = profiles.map { |profile, paths| [profile, paths.size] }
+        Log.info("runner", "podman: running #{profiles.values.sum(&.size)} playbook(s) " \
+                           "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
         profiles.flat_map do |profile, paths|
           paths.map { |path| guarded(path) { run_playbook_via_podman(backend, path, profile) } }
         end
@@ -282,6 +302,14 @@ module KrikriPlaybookGenerator
     end
 
     private def run_locally : Array(PlaybookResult)
+      supported = Dependencies.load.supported
+      @playbook_paths.each do |path|
+        meta = load_meta(path)
+        fqcn = meta.try { |info| info.module_name.includes?(".") ? info.module_name : "ansible.builtin.#{info.module_name.split(".").last}" }
+        if fqcn && !fqcn.starts_with?("ansible.builtin.") && !supported.includes?(fqcn)
+          raise PodmanProvisionError.new("playbook #{File.basename(path)} (module #{fqcn.inspect}) is a community module outside the supported set; use --run-on-podman or promote it in data/module_dependencies.yml")
+        end
+      end
       Fixtures.seed_local
       @playbook_paths.map { |path| guarded(path) { run_playbook_locally(path) } }
     end

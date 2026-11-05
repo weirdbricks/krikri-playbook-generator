@@ -66,6 +66,7 @@ module KrikriPlaybookGenerator
       "yum_repository"      => "rpm",
       "dnf_versionlock"     => "rpm",
       "yum_versionlock"     => "rpm",
+      "rpm_key"             => "rpm",
       "mysql_db"            => "db",
       "mysql_user"          => "db",
       "mysql_info"          => "db",
@@ -105,7 +106,7 @@ module KrikriPlaybookGenerator
         # its import probe on these VMs; that failure is still comparable
         # byte-for-byte (krikri probes the same python path), only the
         # happy paths count as wasted coverage. versionlock IS in BaseOS.
-        packages: "python3-dnf-plugin-versionlock",
+        packages: "python3-dnf-plugin-versionlock gnupg2",
         prep: "",
       ),
       "db" => Profile.new(

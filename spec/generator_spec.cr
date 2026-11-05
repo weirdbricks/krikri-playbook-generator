@@ -127,6 +127,112 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "keeps a required member when a mutually_exclusive group has to be cut" do
+      schema = ModuleSchema.new("req_exclusive", "ansible.builtin")
+      schema.options["content"] = OptionSchema.new("content", "str")
+      schema.options["path"] = OptionSchema.new("path", "path", required: true)
+      schema.mutually_exclusive = [%w[content path]]
+
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            req_exclusive:
+              always: [content, path]
+        YAML
+
+      Generator.new(19, 0.0, ChaosKind.values, overrides).generate(schema, 10).each do |task|
+        assert(task.args.has_key?("path"), "the required member was cut: #{task.args}")
+        refute(task.args.has_key?("content"))
+      end
+    end
+
+    it "keeps a fill from introducing a mutually_exclusive sibling" do
+      schema = ModuleSchema.new("exclusive", "ansible.builtin")
+      schema.options["path"] = OptionSchema.new("path", "path")
+      schema.options["content"] = OptionSchema.new("content", "str")
+      schema.required_together = [%w[path content]]
+      schema.mutually_exclusive = [%w[path content]]
+
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            exclusive:
+              always: [path]
+        YAML
+
+      Generator.new(13, 0.0, ChaosKind.values, overrides).generate(schema, 20).each do |task|
+        present = %w[path content].count { |name| task.args.has_key?(name) }
+        assert(present <= 1, "mutually_exclusive siblings both present: #{task.args}")
+      end
+    end
+
+    it "keeps a required_if fill from introducing a mutually_exclusive sibling" do
+      schema = ModuleSchema.new("exclusive_if", "ansible.builtin")
+      schema.options["state"] = OptionSchema.new("state", "str", choices: %w[present])
+      schema.options["path"] = OptionSchema.new("path", "path")
+      schema.options["content"] = OptionSchema.new("content", "str")
+      schema.mutually_exclusive = [%w[path content]]
+      schema.required_if = [JSON.parse(%q(["state", "present", ["content"], false]))]
+
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            exclusive_if:
+              always: [path, state]
+        YAML
+
+      Generator.new(17, 0.0, ChaosKind.values, overrides).generate(schema, 20).each do |task|
+        present = %w[path content].count { |name| task.args.has_key?(name) }
+        assert(present <= 1, "mutually_exclusive siblings both present: #{task.args}")
+      end
+    end
+
+    it "renders an empty_dict override as a real empty dict" do
+      schema = ModuleSchema.new("typed", "ansible.builtin")
+      schema.options["spec"] = OptionSchema.new("spec", "str", required: true)
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            typed:
+              spec: {kind: empty_dict}
+        YAML
+
+      Generator.new(2, 0.0, ChaosKind.values, overrides).generate(schema, 5).each do |task|
+        assert(task.args["spec"].raw.is_a?(Hash), "expected an empty dict, got #{task.args["spec"].raw.class}")
+      end
+    end
+
+    it "jinja-wraps an option value into an equivalent template expression" do
+      baseline = Generator.new(23, 0.0, [ChaosKind::Jinja]).generate(apt_schema, 1).first
+      mutated = Generator.new(23, 100.0, [ChaosKind::Jinja]).generate(apt_schema, 1).first
+
+      force = baseline.args["force"]
+      assert_equal("{{ #{force.as_bool ? "true" : "false"} }}", mutated.args["force"].as_s)
+      assert_equal([{"force", ChaosKind::Jinja}],
+        mutated.mutations.select { |(name, _)| name == "force" })
+    end
+
+    it "jinja-wraps string values while keeping the value as a quoted literal" do
+      baseline = Generator.new(29, 0.0, [ChaosKind::Jinja]).generate(copy_schema, 1).first
+      mutated = Generator.new(29, 100.0, [ChaosKind::Jinja]).generate(copy_schema, 1).first
+
+      src = baseline.args["src"].as_s
+      assert_equal("{{ '#{src}' }}", mutated.args["src"].as_s)
+    end
+
+    it "records a Jinja mutation for every wrapped slot and never for a free-form body" do
+      tasks = Generator.new(31, 100.0, [ChaosKind::Jinja]).generate(copy_schema, 10)
+      tasks.each do |task|
+        task.mutations.each do |(name, kind)|
+          assert_equal(ChaosKind::Jinja, kind)
+          assert(task.args[name].as_s.starts_with?("{{ "), "#{name} was not templated: #{task.args[name]}")
+          assert(task.args[name].as_s.ends_with?(" }}"))
+        end
+      end
+
+      free_form = Generator.new(31, 100.0, ChaosKind.values, free_form_overrides)
+        .generate(ModuleSchema.new("meta", "ansible.builtin"), 5)
+      free_form.each do |task|
+        assert_equal([{"free_form", ChaosKind::BadChoice}], task.mutations)
+      end
+    end
+
     it "mutates a valid baseline instead of inventing fresh chaos values" do
       tasks = Generator.new(3, 100.0, [ChaosKind::WrongType]).generate(copy_schema, 20)
       tasks.each do |task|
@@ -155,6 +261,108 @@ module KrikriPlaybookGenerator
         task.mutations.any? { |(name, kind)| kind.violate_constraint? && name == "deb,name,upgrade" }
       end
       assert(violated)
+    end
+
+    it "violates required_if by forcing the condition and dropping demanded keys" do
+      schema = required_if_schema("all")
+      tasks = Generator.new(3, 100.0, [ChaosKind::ViolateConstraint], always_overrides)
+        .generate(schema, 20)
+
+      violated = tasks.select do |task|
+        task.mutations.any? { |(name, kind)| kind.violate_constraint? && name == "required_if:state" }
+      end
+      assert(violated.present?, "no task violated required_if: #{tasks.map(&.mutations)}")
+      violated.each do |task|
+        assert_equal("present", task.args["state"].as_s)
+        refute(task.args.has_key?("path"), "demanded key survived violation: #{task.args}")
+      end
+    end
+
+    it "violates required_if in any-mode by dropping every demanded key" do
+      schema = required_if_schema("any")
+      schema.options["extra"] = OptionSchema.new("extra", "str")
+      schema.required_if = [JSON.parse(%q(["state", "present", ["path", "extra"], true]))]
+
+      tasks = Generator.new(3, 100.0, [ChaosKind::ViolateConstraint], always_overrides)
+        .generate(schema, 20)
+
+      violated = tasks.select do |task|
+        task.mutations.any? { |(name, _)| name == "required_if:state" }
+      end
+      assert(violated.present?)
+      violated.each do |task|
+        refute(task.args.has_key?("path"))
+        refute(task.args.has_key?("extra"))
+      end
+    end
+
+    it "violates required_if with a bool condition value" do
+      schema = ModuleSchema.new("if_bool", "ansible.builtin")
+      schema.options["enabled"] = OptionSchema.new("enabled", "bool")
+      schema.options["path"] = OptionSchema.new("path", "path")
+      schema.required_if = [JSON.parse(%q(["enabled", true, ["path"], false]))]
+
+      overrides = Overrides.new("modules:\n  if_bool:\n    always: [enabled, path]\n")
+      tasks = Generator.new(3, 100.0, [ChaosKind::ViolateConstraint], overrides).generate(schema, 20)
+
+      violated = tasks.select { |task| task.mutations.any? { |(name, _)| name == "required_if:enabled" } }
+      assert(violated.present?)
+      violated.each do |task|
+        assert_equal(true, task.args["enabled"].as_bool)
+        refute(task.args.has_key?("path"))
+      end
+    end
+
+    it "violates required_if with an int condition value" do
+      schema = ModuleSchema.new("if_int", "ansible.builtin")
+      schema.options["retries"] = OptionSchema.new("retries", "int")
+      schema.options["path"] = OptionSchema.new("path", "path")
+      schema.required_if = [JSON.parse(%q(["retries", 99, ["path"], false]))]
+
+      overrides = Overrides.new("modules:\n  if_int:\n    always: [retries, path]\n")
+      tasks = Generator.new(3, 100.0, [ChaosKind::ViolateConstraint], overrides).generate(schema, 20)
+
+      violated = tasks.select { |task| task.mutations.any? { |(name, _)| name == "required_if:retries" } }
+      assert(violated.present?)
+      violated.each do |task|
+        assert_equal(99, task.args["retries"].as_i64)
+        refute(task.args.has_key?("path"))
+      end
+    end
+
+    it "skips required_if violation when a demanded key is a required option" do
+      schema = required_if_schema("all")
+      schema.options["path"] = OptionSchema.new("path", "path", required: true)
+
+      tasks = Generator.new(3, 100.0, [ChaosKind::ViolateConstraint], always_overrides)
+        .generate(schema, 20)
+      tasks.each do |task|
+        refute(task.mutations.any? { |(name, _)| name == "required_if:state" },
+          "violation must skip when it would also trip missing-required: #{task.args}")
+        assert(task.args.has_key?("path"), "required demanded key was deleted: #{task.args}")
+      end
+    end
+
+    it "records no required_if mutation at 0% chaos" do
+      tasks = Generator.new(3, 0.0, [ChaosKind::ViolateConstraint], always_overrides)
+        .generate(required_if_schema("all"), 20)
+      tasks.each do |task|
+        refute(task.mutations.any? { |(name, kind)| kind.violate_constraint? && name.starts_with?("required_if:") })
+      end
+    end
+
+    def required_if_schema(mode : String) : ModuleSchema
+      schema = ModuleSchema.new("if_thing", "ansible.builtin")
+      schema.options["state"] = OptionSchema.new("state", "str", choices: %w[present absent])
+      schema.options["path"] = OptionSchema.new("path", "path")
+      schema.options["extra"] = OptionSchema.new("extra", "str")
+      any = mode == "any"
+      schema.required_if = [JSON.parse(%Q(["state", "present", ["path"], #{any}]))]
+      schema
+    end
+
+    def always_overrides : Overrides
+      Overrides.new("modules:\n  if_thing:\n    always: [state, path]\n")
     end
 
     it "never typos an option name into another real option's name" do

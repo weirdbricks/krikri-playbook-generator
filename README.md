@@ -24,29 +24,48 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
      module_overrides.yml`, embedded at compile time).
    - chaos: per-option-slot, at probability `--chaos-percentage`, mutates
      the *valid baseline* into a typo'd/hallucinated option name, a
-     wrong-type value, an off-schema choice, or a violated cross-option
-     constraint. Every mutation is recorded on the generated task, never
-     injected silently — chaos is always a delta from a runnable task.
+     wrong-type value, an off-schema choice, a violated cross-option
+     constraint, or a `jinja` expression that evaluates back to the same
+     value (`0644` -> `{{ '0644' }}`, so the delta under test is the
+     engine's templating, not the module's validation). Every mutation is
+     recorded on the generated task, never injected silently — chaos is
+     always a delta from a runnable task, and each kind is independently
+     toggleable via `--chaos-kinds`.
+   - happy-path quality is a first-class concern: `data/module_overrides.yml`
+     can mark an option `exclude`d, fill it with an `empty_dict`, or mark a
+     whole module `not_applicable` (a single-task local playbook cannot
+     exercise it at all — `reboot` would reboot the control node,
+     `apt_key`'s tooling no longer ships in the reference image). The
+     overrides are only correct if real ansible actually runs the happy
+     paths, which is what the success gate below measures.
 3. **playbook-builder** — assembles generated tasks into playbook YAML,
    one task per module per play, following the shape of krikri's own
    `testing/test-*.yml` fixtures.
 4. **runner** — two backends, neither the default. **Local** runs each
-   playbook against both engines on this machine (`-i localhost, -c
-   local`), `--check --diff` unless `--allow-mutation` is passed, so
-   happy-path tasks (real modules — apt, user, ...) can't mutate *this*
-   machine by accident. **Podman** (`--run-on-podman`, opt-in, needs
-   `podman`) is where byte-parity actually holds: it provisions ONE
-   template container pair (asserting the container's ansible-core is
-   exactly 2.19.11, failing loudly otherwise), commits it to images, and
-   then starts a **fresh container pair per playbook** — so users, files
-   and state created by one playbook never leak into the next. Both
-   engines get the identical invocation (same absolute playbook path and
-   cwd, `ANSIBLE_NOCOLOR=1`, caching/gathering env vars stripped, stdin
-   `</dev/null`, per-engine `timeout` so a hang is its own result, rc
-   124). Raw stdout/stderr/rc are captured from both and diffed after a
-   single explicit mask list. Neither backend replaces `--atlantic-hosts`
-   (accepted and stored for a real disposable-host backend, not yet
-   built).
+  playbook against both engines on this machine (`-i localhost, -c
+  local`), `--check --diff` unless `--allow-mutation` is passed, so
+  happy-path tasks (real modules — apt, user, ...) can't mutate *this*
+  machine by accident; local refuses community modules outside the
+  promoted set (they need collection/package provisioning only the
+  podman templates do). **Podman** (`--run-on-podman`, opt-in, needs
+  `podman`) is where byte-parity actually holds: it provisions ONE
+  template container pair per profile (Debian/Rocky) from the UNION
+  dependency set in `data/module_dependencies.yml` (base lists plus the
+  in-scope modules' extras, partitioned real vs krikri), asserting the
+  container's ansible-core is exactly 2.19.11, failing loudly otherwise,
+  commits it to images, and then starts a **fresh container pair per
+  playbook** — so users, files and state created by one playbook never
+  leak into the next. Both engines get the identical invocation (same
+  absolute playbook path and cwd, `ANSIBLE_NOCOLOR=1`,
+  caching/gathering env vars stripped, stdin `</dev/null`, per-engine
+  `timeout` so a hang is its own result, rc 124). Raw stdout/stderr/rc
+  are captured from both and diffed after a single explicit mask list.
+  **Atlantic.net** (`--run-on-atlantic`, opt-in, needs the KeePass
+  credential source) is the third backend: one disposable VM per module
+  profile (rpm, db, containers, misc) for the modules whose happy path
+  needs a real service or kernel, dispatched from the same per-module
+  profile table. `--atlantic-hosts` caps how many of those VMs run at
+  once.
 5. **triage** — reads `results.jsonl` and produces the full report:
   divergences grouped by module + **diff signature** (changed lines with
   digits/paths/random names generalized and hashed — keyed on the ansible
@@ -59,8 +78,9 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
   by the same root cause dedupe into one finding, sorted by descending
   count, each with an example playbook and a copy-paste repro command),
    a generator-quality section (per module, how many happy-path playbooks
-   failed on real ansible — wasted coverage — and the first error line),
-   and per-module byte-identical rates.
+   failed on real ansible — wasted coverage — and the first error line,
+   plus the batch-level happy-path success rate and the modules excluded as
+   `not_applicable`), and per-module byte-identical rates.
 
 ## Byte comparison
 
@@ -89,16 +109,25 @@ Same rule as `krikri-role-tester`'s Galaxy-role workflow: 100% bar for
 `ansible.builtin` core modules and modules krikri has deliberately chosen
 to support; zero obligation for the rest. `generate`'s default module list
 follows that rule: without `--modules`, it scans every installed
-`ansible.builtin.*` module only (krikri-role-tester's
-`SUPPORTED_COMMUNITY_MODULES` is empty, so collection modules are opt-in
-via `--all-modules`, which restores scanning of every installed module).
+`ansible.builtin.*` module only; community modules join the default only
+when deliberately promoted into
+`src/krikri_playbook_generator/data/module_dependencies.yml: supported` and
+requested with `--supported-community` (promoting one is a data-file
+commit). `--all-modules` scans every installed module instead.
 
 ## Build
 
-    shards install
-    crystal build src/krikri_playbook_generator.cr -o bin/krikri-playbook-generator
-    crystal spec   # minitest.cr under the hood
-    crystal build lib/ameba/src/cli.cr -o bin/ameba && ./bin/ameba
+    just install     # shards install
+    just build       # crystal build into bin/krikri-playbook-generator
+    just spec        # crystal spec (minitest.cr)
+    just lint        # ameba (bin/ameba, built once)
+    just fmt         # crystal tool format
+
+    just hello       # generate --modules debug --count 1 --out playbooks/
+    just generate    # fused generate + --run-on-podman (apt,copy,user,cron x 500)
+    just run         # run playbooks/ through podman
+    just report      # report ~/scratch/kpg-results
+    just version
 
 ## Usage
 
@@ -112,9 +141,10 @@ The full pipeline is implemented end to end, as three separate steps:
     krikri-playbook-generator report ~/scratch/kpg-results
 
 `generate`'s default module list is every installed `ansible.builtin.*`
-module (short names, sorted); `--modules` narrows it explicitly and
-`--all-modules` scans every installed module, collections included
-(`--all-modules` and `--modules` are mutually exclusive).
+module (short names, sorted); `--modules` narrows it explicitly,
+`--supported-community` appends the promoted community modules from
+`module_dependencies.yml`, and `--all-modules` scans every installed
+module, collections included (the three are mutually exclusive).
 
 ...or fused into one call with `--run-on-podman` (needs `podman`): builds
 the playbooks (still written to `--out` for later review either way),
@@ -136,18 +166,37 @@ engine is recorded with rc 124). The report has three sections:
   root cause with its count, the example playbook and a copy-paste repro
   command (`krikri-playbook-generator run <playbook.yml> --run-on-podman
   ...` — `run` accepts a single playbook file path).
-- **Generator quality** — per module, how many happy-path playbooks
-  failed on real ansible (wasted coverage) and the first error line.
+- **Generator quality** — the batch happy-path success rate (how many
+  generated happy-path playbooks real ansible actually ran), per module how
+  many failed on real ansible (wasted coverage) and the first error line,
+  plus the modules excluded as intentionally failing or `not_applicable`.
 - **Per-module byte-identical rate** — masked-comparison identical/total
   per module.
+
+### Happy-path success gate
+
+A batch whose happy-path playbooks mostly fail on the reference engine is
+measuring almost nothing (there is no success-path comparison to make), so
+`report` and a `generate` that runs a backend accept
+`--min-happy-success PCT`:
+
+    krikri-playbook-generator report ~/scratch/kpg-results --min-happy-success 90
+
+When the measured rate is below the threshold, the tool prints the rate to
+stderr and exits **1** — distinct from 2 (krikri diverges) and from an
+engine/provisioning failure, so a wrapper can tell "the fuzzer's own
+coverage regressed, fix `module_overrides.yml`" from "a real divergence was
+found". A batch with no happy-path playbooks passes the gate.
 
 `report` works on any results directory, including one produced by
 `generate --run-on-podman`. Add `--json` to print ONE JSON object on
 stdout instead of the human report — `results_dir`, `total`/`errored`/
 `divergent` counts, `findings` grouped by module + diff signature (each
 with its playbooks and an example carrying chaos/mutations, the masked
-diff and ansible's first error), `errors`, and per-module `rates`. Exit
-code is unchanged (0 none, 2 divergences); warnings stay on stderr.
+diff and ansible's first error), `errors`, `not_applicable` (modules a
+single-task local playbook cannot exercise), `happy_coverage` (attempted/
+failed/succeeded/`success_percent`), and per-module `rates`. Exit code is
+unchanged (0 none, 2 divergences, 1 gate/failure); warnings stay on stderr.
 
 Every `run` also writes `versions.txt` next to `results.jsonl` — a
 best-effort provenance record (tool version, run start time, krikri
@@ -190,7 +239,31 @@ option, on the first try; a separate `--run-on-podman` run found a third
 `verbosity:`). As of v0.0.8, a validated podman run across `template`,
 `copy`, `file`, `command`, `debug`, `lineinfile`, `user` (--count 3,
 happy path) measures per-module byte-identical rates against real
-ansible-playbook 2.19.11 in isolated container pairs. See `AGENTS.md`'s
-"Known gaps" for what's deliberately not built yet (a real
-disposable-host execution backend for wide/production batches and
-`required_if` violation, multi-task playbooks).
+ansible-playbook 2.19.11 in isolated container pairs.
+
+As of v0.0.11 the happy path is measured rather than assumed: a mixed
+`ansible.builtin` batch now dispatches each playbook to the template pair
+its module needs (Debian vs Rocky), the remaining non-runnable core modules
+carry an explicit override instead of silently wasting coverage, generated
+values can be templated (`--chaos-kinds jinja`), and
+`--min-happy-success` fails a batch whose happy paths mostly fail on the
+reference engine. See `AGENTS.md`'s "Known gaps" for what's deliberately
+not built yet (multi-task playbooks, non-builtin
+module scope).
+
+## Version
+
+    krikri-playbook-generator --version
+    krikri-playbook-generator version
+    krikri-playbook-generator -v
+
+Prints `krikri-playbook-generator <VERSION>` and exits 0 without needing a subcommand.
+
+Runs log timestamped progress to **stderr** (stdout stays parseable):
+
+    04:58:45 pid=2512368 [runner] starting 1 playbook(s) (backend=local, results=...)
+    04:58:45 pid=2512368 [runner] executing 1 playbook(s) (local) ...
+    04:58:45 pid=2512368 [runner] executing 1 playbook(s) (local) done in 0.6s (started 04:58:45)
+    04:58:45 pid=2512368 [runner] batch complete: 1 playbook(s), 0 divergent, 0 errored
+
+The podman backend logs each template step (`starting ...`, `installing ... packages`, `committing ...`, `ready`) with the same `Log.phase` start/done stamping (`src/krikri_playbook_generator/log.cr` — the only diagnostic channel for run/provision paths).

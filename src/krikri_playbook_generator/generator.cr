@@ -11,6 +11,7 @@ module KrikriPlaybookGenerator
     WrongType
     BadChoice
     ViolateConstraint
+    Jinja
   end
 
   # One generated task's arguments plus, for chaos-mode tasks, which
@@ -55,9 +56,20 @@ module KrikriPlaybookGenerator
   #
   # `ViolateConstraint` acts on a whole constraint group rather than a
   # single option (it inherently spans several), rolled once per group
-  # per task. `required_if` isn't violated - its heterogeneous [key,
-  # value, [required_keys], bool?] shape doesn't reduce to a name group
-  # the same way; left as a known gap, not guessed at.
+  # per task. A `required_if` entry is violated by forcing its condition
+  # to the demanded value and dropping every key it demands (for the
+  # `any`-mode fourth element, every demanded key except at most one,
+  # which keeps the task valid unless all are dropped), so the task
+  # reaches argument validation with exactly the missing-key shape the
+  # constraint exists to reject.
+  #
+  # `Jinja` is the one "chaos" kind whose value is still semantically
+  # valid: it rewrites an option's value as a Jinja expression that
+  # evaluates to that same value (`0644` -> `{{ '0644' }}`), so the delta
+  # under test is the ENGINE's templating (where krikri historically
+  # diverges), not the module's argument validation. It is recorded in
+  # `GeneratedTask#mutations` like every other kind, which is why it is a
+  # chaos kind rather than a silent happy-path variation.
   #
   # Deterministic per seed (`Random::PCG32`); every mutation is recorded
   # in `GeneratedTask#mutations`, never applied silently.
@@ -161,8 +173,58 @@ module KrikriPlaybookGenerator
           args[option.name] = YAML::Any.new(bad_choice_value(option))
           mutations << {option.name, kind}
         end
+      when .jinja?
+        if wrapped = jinja_wrap(args[option.name])
+          args[option.name] = wrapped
+          mutations << {option.name, kind}
+        end
       else
         args[option.name] = happy_value(schema, option)
+      end
+    end
+
+    # Rewrites a valid value as a Jinja expression that evaluates back to
+    # it: `0644` -> `{{ '0644' }}`, `true` -> `{{ true }}`, `[a, b]` ->
+    # `{{ ['a', 'b'] }}`. Only the representation changes, so a divergence
+    # here is engine templating, not module validation. A value that
+    # cannot be expressed (nil, an empty dict) returns nil and is left
+    # unchanged, so the mutation is never recorded for a no-op.
+    private def jinja_wrap(value : YAML::Any) : YAML::Any?
+      literal = jinja_literal(value)
+      literal ? YAML::Any.new("{{ #{literal} }}") : nil
+    end
+
+    private def jinja_literal(value : YAML::Any) : String?
+      case raw = value.raw
+      when String
+        "'#{raw.gsub('\\', "\\\\").gsub('\'', "\\'")}'"
+      when Bool
+        raw ? "true" : "false"
+      when Int, Float
+        raw.to_s
+      when Array
+        elements = [] of String
+        raw.each do |element|
+          element_literal = jinja_literal(element)
+          return unless element_literal
+
+          elements << element_literal
+        end
+        "[#{elements.join(", ")}]"
+      when Hash
+        return if raw.empty?
+
+        pairs = [] of String
+        raw.each do |key, element|
+          key_literal = jinja_literal(key)
+          value_literal = jinja_literal(element)
+          return unless key_literal && value_literal
+
+          pairs << "#{key_literal}: #{value_literal}"
+        end
+        "{#{pairs.join(", ")}}"
+      else
+        # a value kind with no template-literal form (nil, time, ...)
       end
     end
 
@@ -182,7 +244,11 @@ module KrikriPlaybookGenerator
         end
         mutations << {group.join(","), ChaosKind::ViolateConstraint}
       end
+      violate_required_groups!(schema, args, mutations)
+    end
 
+    private def violate_required_groups!(schema : ModuleSchema, args : Hash(String, YAML::Any),
+                                         mutations : Array({String, ChaosKind})) : Nil
       schema.required_together.each do |group|
         next unless group.size >= 2 && chaos_triggered?
         next unless group.any? { |name| args.has_key?(name) }
@@ -201,6 +267,88 @@ module KrikriPlaybookGenerator
         group.each { |name| args.delete(name) }
         mutations << {group.join(","), ChaosKind::ViolateConstraint}
       end
+
+      schema.required_if.each do |entry|
+        next unless chaos_triggered?
+
+        violate_required_if!(schema, args, entry) do |label|
+          mutations << {label, ChaosKind::ViolateConstraint}
+        end
+      end
+    end
+
+    # Forces a `required_if` entry's condition to its demanded value
+    # and drops the keys it demands, leaving the task invalid in exactly
+    # the way the constraint exists to catch. In `any` mode (fourth
+    # element `true`) keeping one demanded key would keep the task
+    # valid, so all of them are dropped. Skips the entry unless the
+    # condition can be set without tripping an unrelated validation:
+    # its value must exist in the schema (or as a choice of the
+    # condition option, so a bad choice isn't also introduced) and
+    # every demanded key must be deletable (not a required option or
+    # already excluded). Yields the mutation label only on success.
+    private def violate_required_if!(schema : ModuleSchema, args : Hash(String, YAML::Any),
+                                     entry : JSON::Any, &) : Nil
+      entry_list = entry.as_a?
+      return unless entry_list && entry_list.size >= 3
+
+      condition = entry_list[0].as_s?
+      return unless condition
+      return unless schema.options[condition]?
+
+      required_keys = entry_list[2].as_a?.try(&.compact_map(&.as_s?)) || [] of String
+      return if required_keys.empty?
+      return unless required_keys.all? { |name| schema.options[name]? && args.has_key?(name) }
+      return if required_keys.any? do |name|
+                  option = schema.options[name]?
+                  (option && option.required?) || @overrides.excluded?(schema.module_name, name)
+                end
+
+      demanded = entry_list[1]
+      args[condition] = required_if_value(schema, condition, demanded)
+      required_keys.each { |name| args.delete(name) }
+      yield "required_if:#{condition}"
+    end
+
+    # The exact demanded value (bool/string/int/float), or - when the
+    # entry's value is a type argument validation can't match by
+    # equality (a list, a dict) - the condition option's first choice,
+    # which is the only kind of value an entry realistically demands.
+    # Never a random value: the delta must be the dropped keys, not a
+    # changed condition.
+    private def required_if_value(schema : ModuleSchema, condition : String,
+                                  demanded : JSON::Any) : YAML::Any
+      case raw = demanded.raw
+      when String then YAML::Any.new(raw)
+      when Bool   then YAML::Any.new(raw)
+      when Int    then YAML::Any.new(raw.to_i64)
+      when Float  then YAML::Any.new(raw)
+      when Nil    then YAML::Any.new(nil)
+      else
+        option = schema.options[condition]?
+        if option && !option.choices.empty?
+          YAML::Any.new(option.choices.first)
+        else
+          json_to_yaml(demanded)
+        end
+      end
+    end
+
+    private def json_to_yaml(value : JSON::Any) : YAML::Any
+      case raw = value.raw
+      when Array
+        YAML::Any.new(raw.map { |element| json_to_yaml(element) })
+      when Hash
+        hash = {} of YAML::Any => YAML::Any
+        raw.each { |key, element| hash[YAML::Any.new(key)] = json_to_yaml(element) }
+        YAML::Any.new(hash)
+      when String then YAML::Any.new(raw)
+      when Bool   then YAML::Any.new(raw)
+      when Int    then YAML::Any.new(raw.to_i64)
+      when Float  then YAML::Any.new(raw)
+      else
+        YAML::Any.new(nil)
+      end
     end
 
     # Satisfies the cross-option constraints on the baseline: keeps only
@@ -208,11 +356,16 @@ module KrikriPlaybookGenerator
     # any touched required_together group, populates a required_one_of
     # group if none of its members made it in, and adds keys required_if
     # demands for the condition values that are actually present.
+    #
+    # Ansible validates mutually_exclusive LAST (after the required_*
+    # checks), so a fill must never introduce a second member of an
+    # exclusive group - `addable?` plus the final pass enforce that.
     private def satisfy_constraints!(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
       keep_first_of_mutually_exclusive(schema, args)
       fill_required_together(schema, args)
       fill_required_one_of(schema, args)
       fill_required_if(schema, args)
+      keep_first_of_mutually_exclusive(schema, args)
     end
 
     private def keep_first_of_mutually_exclusive(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
@@ -220,7 +373,13 @@ module KrikriPlaybookGenerator
         present = group.select { |name| args.has_key?(name) }
         next unless present.size > 1
 
-        present[1..].each { |name| args.delete(name) }
+        # A required member must survive the cut, or the task fails
+        # argument validation for a different reason than the one under test.
+        keeper = present.find do |name|
+          option = schema.options[name]?
+          option && option.required?
+        end || present.first
+        present.each { |name| args.delete(name) unless name == keeper }
       end
     end
 
@@ -237,7 +396,7 @@ module KrikriPlaybookGenerator
       groups.each do |group|
         next if group.any? { |name| args.has_key?(name) }
 
-        name = group.find { |candidate| addable?(schema, candidate) }
+        name = group.find { |candidate| addable?(schema, args, candidate) }
         next unless name
 
         args[name] = happy_value(schema, schema.options[name])
@@ -256,7 +415,7 @@ module KrikriPlaybookGenerator
         required_keys = entry_list[2].as_a?.try(&.compact_map(&.as_s?)) || [] of String
         require_any = entry_list[3]?.try(&.as_bool?) || false
         required_keys.each do |name|
-          next if args.has_key?(name) || !addable?(schema, name)
+          next if args.has_key?(name) || !addable?(schema, args, name)
 
           args[name] = happy_value(schema, schema.options[name])
           break if require_any
@@ -267,15 +426,25 @@ module KrikriPlaybookGenerator
     private def add_all(schema : ModuleSchema, args : Hash(String, YAML::Any), names : Array(String)) : Nil
       names.each do |name|
         option = schema.options[name]?
-        next if !option || @overrides.excluded?(schema.module_name, name) || args.has_key?(name)
+        next if !option || args.has_key?(name) || !addable?(schema, args, name)
 
         args[name] = happy_value(schema, option)
       end
     end
 
-    private def addable?(schema : ModuleSchema, name : String) : Bool
+    private def addable?(schema : ModuleSchema, args : Hash(String, YAML::Any), name : String) : Bool
       return false unless schema.options[name]?
-      !@overrides.excluded?(schema.module_name, name)
+      return false if @overrides.excluded?(schema.module_name, name)
+
+      !exclusive_conflict?(schema, args, name)
+    end
+
+    # True when adding `name` would put a second member of the same
+    # mutually_exclusive group into `args`.
+    private def exclusive_conflict?(schema : ModuleSchema, args : Hash(String, YAML::Any), name : String) : Bool
+      schema.mutually_exclusive.any? do |group|
+        group.includes?(name) && group.any? { |member| member != name && args.has_key?(member) }
+      end
     end
 
     private def value_matches?(yaml_value : YAML::Any, json_value : JSON::Any) : Bool
@@ -310,6 +479,11 @@ module KrikriPlaybookGenerator
         simple_override_value(override)
       when "source_path", "work_path", "work_dir", "username", "literal_pool"
         pool_override_value(override)
+      when "empty_dict"
+        # For options the DOCUMENTATION leaves untyped but the module
+        # validates as a dict (validate_argument_spec's argument_spec):
+        # a random word there is a type error, an empty dict is valid.
+        YAML::Any.new({} of YAML::Any => YAML::Any)
       end
     end
 

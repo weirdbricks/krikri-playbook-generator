@@ -55,7 +55,8 @@ module KrikriPlaybookGenerator
     class ScanError < Exception
     end
 
-    def initialize(@module_filter : Array(String)? = nil, @all_modules : Bool = false)
+    def initialize(@module_filter : Array(String)? = nil, @all_modules : Bool = false,
+                   @supported_community : Array(String)? = nil)
     end
 
     def scan : Array(ModuleSchema)
@@ -77,11 +78,11 @@ module KrikriPlaybookGenerator
       schemas
     end
 
-    # krikri's obligation is ansible.builtin core only (krikri-role-tester's
-    # SUPPORTED_COMMUNITY_MODULES is empty); collection modules are opt-in
-    # via --all-modules. Names are returned short ("copy", not
-    # "ansible.builtin.copy") since that's how the rest of the tool
-    # already addresses core modules.
+    # krikri's obligation is ansible.builtin core only, plus any community
+    # modules explicitly chosen for support (Dependencies#supported, empty
+    # until a module is promoted there). Those are FQCNs and stay FQCNs;
+    # core names are returned short ("copy", not "ansible.builtin.copy")
+    # since that's how the rest of the tool already addresses core modules.
     def self.core_module_names(listing : JSON::Any) : Array(String)
       listing.as_h.keys
         .select(&.starts_with?(CORE_PREFIX))
@@ -89,14 +90,30 @@ module KrikriPlaybookGenerator
         .sort!
     end
 
+    def self.supported_module_names(listing : JSON::Any, supported : Array(String)) : Array(String)
+      return [] of String if supported.empty?
+
+      available = listing.as_h.keys
+      supported.select { |fqcn| available.includes?(fqcn) }.sort!
+    end
+
     private def discover_module_names : Array(String)
       result = Cmd.run("ansible-doc", ["--list", "-j", "-t", "module"])
       raise ScanError.new("ansible-doc --list failed: #{result.stderr}") unless Cmd.success?(result)
 
       listing = JSON.parse(result.stdout)
-      return listing.as_h.keys if @all_modules
+      return listing.as_h.keys.sort! if @all_modules
 
-      self.class.core_module_names(listing)
+      names = self.class.core_module_names(listing)
+      if supported = @supported_community
+        return names if supported.empty?
+
+        extra = self.class.supported_module_names(listing, supported)
+        missing = supported.reject { |fqcn| extra.includes?(fqcn) }
+        STDERR.puts "warning: #{missing.size} supported module(s) not installed: #{missing.join(", ")}" unless missing.empty?
+        names.concat(extra)
+      end
+      names
     end
 
     private def scan_module(name : String) : ModuleSchema?

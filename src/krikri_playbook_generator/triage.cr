@@ -41,6 +41,22 @@ module KrikriPlaybookGenerator
     record Quality, module_name : String, failed : Int32, total : Int32, example_error : String
     record Rate, module_name : String, identical : Int32, total : Int32
 
+    # Batch-level happy-path runnability: how many generated happy-path
+    # playbooks the REFERENCE engine could actually run. A failed one is
+    # wasted coverage - there is no success-path comparison to make - so
+    # this is the metric `--min-happy-success` gates on.
+    record HappyCoverage, attempted : Int32, failed : Int32 do
+      def succeeded : Int32
+        attempted - failed
+      end
+
+      def success_rate : Float64
+        return 100.0 if attempted.zero?
+
+        succeeded.to_f / attempted * 100.0
+      end
+    end
+
     def initialize(@results_dir : String, @overrides : Overrides = Overrides.load)
     end
 
@@ -84,6 +100,20 @@ module KrikriPlaybookGenerator
           json.field "errors" do
             json.array do
               lines.select(&.errored?).each { |line| error_json(json, line) }
+            end
+          end
+          json.field "not_applicable" do
+            json.array do
+              lines.map(&.module_name).uniq!.select { |name| @overrides.not_applicable?(name) }.sort!.each { |name| json.string(name) }
+            end
+          end
+          coverage = happy_coverage_from(lines)
+          json.field "happy_coverage" do
+            json.object do
+              json.field "attempted", coverage.attempted
+              json.field "failed", coverage.failed
+              json.field "succeeded", coverage.succeeded
+              json.field "success_percent", coverage.success_rate.round(1)
             end
           end
           json.field "rates" do
@@ -156,6 +186,7 @@ module KrikriPlaybookGenerator
       lines.each do |line|
         next if line.chaos || line.errored?
         next if @overrides.expect_failure?(line.module_name)
+        next if @overrides.not_applicable?(line.module_name)
         next unless line.ansible_failed
 
         groups[line.module_name] << line
@@ -169,11 +200,38 @@ module KrikriPlaybookGenerator
       end.sort_by! { |quality| -quality.failed }
     end
 
+    # Batch-level version of the quality metric, counting every happy-path
+    # playbook (all modules together) the reference engine ran or failed.
+    def happy_coverage : HappyCoverage
+      happy_coverage_from(result_lines)
+    end
+
+    private def happy_coverage_from(lines : Array(ResultLine)) : HappyCoverage
+      attempted = 0
+      failed = 0
+      lines.each do |line|
+        next if line.chaos || line.errored?
+        next if @overrides.expect_failure?(line.module_name)
+        next if @overrides.not_applicable?(line.module_name)
+
+        attempted += 1
+        failed += 1 if line.ansible_failed
+      end
+      HappyCoverage.new(attempted, failed)
+    end
+
     # Modules seen in the results that the override table marks as
     # intentionally failing - reported alongside the quality section so
     # the exclusion is visible rather than silent.
     def expected_failures : Array(String)
       result_lines.map(&.module_name).uniq!.select { |name| @overrides.expect_failure?(name) }.sort!
+    end
+
+    # Modules that a single-task local playbook cannot exercise at all
+    # (reboot, apt_key) - excluded from the coverage metric for the same
+    # reason, and reported so the exclusion stays visible.
+    def not_applicable_modules : Array(String)
+      result_lines.map(&.module_name).uniq!.select { |name| @overrides.not_applicable?(name) }.sort!
     end
 
     def rates : Array(Rate)

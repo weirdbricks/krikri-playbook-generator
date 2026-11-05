@@ -100,6 +100,32 @@ module KrikriPlaybookGenerator
       assert_equal("ansible-playbook", opts.ansible_playbook_bin)
     end
 
+    it "defaults supported_community? to false" do
+      refute(Options.parse(["generate"]).supported_community?)
+    end
+
+    it "short-circuits --version in main() before Options.parse" do
+      # main() intercepts --version/-v/version and prints VERSION without
+      # ever reaching Options.parse, which has no version flag by design.
+      refute(Options.parse(["generate"]).supported_community?)
+    end
+
+    it "parses --supported-community on generate" do
+      opts = Options.parse(["generate", "--supported-community"])
+      assert(opts.supported_community?)
+    end
+
+    it "refuses --supported-community with --modules, --all-modules, or outside generate" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--supported-community", "--modules", "apt"]) }
+      assert((err.message || "").includes?("--supported-community"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--supported-community", "--all-modules"]) }
+      assert((err.message || "").includes?("--supported-community"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--supported-community"]) }
+      assert((err.message || "").includes?("--supported-community"))
+    end
+
     it "parses --json with the report command" do
       opts = Options.parse(["report", "--results-dir", "/tmp/r", "--json"])
       assert(opts.json?)
@@ -135,9 +161,40 @@ module KrikriPlaybookGenerator
     end
 
     it "maps kebab-case --chaos-kinds values to ChaosKind members" do
-      kinds = Options.parse_chaos_kinds(%w[typo hallucinate wrong-type bad-choice violate-constraint])
+      kinds = Options.parse_chaos_kinds(%w[typo hallucinate wrong-type bad-choice violate-constraint jinja])
       assert_equal([ChaosKind::Typo, ChaosKind::Hallucinate, ChaosKind::WrongType,
-                    ChaosKind::BadChoice, ChaosKind::ViolateConstraint], kinds)
+                    ChaosKind::BadChoice, ChaosKind::ViolateConstraint, ChaosKind::Jinja], kinds)
+    end
+
+    it "includes jinja in the default chaos kinds" do
+      assert_includes(Options.parse(["generate"]).chaos_kinds, "jinja")
+    end
+
+    it "parses --min-happy-success on report" do
+      opts = Options.parse(["report", "--min-happy-success", "90"])
+      assert_equal(90.0, opts.min_happy_success || 0.0)
+    end
+
+    it "parses --min-happy-success on a generate that runs a backend" do
+      opts = Options.parse(["generate", "--run-on-podman", "--min-happy-success", "75.5"])
+      assert_equal(75.5, opts.min_happy_success || 0.0)
+    end
+
+    it "defaults min_happy_success to nil" do
+      assert_nil(Options.parse(["report"]).min_happy_success)
+    end
+
+    it "refuses --min-happy-success on a plain run or a generate without a backend" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--min-happy-success", "90"]) }
+      assert((err.message || "").includes?("--min-happy-success"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--min-happy-success", "90"]) }
+      assert((err.message || "").includes?("--min-happy-success"))
+    end
+
+    it "raises on an out-of-range --min-happy-success" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["report", "--min-happy-success", "101"]) }
+      assert((err.message || "").includes?("--min-happy-success"))
     end
 
     it "raises on a non-numeric --seed, naming the flag" do

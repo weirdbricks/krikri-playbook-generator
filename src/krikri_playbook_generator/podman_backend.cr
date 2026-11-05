@@ -1,5 +1,7 @@
 require "./cmd"
+require "./dependencies"
 require "./fixtures"
+require "./log"
 
 module KrikriPlaybookGenerator
   class PodmanProvisionError < Exception
@@ -23,15 +25,16 @@ module KrikriPlaybookGenerator
   # the committed images, and `leak_check` verifies at the end that no
   # kpg-* container survived.
   #
-  # Unlike podman-diff, this installs one fixed, generic dependency set
-  # rather than the dozens of per-module apt/collection installs
-  # podman-diff's hand-picked case list gates on - this tool picks
-  # modules randomly, so it can't know ahead of time which module-specific
-  # library/binary/collection a given batch will need. A module needing
-  # something outside that fixed set fails identically on both engines
-  # (not a real divergence) in the common case, or - if only one engine
-  # needs the missing dependency - can manufacture a false divergence;
-  # documented known limitation, not silently papered over.
+  # Unlike podman-diff, this installs a UNION dependency set (the base
+  # lists plus Dependencies#supported's extras) once per profile rather
+  # than dozens of per-module installs gated on a hand-picked case
+  # list - a randomly fuzzed batch can't gate per case, and two images
+  # are far cheaper to provision than one per module. A module needing
+  # something outside that union still fails identically on both
+  # engines in the common case, or - if only one engine needs the
+  # missing dependency - manufactures a false divergence; that residual
+  # is a known limitation, fixed by promoting the module with its
+  # dependency entry, never silently papered over.
   #
   # IMAGE's glibc must be new enough for whatever host built `krikri_bin`
   # (a plain `crystal build` - the default here, not `--static` - links
@@ -41,15 +44,9 @@ module KrikriPlaybookGenerator
   class PodmanBackend
     IMAGE                    = "docker.io/library/debian:trixie-slim"
     EXPECTED_ANSIBLE_VERSION = "2.19.11"
-    # python3-pexpect: expect's real-ansible reference imports it; without
-    # it every expect playbook is a harness gap rather than a test. Krikri's
-    # own expect implementation needs it too (it shells to python pexpect),
-    # so KRIKRI_RUNTIME_LIBS carries it as well.
-    REAL_PACKAGES       = "ansible python3 python3-pexpect procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo python3-idna"
-    KRIKRI_RUNTIME_LIBS = "libxml2 libssl3 openssl libyaml-0-2 libpcre2-8-0 python3-cryptography python3-pexpect python3 procps cron gnupg git openssh-client python3-apt python3-debian debconf-utils rsync sudo"
-    INVENTORY           = "target ansible_connection=local\n"
-    ENGINE_ENV_STRIP    = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
-    OWNER_LABEL         = "krikri-owner-pid"
+    INVENTORY                = "target ansible_connection=local\n"
+    ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
+    OWNER_LABEL              = "krikri-owner-pid"
 
     # The rpm-family modules (dnf, dnf5, yum...) need rpm tooling and python
     # dnf bindings the Debian template can never have; they run against a
@@ -57,13 +54,8 @@ module KrikriPlaybookGenerator
     # profile (same Rocky major, same package set, same import-probe
     # behavior). Rocky 10's glibc (2.39) runs the trixie-built krikri
     # binary - AtlanticBackend stages the same binary onto its Rocky-10 VMs.
-    IMAGE_RPM = "quay.io/rockylinux/rockylinux:10"
-    # python3-dnf-plugin-versionlock mirrors the Atlantic rpm profile;
-    # versionlock IS in Rocky's repos. dnf5's python bindings do not exist
-    # in Rocky 10's repos, so real ansible's dnf5 fails its import probe -
-    # that failure is still comparable byte-for-byte (krikri probes the
-    # same python path), only the dnf5 happy paths count as wasted coverage.
-    RPM_PACKAGES     = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp"
+    IMAGE_RPM        = "quay.io/rockylinux/rockylinux:10"
+    RPM_PACKAGES     = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp gnupg2"
     ANSIBLE_CORE_PIN = "ansible-core==#{EXPECTED_ANSIBLE_VERSION}"
 
     enum Profile
@@ -97,12 +89,14 @@ module KrikriPlaybookGenerator
       result.stdout.lines.reject(&.blank?)
     end
 
-    def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false)
+    def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false,
+                   @module_fqcns : Array(String) = [] of String, @dependencies : Dependencies = Dependencies.load)
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = ""
       @name_krikri = ""
       @image_real = ""
       @image_krikri = ""
+      @images = {} of Profile => {String, String}
       @started_names = [] of String
       @run_index = 0
       @provisioned_profiles = [] of Profile
@@ -110,35 +104,71 @@ module KrikriPlaybookGenerator
     end
 
     def provision(profile : Profile = Profile::Debian) : Nil
+      label = profile.debian? ? "debian" : "rpm"
+      Log.phase("podman", "#{label} template provisioning start") do
+        provision_inner(profile)
+      end
+    end
+
+    private def provision_inner(profile : Profile) : Nil
+      label = profile.debian? ? "debian" : "rpm"
       case profile
       when Profile::Debian
         @name_real = "kpg-tpl-real#{@suffix}"
         @name_krikri = "kpg-tpl-krikri#{@suffix}"
         @image_real = "kpg-img-real#{@suffix}"
         @image_krikri = "kpg-img-krikri#{@suffix}"
+        Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE})")
         start_container(@name_real)
         start_container(@name_krikri)
-        install(@name_real, REAL_PACKAGES)
-        install(@name_krikri, KRIKRI_RUNTIME_LIBS)
+        sets = package_sets
+        Log.info("podman", "#{label} template: installing #{sets.real_debian.size + sets.krikri_debian.size} packages " \
+                           "(real #{sets.real_debian.size}, krikri #{sets.krikri_debian.size})")
+        install(@name_real, sets.real_debian.join(" "))
+        install(@name_krikri, sets.krikri_debian.join(" "))
+        unless sets.python.empty?
+          Log.info("podman", "#{label} template: pip installing #{sets.python.join(" ")} (real side)")
+          install_python(@name_real, sets.python)
+        end
+        unless sets.collections.empty?
+          Log.info("podman", "#{label} template: galaxy installing #{sets.collections.join(" ")} (real side)")
+          install_collections(@name_real, sets.collections)
+        end
       when Profile::Rpm
         @name_real = "kpg-rpmtpl-real#{@suffix}"
         @name_krikri = "kpg-rpmtpl-krikri#{@suffix}"
         @image_real = "kpg-img-real-rpm#{@suffix}"
         @image_krikri = "kpg-img-krikri-rpm#{@suffix}"
+        Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE_RPM})")
         start_container(@name_real, IMAGE_RPM)
         start_container(@name_krikri, IMAGE_RPM)
-        install_rpm(@name_real, with_ansible: true)
-        install_rpm(@name_krikri, with_ansible: false)
+        sets = package_sets
+        install_rpm(@name_real, with_ansible: true, packages: sets.real_rpm.join(" "))
+        install_rpm(@name_krikri, with_ansible: false, packages: sets.krikri_rpm.join(" "))
+        unless sets.python.empty?
+          Log.info("podman", "#{label} template: pip installing #{sets.python.join(" ")} (real side)")
+          install_python_rpm(@name_real, sets.python)
+        end
+        unless sets.collections.empty?
+          Log.info("podman", "#{label} template: galaxy installing #{sets.collections.join(" ")} (real side)")
+          install_collections(@name_real, sets.collections)
+        end
       end
 
+      Log.info("podman", "#{label} template: staging krikri-playbook binary")
       stage_krikri_binary
+      Log.info("podman", "#{label} template: seeding fixtures (identical on both sides)")
       seed_fixtures
+      Log.info("podman", "#{label} template: preparing /work + inventory")
       prepare_workdir
+      Log.info("podman", "#{label} template: asserting ansible-core == #{EXPECTED_ANSIBLE_VERSION} / krikri binary")
       assert_ansible_version!
       assert_krikri_binary!
+      Log.info("podman", "#{label} template: committing #{@image_real} + #{@image_krikri}")
       commit_templates
       drop_templates
-
+      Log.info("podman", "#{label} template: ready (#{@image_real})")
+      @images[profile] = {@image_real, @image_krikri}
       @provisioned_profiles << profile
     end
 
@@ -151,17 +181,21 @@ module KrikriPlaybookGenerator
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian) : {ansible: Cmd::Result, krikri: Cmd::Result}
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
+      # Per-profile images: a mixed batch provisions both templates, and a
+      # playbook must run on the profile that matches its module (an apt
+      # module can never pass on the Rocky pair).
+      real_image, krikri_image = @images[profile]
       @run_index += 1
       real = "kpg-real-#{@run_index}#{@suffix}"
       krikri = "kpg-krikri-#{@run_index}#{@suffix}"
       created = [] of String
 
       begin
-        start_from_image(@image_real, real)
+        start_from_image(real_image, real)
         created << real
         # --control: the "krikri" side is a second real-ansible container, so any
         # divergence is run-to-run noise or a harness asymmetry, never krikri.
-        start_from_image(@control ? @image_real : @image_krikri, krikri)
+        start_from_image(@control ? real_image : krikri_image, krikri)
         created << krikri
 
         copy_playbook(playbook_path, real)
@@ -184,12 +218,16 @@ module KrikriPlaybookGenerator
     # not results worth keeping.
     def teardown : Nil
       unless @started_names.empty?
+        Log.info("podman", "teardown: removing #{@started_names.size} leftover container(s)")
         Cmd.run("podman", ["rm", "-f"] + @started_names, timeout: 180.0)
         @started_names.clear
       end
 
-      @committed_images.each do |image|
-        Cmd.run("podman", ["rmi", "-f", image], timeout: 180.0)
+      unless @committed_images.empty?
+        Log.info("podman", "teardown: removing #{@committed_images.size} committed template image(s)")
+        @committed_images.each do |image|
+          Cmd.run("podman", ["rmi", "-f", image], timeout: 180.0)
+        end
       end
     end
 
@@ -216,11 +254,34 @@ module KrikriPlaybookGenerator
     # The rpm template pair shares one prep: dnf packages everywhere, the
     # pinned ansible-core only where the real engine runs (the version
     # assertion below would fail on a distro ansible-core otherwise).
-    private def install_rpm(name : String, with_ansible : Bool) : Nil
+    private def install_rpm(name : String, with_ansible : Bool, packages : String = RPM_PACKAGES) : Nil
       script = "dnf makecache -q 2>/dev/null || dnf makecache; " \
-               "dnf install -y -q #{RPM_PACKAGES} >/dev/null"
+               "dnf install -y -q #{packages} >/dev/null"
       script += " && pip3 install --quiet #{ANSIBLE_CORE_PIN}" if with_ansible
       exec!(name, script, 900.0)
+    end
+
+    private def install_python(name : String, packages : Array(String)) : Nil
+      exec!(name, "pip3 install --quiet #{packages.join(" ")}", 900.0)
+    end
+
+    private def install_python_rpm(name : String, packages : Array(String)) : Nil
+      install_python(name, packages)
+    end
+
+    private def install_collections(name : String, collections : Array(String)) : Nil
+      exec!(name, "ansible-galaxy collection install #{collections.join(" ")} >/dev/null 2>&1", 900.0)
+    end
+
+    private def package_sets : Dependencies::PackageSets
+      selected = @module_fqcns.empty? ? @dependencies.supported : @module_fqcns
+      @dependencies.package_sets(selected)
+    end
+
+    # Visible for specs: proves the union model computes the intended
+    # template package set for a batch's modules.
+    def package_sets_for_test : Dependencies::PackageSets
+      package_sets
     end
 
     private def stage_krikri_binary : Nil

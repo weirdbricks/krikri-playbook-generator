@@ -22,13 +22,14 @@ module KrikriPlaybookGenerator
     @always : Hash(String, Array(String))
     @free_form : Hash(String, Array(String))
     @expect_failure : Hash(String, Bool)
+    @not_applicable : Hash(String, Bool)
 
     # Module-level keys are not option overrides; the per-option parser must
     # skip them even when their YAML shape (a map) looks identical. `free_form`
     # is deliberately absent: it is BOTH a module-level key (a pool of bare
     # task bodies) and a real option of shell/script (the raw command), so it
     # is disambiguated by its value - see `module_key?`.
-    MODULE_KEYS = %w[always exclude expect_failure require_one_of]
+    MODULE_KEYS = %w[always exclude expect_failure not_applicable require_one_of]
 
     def initialize(yaml : String)
       parsed = YAML.parse(yaml)
@@ -37,7 +38,8 @@ module KrikriPlaybookGenerator
       @require_one_of = parse_require_one_of(parsed["modules"]?)
       @always = parse_always(parsed["modules"]?)
       @free_form = parse_pool_by_module(parsed["modules"]?, "free_form")
-      @expect_failure = parse_expect_failure(parsed["modules"]?)
+      @expect_failure = parse_flag_by_module(parsed["modules"]?, "expect_failure")
+      @not_applicable = parse_flag_by_module(parsed["modules"]?, "not_applicable")
     end
 
     # Module-level happy-path requirement groups from the data file: a
@@ -147,6 +149,16 @@ module KrikriPlaybookGenerator
       @expect_failure[module_name]? || false
     end
 
+    # Module-level `not_applicable: true`: the module cannot be exercised by
+    # a single-task, local-connection playbook at all (reboot would reboot
+    # the control node; apt_key's apt-key tooling no longer ships in the
+    # reference image), so its happy-path failures are neither a generator
+    # bug nor wasted coverage to chase. Triage keeps it out of both the
+    # quality and happy-coverage metrics - visibly, never silently.
+    def not_applicable?(module_name : String) : Bool
+      @not_applicable[module_name]? || false
+    end
+
     private def parse_pool_by_module(section : YAML::Any?, key : String) : Hash(String, Array(String))
       result = {} of String => Array(String)
       section.try(&.as_h?).try do |section_hash|
@@ -158,11 +170,11 @@ module KrikriPlaybookGenerator
       result
     end
 
-    private def parse_expect_failure(section : YAML::Any?) : Hash(String, Bool)
+    private def parse_flag_by_module(section : YAML::Any?, key : String) : Hash(String, Bool)
       result = {} of String => Bool
       section.try(&.as_h?).try do |section_hash|
         section_hash.each do |module_name, options|
-          flag = options.as_h?.try(&.["expect_failure"]?).try(&.as_bool?)
+          flag = options.as_h?.try(&.[key]?).try(&.as_bool?)
           result[module_name.to_s] = true if flag
         end
       end

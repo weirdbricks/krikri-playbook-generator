@@ -53,21 +53,33 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `group`/`validate` and other practical traps come from a per-module
   override table (`src/krikri_playbook_generator/data/module_overrides.yml`,
   embedded at compile time, easy to extend — kinds: `mode`, `owner`,
-  `group`, `validate`, `source_path`, `work_path`, `username`,
-  `literal_pool`, `exclude`), `choices` are respected, ints stay in sane
-  ranges (0–100). After value assignment, the baseline *satisfies*
+  `group`, `validate`, `source_path`, `work_path`, `work_dir`, `username`,
+  `literal_pool`, `empty_dict`, `exclude`, plus module-level `always`,
+  `free_form`, `require_one_of`, `expect_failure` and `not_applicable`),
+  `choices` are respected, ints stay in sane
+  ranges (0–100). After value assignment, a fill never introduces a
+  second member of a `mutually_exclusive` group (Ansible validates that
+  last, so `addable?` checks it and a final pass enforces it), and the
+  baseline *satisfies*
   `mutually_exclusive` (keeps one member per group),
   `required_together` (fills in the rest of any touched group),
-  `required_one_of` (populates an empty group) and `required_if`
+  `required_one_of` (populates an empty group with a non-conflicting
+  member) and `required_if`
   (adds demanded keys when the condition value is present). Chaos mode
   then mutates that valid baseline independently per option-slot at
-  `chaos_percentage`: Typo/Hallucinate/WrongType/BadChoice, picked
+  `chaos_percentage`: Typo/Hallucinate/WrongType/BadChoice/Jinja, picked
   uniformly from `--chaos-kinds` — every chaos value is a delta from a
-  runnable task, never a fresh random value. `ViolateConstraint` is still
+  runnable task, never a fresh random value. `Jinja` is the one kind whose
+  value stays semantically valid: it rewrites a value as a Jinja expression
+  that evaluates back to it (`0644` -> `{{ '0644' }}`), so the delta under
+  test is the engine's templating. `ViolateConstraint` is still
   rolled once per constraint *group*: it force-includes a whole
   `mutually_exclusive` group, breaks a `required_together` group down to
-  one member, or empties a `required_one_of` group. `required_if` isn't
-  violated (documented gap). Deterministic per seed (`Random::PCG32`);
+  one member, empties a `required_one_of` group, or violates a
+  `required_if` entry by forcing its condition to the demanded value
+  and dropping every key it demands (skipped when a demanded key is a
+  required option or excluded, which would trip an unrelated check).
+  Deterministic per seed (`Random::PCG32`);
   every mutation is recorded in `GeneratedTask#mutations`, never applied
   silently.
 - `src/krikri_playbook_generator/fixtures.cr` — `Fixtures`. **Implemented**:
@@ -79,7 +91,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   (`roles/kpgrole/tasks|defaults|vars|handlers/main.yml`) for
   include_role/import_role, which the overrides name by absolute path
   (`Fixtures::ROLE_PATH`) so both engines resolve the same value instead of
-  each running its own roles/ search. `PodmanBackend` seeds it identically
+  each running its own roles/ search. It also seeds the fixtures the
+  happy paths need a real object for: an armored OpenPGP key
+  (`Fixtures::PGP_KEY_PATH`, for rpm_key), a local Subversion repository
+  (`Fixtures::SVN_REPO_URL`, where svnadmin is installed) and a finished
+  async job under `$HOME/.ansible_async` (`Fixtures::ASYNC_JOB_ID`, for
+  async_status, since single-task playbooks cannot create one).
+  `PodmanBackend` seeds it identically
   into BOTH containers
   during provisioning (never via playbook tasks, so seeding never appears
   in the compared output); local runs seed the host best-effort and warn
@@ -116,12 +134,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   also parses `ignored=N` (needed to detect happy-path failures hidden by
   `ignore_errors`). Backends: local (`--check` by default unless
   `--allow-mutation`; engines wrapped in `timeout`; fixtures seeded
-  best-effort on the host) and podman (`--run-on-podman`, fresh container
-  pair per playbook via committed template images). `--keep-going` turns
+  best-effort on the host), podman (`--run-on-podman`, fresh container
+  pair per playbook via committed template images) and Atlantic.net
+  (`--run-on-atlantic`, one disposable VM per module profile).
+  `--keep-going` turns
   per-playbook failures into errored results instead of aborting the
   batch; errored results are never counted as divergent.
-  `--atlantic-hosts` is accepted and stored for a possible future remote/
-  Atlantic.net backend but unused by either backend implemented here.
+  `--atlantic-hosts` caps how many Atlantic VMs run concurrently.
 - `src/krikri_playbook_generator/versions.cr` — `Versions`. **Implemented**:
   writes `<results_dir>/versions.txt` (called from `Runner#run`, right
   after results.jsonl) — a best-effort provenance record parsed by
@@ -145,8 +164,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   ansible-core version equals `EXPECTED_ANSIBLE_VERSION` (2.19.11 —
   fails loudly otherwise), then `podman commit`s both templates into
   images and removes the templates. Every `run_playbook` call starts a
-  FRESH pair from those committed images (`kpg-real-<n>…`,
-  `kpg-krikri-<n>…`), copies the playbook into both, and execs each
+  FRESH pair from the committed images for the playbook's OWN profile
+  (`kpg-real-<n>…`, `kpg-krikri-<n>…`; the per-profile image pairs are kept
+  in a map, so a mixed Debian/rpm batch never runs apt modules on Rocky),
+  copies the playbook into both, and execs each
   engine with the identical invocation (`bash -c "cd /work && env -u
   ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u
   ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1 timeout <N>
@@ -179,36 +200,47 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   playbook file). `quality` is the generator-quality metric: per module,
   how many happy-path playbooks failed on real ansible (`ansible_failed`)
   plus the first error line — happy-path failures on the reference engine
-  are wasted coverage. `rates` gives per-module byte-identical counts.
+  are wasted coverage. `happy_coverage` is the batch-level version
+  (attempted/failed/succeeded/success rate), excluding chaos, errored,
+  `expect_failure` and `not_applicable` modules; `not_applicable_modules`
+  reports the exclusions so they stay visible. `rates` gives per-module
+  byte-identical counts.
   Malformed lines and legacy lines missing `module` are skipped, a
   missing `results.jsonl` raises. `ResultLine` also keeps each line's
   masked diff (from results.jsonl's `diff.masked`) and error text;
   `report_json` renders the whole report as ONE JSON object (`report
   --json`): results_dir, total/errored/divergent counts, findings in the
   same grouping/order as `report` (each with playbooks and an example
-  carrying chaos/mutations/masked_diff/ansible_error), errors, rates.
+  carrying chaos/mutations/masked_diff/ansible_error), errors,
+  not_applicable, happy_coverage, rates.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the three
   subcommands (`generate`, `run`, `report`), plus `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
-  recorded with rc 124) and `--json` (valid only with `report`; error
-  otherwise). Both `run <dir>` and `report <dir>` accept that
+  recorded with rc 124), `--json` (valid only with `report`; error
+  otherwise) and `--min-happy-success PCT` (the happy-path success gate;
+  valid with `report`, or a `generate` that runs a backend). Both
+  `run <dir>` and `report <dir>` accept that
   directory as a positional argument (falling back to `--out`/
   `--results-dir` otherwise), and `run <file.yml>` accepts a single
   playbook path (the repro form Triage prints), matching the CLI sketch
-  in `KRIKRI_PLAYBOOK_GENERATOR.md`.
+  in `KRIKRI_PLAYBOOK_GENERATOR.md`. `--chaos-kinds` accepts
+  `typo`, `hallucinate`, `wrong-type`, `bad-choice`, `violate-constraint`
+  and `jinja`.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + diff signature (with count,
   mutations, example playbook and repro command), the generator-quality
-  section (happy-path failures on real ansible with first error line),
-  and per-module byte-identical rates. `Command::Generate` fuses the
+  section (batch happy-path success rate, per-module failures on real
+  ansible with first error line, expected-failure and not-applicable
+  exclusions), and per-module byte-identical rates. `Command::Generate` fuses the
   whole pipeline into one call when `--run-on-podman` is passed: after
   building the playbooks (still written to `--out` for later review
   either way), it immediately runs them via `Runner` with
   `run_on_podman: true`, prints one `[DIVERGENT]`/`[IDENTICAL]`/
   `[ERROR] <path>` line per playbook, then the full report. Exit code is
   2 iff divergences exist (for `generate --run-on-podman`, `run`,
-  and `report`); errors always exit 1. Plain `run` still supports
+  and `report`); a `--min-happy-success` gate violation exits 1, as do
+  tool errors. Plain `run` still supports
   `--run-on-podman` on its own, for re-running an already-generated
   `--out` directory.
 
@@ -234,12 +266,15 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   reference (real ansible) side — unresolved module/action or `Failed to
   import the required Python library (<name>)` — is a harness gap, never
   a divergence: it's recorded as an error and fixed by adding the package
-  to `PodmanBackend::REAL_PACKAGES`, never masked.
+  to `data/module_dependencies.yml` (or promoting the module with its
+  dependency entry), never masked.
 - **Coverage scope**: 100% bar for `ansible.builtin` core + krikri's
   chosen community modules; zero obligation for the rest. The default
-  `--modules` list should be derived from the same source of truth the
-  role-tester coverage bar uses, not hand-duplicated (see
-  `community-module-scope-cut` convention in krikri's own memory).
+  `--modules` is core only; community modules join only when deliberately
+  promoted into `data/module_dependencies.yml: supported` and requested
+  with `--supported-community` (promoting one is a data-file commit, not a
+  code change — matching role-tester's `SUPPORTED_COMMUNITY_MODULES` and
+  the `community-module-scope-cut` convention).
 - **Chaos mutations must always carry metadata** (`GeneratedTask#mutations`)
   — never inject a chaos mutation silently, or triage can't distinguish
   "found a real bug" from "found an artifact of our own fuzzing."
@@ -260,11 +295,11 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   batch, and never seed fixtures via playbook tasks. The container's
   ansible-core version is asserted (2.19.11) and a mismatch fails
   provisioning loudly.
-- A real disposable-host backend (Atlantic.net, matching
-  krikri-role-tester's) for wide/production batches is a known gap, not
-  built here — see `runner.cr`'s own comment for why role-tester itself
-  couldn't be reused directly. Podman fills the "fast local iteration"
-  niche, not the "hundreds of hosts" one. Every `podman run` this backend
+- Atlantic.net is a real backend (one disposable VM per module profile),
+  but only for the modules listed in `AtlanticBackend::PROFILE_FOR_MODULE`;
+  any other module is refused rather than guessed onto a VM, so a wide
+  `--run-on-atlantic` batch is limited to those profiles unless a new one
+  is added. Every `podman run` this backend
   issues (template pair and per-playbook pair alike) carries
   `--label krikri-owner-pid=<Process.pid>` (`OWNER_LABEL` in
   `podman_backend.cr`) so external cleanup tooling can tell a live run's
@@ -272,23 +307,27 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
 
 ## Known gaps
 
-Documented deliberately, not silently — same spirit as `required_if`
-above:
+Documented deliberately, not silently:
 
-- No real-host (Atlantic.net) execution backend yet; `Runner` only has
-  local (`--check`-mode) and podman (`--run-on-podman`) backends (see
-  above) — neither replaces provisioning real disposable hosts for a
-  wide/production batch.
-- `PodmanBackend` installs one fixed, generic dependency set rather than
-  podman-diff's dozens of per-module installs — a randomly fuzzed module
-  needing something outside that set fails identically on both engines
-  in the common case, or can manufacture a false divergence if only one
-  side needs it.
-- `required_if` constraints are never violated by `Generator` (documented
-  above).
+- Atlantic.net batches only cover the modules listed in
+  `AtlanticBackend::PROFILE_FOR_MODULE` (rpm/db/containers/misc); an
+  unlisted module is refused, not run somewhere that cannot satisfy its
+  happy path, so widening that coverage means adding a profile.
+- `PodmanBackend` installs a UNION dependency set (base lists plus
+  `Dependencies#supported`'s extras) rather than podman-diff's dozens
+  of per-module installs gated on a hand-picked case list — a randomly
+  fuzzed batch can't gate per case, and two images beat one per
+  module. A module needing something outside the union still fails
+  identically on both engines in the common case, or can manufacture a
+  false divergence if only one side needs it. Promoting a module (its
+  dependency entry in `module_dependencies.yml`) is the fix; modules
+  the happy path genuinely cannot run (not a missing package) belong
+  in `module_overrides.yml` as `not_applicable: true`, never as a
+  silent exclusion.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is v2 per the proposal; `PlaybookBuilder` only ever emits one task per
-  playbook.
+  playbook. `async_status` is only testable at all because `Fixtures` seeds
+  a finished job under `$HOME/.ansible_async`.
 
 ## Tests
 
@@ -326,11 +365,18 @@ isn't available rather than failing the suite on a machine without them).
 `triage_spec.cr` writes hand-built
 `results.jsonl` fixtures (with the new `module`/`signature`/`error`
 fields) rather than running the real pipeline, so it can assert
-signature grouping/dedup/sort, quality and rate behavior precisely and
+signature grouping/dedup/sort, quality/rate/`happy_coverage` behavior and
+the `not_applicable` exclusions precisely and
 fast — the real pipeline is what the `generate`→`run`→`report` chain
 itself exercises live (verified manually; no spec drives the full CLI
 chain end to end yet). `masks_spec.cr` unit-tests the mask list, the
-LCS diff and signature stability. All temp-dir specs use `File.tempname`,
+LCS diff and signature stability. `generator_spec.cr` also covers the
+Jinja kind (the templated value must be equivalent to the baseline
+value), the `empty_dict` override and the mutually-exclusive-safe fills.
+`podman_backend_spec.cr` provisions BOTH profiles in its regression case
+and asserts a Debian playbook still runs on the Debian image after the rpm
+template was provisioned last (apt-get exists only there).
+`overrides_spec.cr` covers `not_applicable` parsing. All temp-dir specs use `File.tempname`,
 cleaned up in `ensure`.
 
 `ameba` (1.7.0) is a dev dependency; run `crystal build lib/ameba/src/cli.cr

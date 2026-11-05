@@ -72,6 +72,29 @@ module KrikriPlaybookGenerator
       refute(overrides.expect_failure?("apt"))
     end
 
+    it "exposes not_applicable for modules a single local task cannot exercise" do
+      overrides = Overrides.load
+      assert(overrides.not_applicable?("reboot"))
+      assert(overrides.not_applicable?("apt_key"))
+      refute(overrides.not_applicable?("copy"))
+    end
+
+    it "keeps not_applicable out of the per-option override map" do
+      overrides = Overrides.load
+      assert_nil(overrides.for_option("reboot", "not_applicable"))
+    end
+
+    it "parses not_applicable from a custom yaml" do
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            hopeless:
+              not_applicable: true
+        YAML
+
+      assert(overrides.not_applicable?("hopeless"))
+      refute(overrides.expect_failure?("hopeless"))
+    end
+
     it "parses free-form and expect_failure from a custom yaml" do
       overrides = Overrides.new(<<-YAML)
           modules:

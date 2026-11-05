@@ -17,11 +17,13 @@ module KrikriPlaybookGenerator
       "wrong-type"         => ChaosKind::WrongType,
       "bad-choice"         => ChaosKind::BadChoice,
       "violate-constraint" => ChaosKind::ViolateConstraint,
+      "jinja"              => ChaosKind::Jinja,
     }
 
     property command : Command
     property modules : Array(String)?
     property? all_modules : Bool
+    property? supported_community : Bool
     property seed : Int32
     property count : Int32
     property chaos_percentage : Float64
@@ -38,16 +40,18 @@ module KrikriPlaybookGenerator
     property? control : Bool
     property? json : Bool
     property engine_timeout : Int32
+    property min_happy_success : Float64?
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
-                   @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint],
+                   @supported_community = false,
+                   @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint jinja],
                    @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @allow_mutation = false, @run_on_podman = false,
                    @run_on_atlantic = false,
                    @keep_going = false, @engine_timeout = 120, @control = false,
-                   @json = false)
+                   @json = false, @min_happy_success = nil)
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -68,6 +72,7 @@ module KrikriPlaybookGenerator
       parser = OptionParser.new do |dsl|
         dsl.on("--modules LIST", "comma-separated module names") { |v| opts.modules = v.split(',') }
         dsl.on("--all-modules", "scan every installed module, collections included (default: ansible.builtin core only)") { opts.all_modules = true }
+        dsl.on("--supported-community", "also scan the community modules chosen for support (data/module_dependencies.yml: supported)") { opts.supported_community = true }
         dsl.on("--seed N", "RNG seed") { |v| opts.seed = parse_int(v, "--seed") }
         dsl.on("--count N", "generated tasks per module") { |v| opts.count = parse_int(v, "--count") }
         dsl.on("--chaos-percentage N", "per-option-slot chaos mutation probability") { |v| opts.chaos_percentage = parse_float(v, "--chaos-percentage") }
@@ -83,6 +88,7 @@ module KrikriPlaybookGenerator
         dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }
         dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
+        dsl.on("--min-happy-success PCT", "exit 1 when the happy-path success rate is below PCT (report, or generate with a run backend)") { |v| opts.min_happy_success = parse_float(v, "--min-happy-success") }
         dsl.on("--json", "print the report as a single JSON object on stdout (report only)") { opts.json = true }
       end
       parser.parse(rest)
@@ -100,10 +106,32 @@ module KrikriPlaybookGenerator
     end
 
     private def self.check_conflicts!(opts : Options) : Nil
-      raise InvalidOptionsError.new("--all-modules conflicts with --modules") if opts.all_modules? && opts.modules
+      if opts.all_modules? && opts.modules
+        raise InvalidOptionsError.new("--all-modules conflicts with --modules")
+      end
+      check_scope_conflicts!(opts)
       raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
       raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
       raise InvalidOptionsError.new("--json is only valid with the report command") if opts.json? && !opts.command.report?
+
+      check_happy_gate_target!(opts)
+    end
+
+    private def self.check_scope_conflicts!(opts : Options) : Nil
+      return unless opts.supported_community?
+
+      raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
+      raise InvalidOptionsError.new("--all-modules conflicts with --supported-community") if opts.all_modules?
+      raise InvalidOptionsError.new("--supported-community conflicts with --modules") if opts.modules
+    end
+
+    private def self.check_happy_gate_target!(opts : Options) : Nil
+      return unless opts.min_happy_success
+
+      usable = opts.command.report? || (opts.command.generate? && (opts.run_on_podman? || opts.run_on_atlantic?))
+      return if usable
+
+      raise InvalidOptionsError.new("--min-happy-success needs a report, or a generate that runs a backend (--run-on-podman/--run-on-atlantic)")
     end
 
     private def self.parse_command(arg : String) : Command
@@ -111,8 +139,7 @@ module KrikriPlaybookGenerator
       when "generate" then Command::Generate
       when "run"      then Command::Run
       when "report"   then Command::Report
-      else
-        raise InvalidOptionsError.new("unknown command #{arg.inspect} (expected generate|run|report)")
+      else                 raise InvalidOptionsError.new("unknown command #{arg.inspect} (expected generate|run|report)")
       end
     end
 
@@ -122,6 +149,9 @@ module KrikriPlaybookGenerator
       raise InvalidOptionsError.new("--engine-timeout must be a positive integer, got #{opts.engine_timeout}") if opts.engine_timeout <= 0
       unless opts.chaos_percentage.in?(0.0..100.0)
         raise InvalidOptionsError.new("--chaos-percentage must be between 0 and 100, got #{opts.chaos_percentage}")
+      end
+      if (threshold = opts.min_happy_success) && !threshold.in?(0.0..100.0)
+        raise InvalidOptionsError.new("--min-happy-success must be between 0 and 100, got #{threshold}")
       end
     end
 

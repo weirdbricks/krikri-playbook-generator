@@ -30,6 +30,21 @@ module KrikriPlaybookGenerator
     # here keeps the seeding out of the compared output.
     TASKS_FILE = "#{FIXTURE_ROOT}/tasks.yml"
 
+    # A real armored OpenPGP public key: apt_key's alternatives (a random
+    # id, a URL) all fail before the module logic runs, and rpm_key needs a
+    # key file it can hand to gpg. Same key, same path, both containers.
+    PGP_KEY_PATH = "#{FIXTURE_ROOT}/pgpkey.asc"
+
+    # A local Subversion repository, so subversion's happy path can check
+    # out something real without touching the network (seeded only where
+    # svnadmin is installed).
+    SVN_REPO_URL = "file://#{FIXTURE_ROOT}/svnrepo"
+
+    # A pre-seeded, already-finished async job: async_status needs a job id
+    # that exists, and this tool only ever emits single-task playbooks, so
+    # the job cannot be created in the same run.
+    ASYNC_JOB_ID = "kpgjob"
+
     # A minimal role for the include_role/import_role actions, which resolve
     # and RUN a role rather than reading a single file. It is seeded into
     # both containers, and the generator names it by absolute path
@@ -92,6 +107,33 @@ module KrikriPlaybookGenerator
       printf -- '-----BEGIN CERTIFICATE-----\nMIIDJTCCAg2gAwIBAgIUWAhtwfkPvHPkfz+N5/1yi83+fKgwDQYJKoZIhvcNAQEL\nBQAwFjEUMBIGA1UEAwwLa3BnLWZpeHR1cmUwHhcNMjYxMDA2MTkyNjQwWhcNMzYx\nMDAzMTkyNjQwWjAWMRQwEgYDVQQDDAtrcGctZml4dHVyZTCCASIwDQYJKoZIhvcN\nAQEBBQADggEPADCCAQoCggEBAK948drFVsJ49UrBbdG5RqSYBQ57WJvmmE9IfEIF\n/ABWXMiH2loSjor/Ho2MhCtZWEZeRx5WVa/AzOXK1DEhlYeRrIoX4Png8yK/fOzK\ng8l4jLRQDuFdP0rHIpypsAnA5jxl591auoviUDeq6xidw0gA95JpWyPB8Itx/N1e\nL1+pXUB4JMokcerwsDthg6ElgmRzpJjfHcx6kcO88EVdJE+E1Pg+RZavaSSGMvOX\nhqISnYy7f4ijxvY0Vhy/PaLzmIwBKImWqDzKQ+Hl329wHsVeQMA7w//qcihokzBu\nw2sP+MId+Cwe3zP/e/YuWNfshSqP2hHsl900DCxcUdYjqXcCAwEAAaNrMGkwHQYD\nVR0OBBYEFIiMZh1QoEfVGQhv3bXHzrEjHGOxMB8GA1UdIwQYMBaAFIiMZh1QoEfV\nGQhv3bXHzrEjHGOxMA8GA1UdEwEB/wQFMAMBAf8wFgYDVR0RBA8wDYILa3BnLmV4\nYW1wbGUwDQYJKoZIhvcNAQELBQADggEBAIC3OYHZxFYFkUK09LtMF+NdwZ6KuG4Y\nhWpe8eTzxqr4Edd+a3A6Ykrc4NPxVuTsKRUBSZVA3Rro53aK1i8n+V3qcgDP7fLH\nj39gdKxtee1GeRh1dYVD1XPCKgVICAkjkpUAPDDMNdXjg+eTK+T78nnHwp5RoikY\nKzzx7wPlagJ67Xbp6Jx5NJBXrhT1HA9uxlmA+sFTKz4LdXfDMq/VDkY/bKNOpFft\nVlQdeDEXw/AMQdp8AyJ/CnY94y12izyKpp7DUEtnRRXlaAgGa54FgcSkbIOfndQm\nSBDGxpG0OEFvJjMtyTViMG/7DSl3TiOECp4zw5xz/3oYUqSV0IK5TKA=\n-----END CERTIFICATE-----\n' > #{FIXTURE_ROOT}/cert.pem
       printf 'FROM alpine:3.20\\nRUN touch /kpg-built\\n' > #{FIXTURE_ROOT}/Dockerfile
       printf 'services:\\n  kpg-svc:\\n    image: alpine:3.20\\n    command: sleep 1\\n' > #{FIXTURE_ROOT}/compose.yml
+      printf '%s\\n' \
+        '-----BEGIN PGP PUBLIC KEY BLOCK-----' \
+        '' \
+        'mQENBGrrQ70BCADS16wZb+AnRjOkZMG3U6e0dQsLnK+G+QuGDt9fhpXHZyDPdVV7' \
+        'AKCiWpY0BwI6qJ7+xHOTeilCm2pfobh4sjLuxCuv6J8fYC8abvZgfdegd2naxcEh' \
+        'EAY18jeKHKf0kNqbwkJszHDbYQrHVpZk1or55RUXc8zc30307oxGPxLRKd5hnnoi' \
+        'lXg6H59LT+AR+NiXghjVLrIAsJXEZsruh15LORRMqnQLvnGUTyQL4lQjM1LTUtHa' \
+        'qhrazg7ucbjP25aVietuqb0xA0fD2oztwvwbxT2ZqYE6JfqiLEJzd1pefuzEuPND' \
+        'JvXmlidGLiINO1Tla6QXa/476pCoDnFHG4npABEBAAG0HWtwZyBmaXh0dXJlIDxr' \
+        'cGdAZXhhbXBsZS5jb20+iQFOBBMBCgA4FiEE3gTTQDp7uVP8NXhuODz4JjFmy3sF' \
+        'AmrrQ70CGwMFCwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQODz4JjFmy3uktQgA' \
+        '0JvhpRxYGllT4mm8ESEAZn6vrOD2XqvVE5GnhZSc13qHFKNExV820XTUrHVGSdfJ' \
+        '00h7kA7rRS2lAKnd5T32t+tJKocoui9mnhNDTg4b0YEeg8Vw+bOZJ45gfiKxOZKd' \
+        'UUGmpPBAFOCmsZwXYtEdBXW/08W7WqrHjzKoAld3FY7FPgrIfcoOWTtD/zmUXvgU' \
+        'n7809kS0NoilLGuWsXlEhqpm/SUcP6e3eD9QzfXXd9s+arzP5zcfv6AcSsp0roVG' \
+        'awWP2q+qvo/s+ISudlzJk3fizTmtLjTG05j83wvMZWVGB+XP914WleOnncQSjh0q' \
+        'nKRPOjQTFN6kJ2qEsK7zgw==' \
+        '=K/+b' \
+        '-----END PGP PUBLIC KEY BLOCK-----' > #{FIXTURE_ROOT}/pgpkey.asc
+      if command -v svnadmin >/dev/null 2>&1 && [ ! -d #{FIXTURE_ROOT}/svnrepo ]; then
+        svnadmin create #{FIXTURE_ROOT}/svnrepo
+      fi
+      if [ "$(id -u)" = "0" ]; then
+        mkdir -p /root/.ansible_async
+        printf '{"ansible_job_id":"kpgjob","started":1,"finished":1,"results_file":"%s/async_result.json"}' #{FIXTURE_ROOT} > /root/.ansible_async/kpgjob
+        printf '{"changed":false,"rc":0,"stdout":"kpg"}' > #{FIXTURE_ROOT}/async_result.json
+      fi
       if command -v git >/dev/null 2>&1 && [ ! -d #{FIXTURE_ROOT}/repo.git ]; then
         export GIT_AUTHOR_NAME=kpg GIT_AUTHOR_EMAIL=kpg@example.com GIT_COMMITTER_NAME=kpg GIT_COMMITTER_EMAIL=kpg@example.com
         export GIT_AUTHOR_DATE='2020-01-01T00:00:00Z' GIT_COMMITTER_DATE='2020-01-01T00:00:00Z'

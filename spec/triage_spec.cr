@@ -149,6 +149,22 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "excludes modules marked not_applicable from the coverage metrics" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "reboot", divergent: true, ansible_failed: true,
+        ansible_error: "fatal: running reboot with local connection would reboot the control node")
+      write_result(dir, "b", "copy", divergent: false)
+
+      triage = Triage.new(dir)
+      assert_empty(triage.quality)
+      assert_equal(["reboot"], triage.not_applicable_modules)
+      assert_equal(1, triage.happy_coverage.attempted)
+      assert_equal(0, triage.happy_coverage.failed)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "reports per-module byte-identical rates" do
       dir = File.tempname("kpg-spec-triage")
       Dir.mkdir_p(dir)
@@ -195,6 +211,40 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "computes the batch happy-path success rate, excluding chaos, errored and expect_failure runs" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: false)
+      write_result(dir, "b", "copy", divergent: false, ansible_failed: true,
+        ansible_error: "fatal: could not find src")
+      write_result(dir, "c", "copy", divergent: true, chaos: true, ansible_failed: true,
+        mutations: [{"mode", "WrongType"}])
+      write_result(dir, "d", "copy", divergent: false, error: "podman died")
+      write_result(dir, "e", "fail", divergent: false, ansible_failed: true,
+        ansible_error: "fatal: expected failure")
+
+      coverage = Triage.new(dir).happy_coverage
+      assert_equal(2, coverage.attempted)
+      assert_equal(1, coverage.failed)
+      assert_equal(1, coverage.succeeded)
+      assert_equal(50.0, coverage.success_rate)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "reports a 100% happy-path success rate when there are no happy-path playbooks" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, chaos: true,
+        mutations: [{"mode", "WrongType"}])
+
+      coverage = Triage.new(dir).happy_coverage
+      assert_equal(0, coverage.attempted)
+      assert_equal(100.0, coverage.success_rate)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "renders the full JSON report shape from results.jsonl" do
       dir = File.tempname("kpg-spec-triage")
       Dir.mkdir_p(dir)
@@ -235,11 +285,18 @@ module KrikriPlaybookGenerator
       assert_equal(File.join(dir, "d.yml"), errors.first["playbook"].as_s)
       assert_equal("user", errors.first["module"].as_s)
       assert_equal("podman died", errors.first["error"].as_s)
+      assert_equal([] of String, report["not_applicable"].as_a.map(&.as_s))
 
       rates = report["rates"].as_a
       apt = rates.find { |rate| rate["module"].as_s == "apt" } || raise("missing apt")
       assert_equal(1, apt["identical"].as_i)
       assert_equal(1, apt["total"].as_i)
+
+      coverage = report["happy_coverage"]
+      assert_equal(2, coverage["attempted"].as_i)
+      assert_equal(0, coverage["failed"].as_i)
+      assert_equal(2, coverage["succeeded"].as_i)
+      assert_equal(100.0, coverage["success_percent"].as_f)
     ensure
       FileUtils.rm_rf(dir) if dir
     end
