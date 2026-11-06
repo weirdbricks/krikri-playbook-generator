@@ -48,8 +48,8 @@ module KrikriPlaybookGenerator
     IMAGE_UBUNTU = "ubuntu-24.04_64bit"
 
     # Byte-parity needs the same ansible-core everywhere (the podman path
-    # asserts 2.19.11); pip pins it on the VMs too.
-    EXPECTED_ANSIBLE_VERSION = "2.19.11"
+    # asserts 2.21.6, the core krikri targets); pip pins it on the VMs too.
+    EXPECTED_ANSIBLE_VERSION = "2.21.6"
     ANSIBLE_CORE_PIN         = "ansible-core==#{EXPECTED_ANSIBLE_VERSION}"
 
     INVENTORY        = "target ansible_connection=local\n"

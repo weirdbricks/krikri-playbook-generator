@@ -56,7 +56,7 @@ module KrikriPlaybookGenerator
   # ansible-core packaged.
   class PodmanBackend
     IMAGE                    = "docker.io/library/debian:trixie-slim"
-    EXPECTED_ANSIBLE_VERSION = "2.19.11"
+    EXPECTED_ANSIBLE_VERSION = "2.21.6"
     INVENTORY                = "target ansible_connection=local\n"
     ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
     OWNER_LABEL              = "krikri-owner-pid"
@@ -68,7 +68,12 @@ module KrikriPlaybookGenerator
     # behavior). Rocky 10's glibc (2.39) runs the trixie-built krikri
     # binary - AtlanticBackend stages the same binary onto its Rocky-10 VMs.
     IMAGE_RPM        = "quay.io/rockylinux/rockylinux:10"
-    RPM_PACKAGES     = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp gnupg2"
+    # libxcrypt-compat provides libcrypt.so.1, which the host-built krikri
+    # binary links (Crystal pulls it for crypt(3)) and Rocky 10's default
+    # package set no longer ships - the staged binary died with "cannot
+    # open shared object file" right after the version assertion without
+    # it (found launching the first 2.21.6 batch).
+    RPM_PACKAGES     = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp gnupg2 libxcrypt-compat"
     ANSIBLE_CORE_PIN = "ansible-core==#{EXPECTED_ANSIBLE_VERSION}"
 
     enum Profile
@@ -200,6 +205,15 @@ module KrikriPlaybookGenerator
                            "(real #{sets.real_debian.size}, krikri #{sets.krikri_debian.size})")
         install(@name_real, sets.real_debian.join(" "))
         install(@name_krikri, sets.krikri_debian.join(" "))
+        # Debian trixie's apt ansible-core is 2.19.x, and the version
+        # assertion below demands EXPECTED_ANSIBLE_VERSION - byte-parity
+        # comparisons against a different core are meaningless. Pip
+        # provides the pinned core over the distro one (/usr/local/bin
+        # shadows /usr/bin); trixie's pip is PEP 668 externally-managed,
+        # hence --break-system-packages.
+        exec!(@name_real, "export DEBIAN_FRONTEND=noninteractive; " \
+                          "apt-get install -y -qq --no-install-recommends python3-pip >/dev/null && " \
+                          "pip3 install --quiet --break-system-packages --ignore-installed #{ANSIBLE_CORE_PIN}", 900.0)
       when Profile::Rpm
         @name_real = "kpg-rpmtpl-real#{@suffix}"
         @name_krikri = "kpg-rpmtpl-krikri#{@suffix}"

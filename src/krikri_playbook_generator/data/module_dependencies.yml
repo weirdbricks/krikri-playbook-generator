@@ -37,7 +37,12 @@ deb_modules:
   krikri: [libxml2, libssl3, openssl, libyaml-0-2, libpcre2-8-0, python3-cryptography]
 
 rpm_modules:
-  both: [python3, libyaml, pcre2, openssl, libxml2, zstd, gmp, gnupg2]
+  # libxcrypt-compat provides libcrypt.so.1, which the host-built krikri
+  # binary links (Crystal pulls it for crypt(3)) and Rocky 10's default
+  # package set no longer ships - the staged binary died with "cannot
+  # open shared object file" right after the version assertion without
+  # it (found launching the first 2.21.6 batch).
+  both: [python3, libyaml, pcre2, openssl, libxml2, zstd, gmp, gnupg2, libxcrypt-compat]
   real: [python3-pip, python3-dnf, python3-dnf-plugin-versionlock]
   krikri: []
 
