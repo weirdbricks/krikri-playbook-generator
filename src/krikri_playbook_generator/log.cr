@@ -29,7 +29,9 @@ module KrikriPlaybookGenerator
     end
 
     def self.timestamp : String
-      Time.utc.to_s("%H:%M:%S")
+      # Local (system) time, like krikri-loop's own stamps - a 07:11 UTC
+      # line on a 02:11 wall clock reads as five hours in the future.
+      Time.local.to_s("%H:%M:%S")
     end
 
     def self.info(component : String, message : String) : Nil

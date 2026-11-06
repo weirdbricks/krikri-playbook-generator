@@ -148,6 +148,15 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--json"))
     end
 
+    it "parses the modules command, --json included" do
+      opts = Options.parse(["modules"])
+      assert(opts.command.modules?)
+      refute(opts.json?)
+
+      opts = Options.parse(["modules", "--json"])
+      assert(opts.json?)
+    end
+
     it "raises on an empty argv" do
       err = assert_raises(InvalidOptionsError) { Options.parse([] of String) }
       assert((err.message || "").includes?("missing command"))

@@ -192,6 +192,8 @@ module KrikriPlaybookGenerator
       end
     end
 
+    @completed : Atomic(Int32) = Atomic.new(0)
+
     def initialize(@playbook_paths : Array(String), @results_dir : String, @atlantic_hosts : Int32 = 22,
                    @ansible_playbook_bin : String = "ansible-playbook",
                    @krikri_bin : String = "/home/labros/git_work/krikri/bin/krikri-playbook",
@@ -199,6 +201,22 @@ module KrikriPlaybookGenerator
                    @run_on_atlantic : Bool = false,
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120,
                    @control : Bool = false, @refresh_podman_templates : Bool = false)
+    end
+
+    # One line per finished playbook, so a long batch shows where it is:
+    #   12:34:56 [runner] playbook 5/60 complete: 000004-file-chaos.yml (DIVERGENT)
+    private def progress(result : PlaybookResult) : PlaybookResult
+      done = @completed.add(1) + 1
+      verdict = if result.error
+                  "errored"
+                elsif result.divergent?
+                  "DIVERGENT"
+                else
+                  "ok"
+                end
+      Log.info("runner", "playbook #{done}/#{@playbook_paths.size} complete: " \
+                         "#{File.basename(result.playbook)} (#{verdict})")
+      result
     end
 
     def run : Array(PlaybookResult)
@@ -251,7 +269,11 @@ module KrikriPlaybookGenerator
         (groups[AtlanticBackend::PROFILE_FOR_MODULE[names.first]] ||= [] of String) << path
       end
 
-      backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts)
+      backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts,
+        on_playbook_done: ->(path : String) {
+          done = @completed.add(1) + 1
+          Log.info("runner", "playbook #{done}/#{@playbook_paths.size} complete: #{File.basename(path)}")
+        })
       backend.run_groups(groups).map do |entry|
         meta = load_meta(entry[:playbook])
         # a profile that never provisioned must not look like a matched pair
@@ -293,7 +315,7 @@ module KrikriPlaybookGenerator
         Log.info("runner", "podman: running #{profiles.values.sum(&.size)} playbook(s) " \
                            "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
         profiles.flat_map do |profile, paths|
-          paths.map { |path| guarded(path) { run_playbook_via_podman(backend, path, profile) } }
+          paths.map { |path| guarded(path) { progress(run_playbook_via_podman(backend, path, profile)) } }
         end
       ensure
         backend.teardown
@@ -335,7 +357,7 @@ module KrikriPlaybookGenerator
         end
       end
       Fixtures.seed_local
-      @playbook_paths.map { |path| guarded(path) { run_playbook_locally(path) } }
+      @playbook_paths.map { |path| guarded(path) { progress(run_playbook_locally(path)) } }
     end
 
     private def run_playbook_locally(path : String) : PlaybookResult

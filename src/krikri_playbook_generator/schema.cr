@@ -97,23 +97,35 @@ module KrikriPlaybookGenerator
       supported.select { |fqcn| available.includes?(fqcn) }.sort!
     end
 
-    private def discover_module_names : Array(String)
+    # The default scope the loop's rotation is sourced from: ansible.builtin
+    # core plus the promoted supported community FQCNs, straight from the
+    # installed ansible-doc listing (one subprocess, same source `scan`
+    # uses - the two cannot drift).
+    def self.default_module_names : Array(String)
+      names_from_listing(fetch_module_listing, Dependencies.load.supported)
+    end
+
+    def self.fetch_module_listing : JSON::Any
       result = Cmd.run("ansible-doc", ["--list", "-j", "-t", "module"])
       raise ScanError.new("ansible-doc --list failed: #{result.stderr}") unless Cmd.success?(result)
+      JSON.parse(result.stdout)
+    end
 
-      listing = JSON.parse(result.stdout)
+    def self.names_from_listing(listing : JSON::Any, supported : Array(String)?) : Array(String)
+      names = core_module_names(listing)
+      return names if supported.nil? || supported.empty?
+
+      extra = supported_module_names(listing, supported)
+      missing = supported.reject { |fqcn| extra.includes?(fqcn) }
+      STDERR.puts "warning: #{missing.size} supported module(s) not installed: #{missing.join(", ")}" unless missing.empty?
+      names.concat(extra)
+    end
+
+    private def discover_module_names : Array(String)
+      listing = self.class.fetch_module_listing
       return listing.as_h.keys.sort! if @all_modules
 
-      names = self.class.core_module_names(listing)
-      if supported = @supported_community
-        return names if supported.empty?
-
-        extra = self.class.supported_module_names(listing, supported)
-        missing = supported.reject { |fqcn| extra.includes?(fqcn) }
-        STDERR.puts "warning: #{missing.size} supported module(s) not installed: #{missing.join(", ")}" unless missing.empty?
-        names.concat(extra)
-      end
-      names
+      self.class.names_from_listing(listing, @supported_community)
     end
 
     private def scan_module(name : String) : ModuleSchema?

@@ -8,6 +8,7 @@ module KrikriPlaybookGenerator
     Generate
     Run
     Report
+    Modules
   end
 
   class Options
@@ -97,7 +98,7 @@ module KrikriPlaybookGenerator
         dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
         dsl.on("--min-happy-success PCT", "exit 1 when the happy-path success rate is below PCT (report, or generate with a run backend)") { |v| opts.min_happy_success = parse_float(v, "--min-happy-success") }
-        dsl.on("--json", "print the report as a single JSON object on stdout (report only)") { opts.json = true }
+        dsl.on("--json", "print the report as a single JSON object on stdout (report, modules)") { opts.json = true }
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
       end
       parser.parse(rest)
@@ -128,7 +129,7 @@ module KrikriPlaybookGenerator
       raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
       raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
       raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman?
-      raise InvalidOptionsError.new("--json is only valid with the report command") if opts.json? && !opts.command.report?
+      raise InvalidOptionsError.new("--json is only valid with the report or modules command") if opts.json? && !opts.command.report? && !opts.command.modules?
 
       check_happy_gate_target!(opts)
     end
@@ -159,7 +160,8 @@ module KrikriPlaybookGenerator
       when "generate" then Command::Generate
       when "run"      then Command::Run
       when "report"   then Command::Report
-      else                 raise InvalidOptionsError.new("unknown command #{arg.inspect} (expected generate|run|report)")
+      when "modules"  then Command::Modules
+      else                 raise InvalidOptionsError.new("unknown command #{arg.inspect} (expected generate|run|report|modules)")
       end
     end
 

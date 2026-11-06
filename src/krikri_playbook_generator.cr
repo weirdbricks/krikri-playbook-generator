@@ -33,6 +33,8 @@ module KrikriPlaybookGenerator
       else
         0
       end
+    in Command::Modules
+      print_module_scope(json: opts.json?)
     end
   rescue e : InvalidOptionsError
     STDERR.puts "error: #{e.message}"
@@ -43,12 +45,25 @@ module KrikriPlaybookGenerator
   rescue e : TriageError
     STDERR.puts "error: #{e.message}"
     1
+  rescue e : SchemaScanner::ScanError
+    STDERR.puts "error: #{e.message}"
+    1
   rescue e : PodmanProvisionError
     STDERR.puts "error: #{e.message}"
     1
   rescue e : AtlanticProvisionError
     STDERR.puts "error: #{e.message}"
     1
+  end
+
+  # The default scope (ansible.builtin core + promoted supported FQCNs),
+  # for callers that need the list without scanning it - krikri-loop
+  # builds its kpg rotation from this instead of hand-duplicating it.
+  private def self.print_module_scope(json : Bool) : Int32
+    scope = SchemaScanner.default_module_names
+    puts scope.to_json if json
+    scope.each { |name| puts name } unless json
+    0
   end
 
   private def self.version_requested?(argv : Array(String)) : Bool

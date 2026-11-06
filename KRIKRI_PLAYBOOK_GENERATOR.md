@@ -120,7 +120,7 @@ hand-duplicated, so the two don't drift.
 2. **Multi-task interaction fuzzing**: v1 should be single-task-per-module playbooks (like
    `test-*-quick.yml`). Multi-task interactions (register + when chains, loops, handlers)
    are a real source of bugs but conflate two things under test at once — worth a v2,
-   not v1.
+   not v1. (Built: v2 shipped as `--tasks-per-playbook N`, default 1.)
 3. **Execution cost**: chaos-mode failures should mostly fail fast (arg validation, no
    real host mutation), so chaos-heavy batches can likely run at higher concurrency than
    Galaxy-role batches. Happy-path batches that actually mutate host state need the same

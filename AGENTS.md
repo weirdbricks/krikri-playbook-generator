@@ -247,10 +247,11 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   same grouping/order as `report` (each with playbooks and an example
   carrying chaos/mutations/masked_diff/ansible_error), errors,
   not_applicable, happy_coverage, rates.
-- `src/krikri_playbook_generator/options.cr` — CLI parsing for the three
-  subcommands (`generate`, `run`, `report`), plus `--keep-going`,
+- `src/krikri_playbook_generator/options.cr` — CLI parsing for the four
+  subcommands (`generate`, `run`, `report`, `modules`), plus `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
-  recorded with rc 124), `--json` (valid only with `report`; error
+  recorded with rc 124), `--json` (valid only with `report` or `modules`;
+  error
   otherwise), `--min-happy-success PCT` (the happy-path success gate;
   valid with `report`, or a `generate` that runs a backend) and
   `--tasks-per-playbook N` (v2 multi-task playbooks; default 1 = the v1
@@ -284,7 +285,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   and `report`); a `--min-happy-success` gate violation exits 1, as do
   tool errors. Plain `run` still supports
   `--run-on-podman` on its own, for re-running an already-generated
-  `--out` directory.
+  `--out` directory. `Command::Modules` prints the default scope —
+  ansible.builtin core plus the promoted `supported:` FQCNs, read from
+  the same installed `ansible-doc` listing `scan` uses (`SchemaScanner.default_module_names`)
+  — as one name per line, or one JSON array with `--json`; krikri-loop
+  sources its kpg rotation from it instead of hand-duplicating the list.
+  Exit code 0 (a failed `ansible-doc --list` is a tool error, exit 1).
 
 Every stub is now implemented (`Options`, `Preflight`, `SchemaScanner`,
 `Generator`, `PlaybookBuilder`, `Runner`, `PodmanBackend`, `Triage`) — the

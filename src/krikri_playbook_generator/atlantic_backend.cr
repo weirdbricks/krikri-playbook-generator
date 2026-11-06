@@ -180,7 +180,7 @@ module KrikriPlaybookGenerator
     @created_key_id : String? = nil
 
     def initialize(@krikri_bin : String, @engine_timeout : Int32, @max_hosts : Int32,
-                   @work_dir : String = "")
+                   @work_dir : String = "", @on_playbook_done : (String -> Nil)? = nil)
       @work_dir = Path.home.join(".kpg-atlantic").to_s if @work_dir.empty?
       @suffix = "#{Time.utc.to_unix}-#{Process.pid}"
       @created_instances = [] of Instance
@@ -409,6 +409,7 @@ module KrikriPlaybookGenerator
         playbooks.each do |path|
           outcome = run_playbook(vm, path)
           results << {playbook: path, ansible: outcome[:ansible], krikri: outcome[:krikri]}
+          @on_playbook_done.try(&.call(path))
         end
       rescue e : Exception
         STDERR.puts "ERROR: profile #{profile}: #{e.message}"

@@ -40,7 +40,10 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
      paths, which is what the success gate below measures.
 3. **playbook-builder** — assembles generated tasks into playbook YAML,
    one task per module per play, following the shape of krikri's own
-   `testing/test-*.yml` fixtures.
+   `testing/test-*.yml` fixtures. `--tasks-per-playbook N` (N >= 2)
+   instead builds multi-task playbooks from distinct modules with
+   `register:`/`when:` chains, `loop:` over the fixture sources and a
+   play-level handler (v2).
 4. **runner** — two backends, neither the default. **Local** runs each
   playbook against both engines on this machine (`-i localhost, -c
   local`), `--check --diff` unless `--allow-mutation` is passed, so
@@ -151,6 +154,11 @@ module (short names, sorted); `--modules` narrows it explicitly,
 `module_dependencies.yml`, and `--all-modules` scans every installed
 module, collections included (the three are mutually exclusive).
 
+`krikri-playbook-generator modules --json` prints that same default
+scope (core + promoted FQCNs) without scanning it — one JSON array on
+stdout, one name per line without `--json`; krikri-loop builds its kpg
+module rotation from it so the two lists cannot drift.
+
 ...or fused into one call with `--run-on-podman` (needs `podman`): builds
 the playbooks (still written to `--out` for later review either way),
 immediately runs them against both engines inside throwaway containers
@@ -252,9 +260,10 @@ its module needs (Debian vs Rocky), the remaining non-runnable core modules
 carry an explicit override instead of silently wasting coverage, generated
 values can be templated (`--chaos-kinds jinja`), and
 `--min-happy-success` fails a batch whose happy paths mostly fail on the
-reference engine. See `AGENTS.md`'s "Known gaps" for what's deliberately
-not built yet (multi-task playbooks, non-builtin
-module scope).
+reference engine. v0.0.12 added cached podman template images, and the
+v2 multi-task generator (`--tasks-per-playbook`, register/when chains,
+loops, handlers) shipped on top. See `AGENTS.md`'s "Known gaps" for
+what's deliberately not built yet (non-builtin module scope).
 
 ## Version
 
