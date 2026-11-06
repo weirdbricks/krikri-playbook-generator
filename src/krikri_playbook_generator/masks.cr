@@ -109,6 +109,14 @@ module KrikriPlaybookGenerator
         "long digit runs are epoch-millis/nonce-class values (task IDs, temp suffixes) " \
         "that differ per run; short numbers (rcs, counters, ports) stay unmasked",
       },
+      {
+        Regex.new("Last metadata expiration check: [^\\n]*? ago on [^\\n]*"),
+        "Last metadata expiration check: <DNF-CACHE-AGE> ago on <DNF-CACHE-TIME>",
+        "dnf prints the age of its metadata cache and the wall-clock time it was " \
+        "refreshed as each dnf/dnf5 run starts - the two engines' containers refresh " \
+        "at different moments, so both numbers can never match; the rest of dnf's " \
+        "stdout (the actual package lines) must still match",
+      },
     ]
 
     def self.mask(text : String) : String
