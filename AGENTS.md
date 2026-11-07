@@ -169,6 +169,14 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   per-playbook failures into errored results instead of aborting the
   batch; errored results are never counted as divergent.
   `--atlantic-hosts` caps how many Atlantic VMs run concurrently.
+  `--podman-parallel N` runs that many playbooks at once on the podman
+  path (`Runner.in_parallel`): Cmd.run yields while podman works, so the
+  fresh container pairs overlap without threads; each playbook is still
+  one isolated pair, results come back in batch order, and a failure
+  without `--keep-going` stops the workers from picking up more playbooks
+  and is re-raised after they have all stopped, so teardown still runs.
+  On this workspace 2 nearly halves the wall time of a 4-playbook debug
+  batch (51s serial vs 30s, both with the template cache hit).
 - `src/krikri_playbook_generator/versions.cr` — `Versions`. **Implemented**:
   writes `<results_dir>/versions.txt` (called from `Runner#run`, right
   after results.jsonl) — a best-effort provenance record parsed by
@@ -253,7 +261,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   recorded with rc 124), `--json` (valid only with `report` or `modules`;
   error
   otherwise), `--min-happy-success PCT` (the happy-path success gate;
-  valid with `report`, or a `generate` that runs a backend) and
+  valid with `report`, or a `generate` that runs a backend),
+  `--podman-parallel N` (playbooks run N at a time on podman, each in its
+  own container pair; default 1 = the serial batch; needs
+  `--run-on-podman`) and
   `--tasks-per-playbook N` (v2 multi-task playbooks; default 1 = the v1
   single-task shape; needs at least 2 scanned modules, otherwise
   `generate` falls back to single-task with a logged warning) and a seed

@@ -19,7 +19,8 @@ module KrikriPlaybookGenerator
         opts.krikri_bin, check_mode: !opts.allow_mutation?, run_on_podman: opts.run_on_podman?,
         run_on_atlantic: opts.run_on_atlantic?,
         keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
-        refresh_podman_templates: opts.refresh_podman_templates?).run
+        refresh_podman_templates: opts.refresh_podman_templates?,
+        podman_parallel: opts.podman_parallel).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -131,7 +132,8 @@ module KrikriPlaybookGenerator
     results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
       opts.krikri_bin, run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
       keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
-      refresh_podman_templates: opts.refresh_podman_templates?).run
+      refresh_podman_templates: opts.refresh_podman_templates?,
+      podman_parallel: opts.podman_parallel).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)

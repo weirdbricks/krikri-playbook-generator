@@ -200,7 +200,8 @@ module KrikriPlaybookGenerator
                    @check_mode : Bool = true, @run_on_podman : Bool = false,
                    @run_on_atlantic : Bool = false,
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120,
-                   @control : Bool = false, @refresh_podman_templates : Bool = false)
+                   @control : Bool = false, @refresh_podman_templates : Bool = false,
+                   @podman_parallel : Int32 = 1)
     end
 
     # One line per finished playbook, so a long batch shows where it is:
@@ -315,7 +316,9 @@ module KrikriPlaybookGenerator
         Log.info("runner", "podman: running #{profiles.values.sum(&.size)} playbook(s) " \
                            "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
         profiles.flat_map do |profile, paths|
-          paths.map { |path| guarded(path) { progress(run_playbook_via_podman(backend, path, profile)) } }
+          Runner.in_parallel(paths, @podman_parallel) do |path|
+            guarded(path) { progress(run_playbook_via_podman(backend, path, profile)) }
+          end
         end
       ensure
         backend.teardown
@@ -376,6 +379,40 @@ module KrikriPlaybookGenerator
     private def to_engine_run(engine : String, result : Cmd::Result) : EngineRun
       timed_out = result.timed_out || result.rc == Cmd::TIMEOUT_RC
       EngineRun.new(engine, result.rc, Recap.parse(result.stdout), result.stdout, result.stderr, timed_out)
+    end
+
+    # Runs up to `parallel` playbooks at once (--podman-parallel), each still
+    # in its own fresh container pair. Cmd.run yields while podman works, so
+    # the pairs overlap without threads. Results come back in batch order,
+    # and a failure without --keep-going stops the workers from picking up
+    # more playbooks and is re-raised only once they have all stopped, so the
+    # backend's teardown still runs. Public for the specs.
+    def self.in_parallel(paths : Array(String), parallel : Int32, &block : String -> PlaybookResult) : Array(PlaybookResult)
+      limit = Math.min(Math.max(parallel, 1), paths.size)
+      return paths.map { |path| block.call(path) } if limit <= 1
+
+      queue = Channel(Int32).new(paths.size)
+      paths.each_index { |index| queue.send(index) }
+      queue.close
+      results = Array(PlaybookResult?).new(paths.size, nil)
+      failure : Exception? = nil
+      done = Channel(Nil).new(limit)
+      limit.times do
+        spawn do
+          while failure.nil? && (index = queue.receive?)
+            results[index] = block.call(paths[index])
+          end
+        rescue e : Exception
+          failure = failure || e
+        ensure
+          done.send(nil)
+        end
+      end
+      limit.times { done.receive }
+      failed = failure
+      raise failed if failed
+
+      results.map { |result| result || raise "a playbook was scheduled but never ran" }
     end
 
     private def guarded(path : String, &block : -> PlaybookResult) : PlaybookResult

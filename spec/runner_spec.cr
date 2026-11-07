@@ -217,4 +217,47 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(results_dir) if results_dir
     end
   end
+
+  describe Runner do
+    def ran(path : String) : Runner::PlaybookResult
+      Runner::PlaybookResult.errored(path, nil, "ran")
+    end
+
+    it "runs playbooks up to the parallel limit and keeps the batch order" do
+      paths = (1..6).map { |i| "p#{i}.yml" }
+      in_flight = 0
+      peak = 0
+      results = Runner.in_parallel(paths, 2) do |path|
+        in_flight += 1
+        peak = Math.max(peak, in_flight)
+        sleep 20.milliseconds
+        in_flight -= 1
+        ran(path)
+      end
+      assert_equal(2, peak)
+      assert_equal(paths, results.map(&.playbook))
+    end
+
+    it "stops picking up playbooks after a failure and re-raises it" do
+      paths = (1..6).map { |i| "p#{i}.yml" }
+      picked = [] of String
+      err = assert_raises(Exception) do
+        Runner.in_parallel(paths, 2) do |path|
+          picked << path
+          raise "boom on #{path}" if path == "p3.yml"
+          sleep 10.milliseconds
+          ran(path)
+        end
+      end
+      assert((err.message || "").starts_with?("boom"))
+      assert(picked.includes?("p3.yml"))
+      assert(picked.size < paths.size)
+    end
+
+    it "runs everything in order when the limit is one, and handles an empty batch" do
+      paths = ["a.yml", "b.yml"]
+      assert_equal(paths, Runner.in_parallel(paths, 1) { |path| ran(path) }.map(&.playbook))
+      assert(Runner.in_parallel([] of String, 2) { |path| ran(path) }.empty?)
+    end
+  end
 end

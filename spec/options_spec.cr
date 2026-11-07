@@ -71,6 +71,15 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--refresh-podman-templates"))
     end
 
+    it "parses --podman-parallel with --run-on-podman and refuses it without" do
+      assert_equal(2, Options.parse(["generate", "--run-on-podman", "--podman-parallel", "2"]).podman_parallel)
+      assert_equal(1, Options.parse(["generate", "--run-on-podman"]).podman_parallel)
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--podman-parallel", "2"]) }
+      assert((err.message || "").includes?("--podman-parallel"))
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--run-on-podman", "--podman-parallel", "0"]) }
+      assert((err.message || "").includes?("--podman-parallel"))
+    end
+
     it "parses --run-on-podman on generate" do
       opts = Options.parse(["generate", "--run-on-podman"])
       assert(opts.run_on_podman?)

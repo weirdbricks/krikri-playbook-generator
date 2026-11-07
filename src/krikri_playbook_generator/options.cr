@@ -41,6 +41,7 @@ module KrikriPlaybookGenerator
     property? control : Bool
     property? json : Bool
     property? refresh_podman_templates : Bool
+    property podman_parallel : Int32
     property engine_timeout : Int32
     property min_happy_success : Float64?
     property tasks_per_playbook : Int32
@@ -56,7 +57,7 @@ module KrikriPlaybookGenerator
                    @run_on_atlantic = false,
                    @keep_going = false, @engine_timeout = 120, @control = false,
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
-                   @tasks_per_playbook = 1, @seed_given = false)
+                   @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1)
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -95,6 +96,7 @@ module KrikriPlaybookGenerator
         dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
         dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }
         dsl.on("--refresh-podman-templates", "ignore the podman template image cache and rebuild the templates from scratch") { opts.refresh_podman_templates = true }
+        dsl.on("--podman-parallel N", "run N playbooks at once on podman, each in its own container pair (default: 1)") { |v| opts.podman_parallel = parse_int(v, "--podman-parallel") }
         dsl.on("--keep-going", "keep running the remaining playbooks after one fails to run (recorded as an errored result)") { opts.keep_going = true }
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
         dsl.on("--min-happy-success PCT", "exit 1 when the happy-path success rate is below PCT (report, or generate with a run backend)") { |v| opts.min_happy_success = parse_float(v, "--min-happy-success") }
@@ -126,12 +128,18 @@ module KrikriPlaybookGenerator
         raise InvalidOptionsError.new("--all-modules conflicts with --modules")
       end
       check_scope_conflicts!(opts)
-      raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
-      raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
-      raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman?
+      check_podman_conflicts!(opts)
       raise InvalidOptionsError.new("--json is only valid with the report or modules command") if opts.json? && !opts.command.report? && !opts.command.modules?
 
       check_happy_gate_target!(opts)
+    end
+
+    # The flags that only make sense for (or contradict) --run-on-podman.
+    private def self.check_podman_conflicts!(opts : Options) : Nil
+      raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
+      raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
+      raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman?
+      raise InvalidOptionsError.new("--podman-parallel needs --run-on-podman") if opts.podman_parallel > 1 && !opts.run_on_podman?
     end
 
     private def self.check_scope_conflicts!(opts : Options) : Nil
@@ -170,6 +178,7 @@ module KrikriPlaybookGenerator
       raise InvalidOptionsError.new("--count must be zero or a positive integer, got #{opts.count}") if opts.count.negative?
       raise InvalidOptionsError.new("--tasks-per-playbook must be a positive integer, got #{opts.tasks_per_playbook}") if opts.tasks_per_playbook < 1
       raise InvalidOptionsError.new("--engine-timeout must be a positive integer, got #{opts.engine_timeout}") if opts.engine_timeout <= 0
+      raise InvalidOptionsError.new("--podman-parallel must be a positive integer, got #{opts.podman_parallel}") if opts.podman_parallel < 1
       unless opts.chaos_percentage.in?(0.0..100.0)
         raise InvalidOptionsError.new("--chaos-percentage must be between 0 and 100, got #{opts.chaos_percentage}")
       end
