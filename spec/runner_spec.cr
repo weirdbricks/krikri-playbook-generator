@@ -75,7 +75,7 @@ module KrikriPlaybookGenerator
       refute(result.divergent?)
       error = result.error || ""
       assert(error.includes?("harness gap"))
-      assert(error.includes?("REAL_PACKAGES"))
+      assert(error.includes?("module_dependencies.yml"))
       assert(error.includes?("idna"))
     end
 
@@ -187,7 +187,9 @@ module KrikriPlaybookGenerator
       assert_equal("tool: krikri-playbook-generator #{VERSION}", versions.first)
       assert(versions.any?(&.starts_with?("krikri binary: ")))
       assert(versions.any?(&.starts_with?("ansible-playbook: ")))
-      assert(versions.last == "control: false" || versions.last == Versions::STALE_WARNING)
+      # the local default is check mode, so the run is recorded as a check run
+      assert(versions.includes?("check: true"))
+      assert(versions.last == "check: true" || versions.last == Versions::STALE_WARNING)
     ensure
       FileUtils.rm_rf(playbook_dir) if playbook_dir
       FileUtils.rm_rf(results_dir) if results_dir

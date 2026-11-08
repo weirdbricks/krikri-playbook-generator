@@ -96,7 +96,7 @@ module KrikriPlaybookGenerator
         line = (run.stdout + '\n' + run.stderr).lines.find(&.=~(UNRESOLVED))
         return "reference ansible cannot load the module (harness gap, not krikri): #{line.strip}" if line
         lib_line = (run.stdout + '\n' + run.stderr).lines.find(&.=~(MISSING_LIBRARY))
-        "reference ansible is missing a python library (harness gap, not krikri; add it to REAL_PACKAGES): #{lib_line.try(&.strip)}" if lib_line
+        "reference ansible is missing a python library (harness gap, not krikri; add it to the rpm/deb real package lists in data/module_dependencies.yml): #{lib_line.try(&.strip)}" if lib_line
       end
 
       def self.errored(playbook : String, meta : MetaInfo?, message : String) : PlaybookResult
@@ -300,7 +300,7 @@ module KrikriPlaybookGenerator
         end
       end.flatten
       backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, fqcns.uniq,
-        refresh_templates: @refresh_podman_templates)
+        refresh_templates: @refresh_podman_templates, check_mode: @check_mode)
       begin
         # rpm-family modules need the Rocky template pair; everything else
         # stays on Debian. A mixed batch provisions both templates and runs
@@ -481,7 +481,7 @@ module KrikriPlaybookGenerator
     # disk.
     private def write_versions(started : Time) : Nil
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
-        @control, started)
+        @control, @check_mode, started)
     rescue e
       STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end

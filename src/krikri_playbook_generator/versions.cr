@@ -25,14 +25,14 @@ module KrikriPlaybookGenerator
     end
 
     def self.write(results_dir : String, version : String, krikri_bin : String,
-                   ansible_playbook_bin : String, control : Bool, started : Time,
+                   ansible_playbook_bin : String, control : Bool, check : Bool, started : Time,
                    runner : CommandRunner = DEFAULT_RUNNER) : Nil
       File.write(File.join(results_dir, "versions.txt"),
-        render(version, started, krikri_bin, ansible_playbook_bin, control, runner))
+        render(version, started, krikri_bin, ansible_playbook_bin, control, check, runner))
     end
 
     def self.render(version : String, started : Time, krikri_bin : String,
-                    ansible_playbook_bin : String, control : Bool,
+                    ansible_playbook_bin : String, control : Bool, check : Bool,
                     runner : CommandRunner) : String
       binary = Path[krikri_bin].expand(home: true).to_s
       checkout = File.dirname(File.dirname(binary))
@@ -50,6 +50,7 @@ module KrikriPlaybookGenerator
         "control: #{control}",
       ]
 
+      lines << "check: true" if check
       lines << STALE_WARNING if stale?(binary, checkout, runner)
       lines.join("\n") + "\n"
     end

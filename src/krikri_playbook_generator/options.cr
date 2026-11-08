@@ -35,6 +35,7 @@ module KrikriPlaybookGenerator
     property ansible_playbook_bin : String
     property krikri_bin : String
     property? allow_mutation : Bool
+    property? check : Bool
     property? run_on_podman : Bool
     property? run_on_atlantic : Bool
     property? keep_going : Bool
@@ -53,7 +54,7 @@ module KrikriPlaybookGenerator
                    @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
-                   @allow_mutation = false, @run_on_podman = false,
+                   @allow_mutation = false, @check = false, @run_on_podman = false,
                    @run_on_atlantic = false,
                    @keep_going = false, @engine_timeout = 120, @control = false,
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
@@ -92,6 +93,7 @@ module KrikriPlaybookGenerator
         dsl.on("--ansible-playbook-bin PATH", "ansible-playbook executable (default: on PATH)") { |v| opts.ansible_playbook_bin = expand_tilde(v) }
         dsl.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = expand_tilde(v) }
         dsl.on("--allow-mutation", "run without --check: real modules may actually change the local host") { opts.allow_mutation = true }
+        dsl.on("--check", "run the engines with --check (podman runs are real by default; local runs already default to --check --diff)") { opts.check = true }
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
         dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
         dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }
@@ -123,12 +125,20 @@ module KrikriPlaybookGenerator
       opts
     end
 
+    # The Runner's check-mode wiring: --check forces check mode on (podman
+    # runs are real by default), local runs stay --check --diff unless
+    # --allow-mutation, and atlantic runs are always real.
+    def self.check_mode(opts : Options) : Bool
+      opts.check? || (!opts.run_on_podman? && !opts.run_on_atlantic? && !opts.allow_mutation?)
+    end
+
     private def self.check_conflicts!(opts : Options) : Nil
       if opts.all_modules? && opts.modules
         raise InvalidOptionsError.new("--all-modules conflicts with --modules")
       end
       check_scope_conflicts!(opts)
       check_podman_conflicts!(opts)
+      check_run_mode_conflicts!(opts)
       raise InvalidOptionsError.new("--json is only valid with the report or modules command") if opts.json? && !opts.command.report? && !opts.command.modules?
 
       check_happy_gate_target!(opts)
@@ -140,6 +150,13 @@ module KrikriPlaybookGenerator
       raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
       raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman?
       raise InvalidOptionsError.new("--podman-parallel needs --run-on-podman") if opts.podman_parallel > 1 && !opts.run_on_podman?
+    end
+
+    # Check mode and real mutation are opposite run modes, and an
+    # Atlantic run is deliberately real.
+    private def self.check_run_mode_conflicts!(opts : Options) : Nil
+      raise InvalidOptionsError.new("--check conflicts with --run-on-atlantic (Atlantic runs are deliberately real)") if opts.check? && opts.run_on_atlantic?
+      raise InvalidOptionsError.new("--check conflicts with --allow-mutation (check mode and real mutation mean opposite things)") if opts.check? && opts.allow_mutation?
     end
 
     private def self.check_scope_conflicts!(opts : Options) : Nil

@@ -156,8 +156,11 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `ignore_errors`). Backends: local (`--check` by default unless
   `--allow-mutation`; engines wrapped in `timeout`; fixtures seeded
   best-effort on the host), podman (`--run-on-podman`, fresh container
-  pair per playbook via committed template images) and Atlantic.net
-  (`--run-on-atlantic`, one disposable VM per module profile).
+  pair per playbook via committed template images; REAL by default,
+  `--check` appends `--check` - never `--diff` - to both engines'
+  invocation) and Atlantic.net
+  (`--run-on-atlantic`, one disposable VM per module profile, always
+  real - it refuses `--check`).
   `MetaInfo` carries `module_names` (every task's module for a v2
   multi-task playbook, falling back to just the primary one for v1
   sidecars): podman picks the Rpm profile when ANY task needs it, the
@@ -183,7 +186,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   krikri-role-triager, which splits each line on the first `": "`. One
   `key: value` line each: tool version, run start (RFC3339 UTC), krikri
   binary path/mtime/`--version`/git commit (+ ` (dirty)`)/commit subject,
-  ansible-playbook version, `control`. Plus, only when the krikri
+  ansible-playbook version, `control`, and `check: true` when the run is
+  in check mode (how krikri-role-triager tells a `--check` repro run from
+  a real one). Plus, only when the krikri
   binary's mtime is older than the committer date of the checkout's last
   commit touching `src lib plugins scripts shard.yml shard.lock
   build.sh`, the exact line `warning: krikri binary is older than its
@@ -212,7 +217,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   engine with the identical invocation (`bash -c "cd /work && env -u
   ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u
   ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1 timeout <N>
-  <engine> -i inventory.ini /work/<basename> </dev/null>"`); the pair is
+  <engine> -i inventory.ini /work/<basename> </dev/null>"` - a check-mode
+  run inserts `--check`, never `--diff`, right after the engine command
+  on both sides); the pair is
   `podman rm -f`'d in `ensure` immediately after. `teardown` removes
   remaining containers but KEEPS the committed images (they are the
   cache the next run starts from); `PodmanBackend.leak_check`
@@ -256,7 +263,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   carrying chaos/mutations/masked_diff/ansible_error), errors,
   not_applicable, happy_coverage, rates.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the four
-  subcommands (`generate`, `run`, `report`, `modules`), plus `--keep-going`,
+  subcommands (`generate`, `run`, `report`, `modules`), plus `--check`
+  (run the engines with `--check` - podman runs are real by default,
+  local runs already default to `--check --diff`; conflicts with
+  `--run-on-atlantic` and `--allow-mutation`), `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
   recorded with rc 124), `--json` (valid only with `report` or `modules`;
   error
@@ -343,6 +353,11 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   against *this* machine without an isolated/disposable host is not
   something to do by default. Only `--allow-mutation` (explicit,
   documented as dangerous) opts out, and only for the local backend.
+  The podman backend is the mirror image: real by default (it is
+  disposable), and `--check` opts IN to check mode there — the check
+  repro pass runs each playbook once real and once `--check` into
+  separate results dirs, the check run marked by `check: true` in its
+  versions.txt.
 - **Podman is opt-in (`--run-on-podman`), never the default** — even
   though it's disposable and therefore safer than local mutation, it's
   slower to provision than a plain local `--check` run and needs `podman`

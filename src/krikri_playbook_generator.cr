@@ -16,7 +16,7 @@ module KrikriPlaybookGenerator
       Preflight.check!(opts.ansible_playbook_bin, opts.krikri_bin)
       playbooks = playbook_paths_for_run(opts)
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
-        opts.krikri_bin, check_mode: !opts.allow_mutation?, run_on_podman: opts.run_on_podman?,
+        opts.krikri_bin, check_mode: Options.check_mode(opts), run_on_podman: opts.run_on_podman?,
         run_on_atlantic: opts.run_on_atlantic?,
         keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
         refresh_podman_templates: opts.refresh_podman_templates?,
@@ -130,7 +130,7 @@ module KrikriPlaybookGenerator
     return 0 unless opts.run_on_podman? || opts.run_on_atlantic?
 
     results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
-      opts.krikri_bin, run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
+      opts.krikri_bin, check_mode: Options.check_mode(opts), run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
       keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
       refresh_podman_templates: opts.refresh_podman_templates?,
       podman_parallel: opts.podman_parallel).run

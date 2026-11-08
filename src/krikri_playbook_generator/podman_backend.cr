@@ -33,8 +33,9 @@ module KrikriPlaybookGenerator
   # krikri binary + plugins digests, the fixture seed script). When both
   # images for a profile's current fingerprint already exist, provisioning
   # is skipped entirely and the pair is started from the cached images;
-  # only `--refresh-podman-templates` forces a rebuild (and then prunes
-  # every other tag of the stable names). The version/binary assertions
+  # only `--refresh-podman-templates` forces a rebuild (a build also
+  # caps the cache at the newest MAX_CACHED_TEMPLATES tags of each
+  # stable name). The version/binary assertions
   # still ran inside whatever build produced that tag, because a fingerprint
   # covers exactly the inputs those assertions check.
   #
@@ -67,7 +68,7 @@ module KrikriPlaybookGenerator
     # profile (same Rocky major, same package set, same import-probe
     # behavior). Rocky 10's glibc (2.39) runs the trixie-built krikri
     # binary - AtlanticBackend stages the same binary onto its Rocky-10 VMs.
-    IMAGE_RPM        = "quay.io/rockylinux/rockylinux:10"
+    IMAGE_RPM = "quay.io/rockylinux/rockylinux:10"
     # libxcrypt-compat provides libcrypt.so.1, which the host-built krikri
     # binary links (Crystal pulls it for crypt(3)) and Rocky 10's default
     # package set no longer ships - the staged binary died with "cannot
@@ -84,11 +85,13 @@ module KrikriPlaybookGenerator
     # Stable repository names for the content-addressed template image
     # cache: the fingerprint (a SHA-256 over the template's inputs) is the
     # tag, so an existing tag proves the image was built from exactly
-    # today's package lists, binary and fixtures.
+    # today's package lists, binary and fixtures. The cache is capped at
+    # MAX_CACHED_TEMPLATES newest tags per stable name.
     IMAGE_NAME_REAL_DEBIAN   = "kpg-img-real-debian"
     IMAGE_NAME_KRIKRI_DEBIAN = "kpg-img-krikri-debian"
     IMAGE_NAME_REAL_RPM      = "kpg-img-real-rpm"
     IMAGE_NAME_KRIKRI_RPM    = "kpg-img-krikri-rpm"
+    MAX_CACHED_TEMPLATES     = 10
 
     def self.available? : Bool
       !!Process.find_executable("podman")
@@ -148,9 +151,17 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # Visible for specs: the identical bash script both engines exec.
+    # Check mode appends --check only - never --diff, whose krikri hunk
+    # formatting has a known gap that would flood the findings.
+    def self.engine_script(engine_cmd : String, playbook_basename : String, engine_timeout : Int32, check : Bool) : String
+      "cd /work && #{ENGINE_ENV_STRIP} timeout #{engine_timeout} " \
+      "#{engine_cmd}#{check ? " --check" : ""} -i inventory.ini /work/#{playbook_basename} </dev/null"
+    end
+
     def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false,
                    @module_fqcns : Array(String) = [] of String, @dependencies : Dependencies = Dependencies.load,
-                   @refresh_templates : Bool = false)
+                   @refresh_templates : Bool = false, @check_mode : Bool = false)
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = ""
       @name_krikri = ""
@@ -244,10 +255,8 @@ module KrikriPlaybookGenerator
       Log.info("podman", "#{label} template: committing #{real_image} + #{krikri_image}")
       commit_templates(real_image, krikri_image)
       drop_templates
-      if @refresh_templates
-        prune_other_tags(real_image)
-        prune_other_tags(krikri_image)
-      end
+      prune_other_tags(real_image)
+      prune_other_tags(krikri_image)
       Log.info("podman", "#{label} template: ready (#{real_image})")
       @images[profile] = {real_image, krikri_image}
       @provisioned_profiles << profile
@@ -428,17 +437,26 @@ module KrikriPlaybookGenerator
       end
     end
 
-    # Only called in --refresh mode: a deliberate rebuild drops every other
-    # tag of the stable repository name, so the cache resets to exactly the
-    # freshly built fingerprint instead of accumulating stale ones.
+    # Only called after a template build. In --refresh mode a deliberate
+    # rebuild drops every other tag of the stable repository name, so the
+    # cache resets to exactly the freshly built fingerprint instead of
+    # accumulating stale ones. Otherwise the cache is capped: every build
+    # prunes the tags beyond the MAX_CACHED_TEMPLATES newest, so a run of
+    # input changes can't leave hundreds of stale fingerprints behind.
     private def prune_other_tags(image : String) : Nil
       repository = image.split(":").first
       result = Cmd.run("podman", ["images", "--filter", "reference=#{repository}:*",
-                                  "--format", "{{.Repository}}:{{.Tag}}"], timeout: 60.0)
+                                  "--format", "{{.Repository}}:{{.Tag}} {{.Created}}"], timeout: 60.0)
       return unless Cmd.success?(result)
 
-      stale = result.stdout.lines.reject!(&.blank?).uniq!.reject { |ref| ref == image }
-      stale.each do |ref|
+      keep = @refresh_templates ? 1 : MAX_CACHED_TEMPLATES
+      tags = result.stdout.lines.compact_map do |line|
+        ref, created = line.split(" ")
+        next unless ref && created && ref != image
+        {ref, created.to_i? || 0}
+      end
+      tags.sort_by! { |(_, created)| -created }
+      tags.skip(keep - 1).each do |(ref, _)|
         Cmd.run("podman", ["rmi", ref], timeout: 300.0)
       end
     end
@@ -514,9 +532,7 @@ module KrikriPlaybookGenerator
     end
 
     private def exec_engine(name : String, engine_cmd : String, playbook_path : String) : Cmd::Result
-      basename = File.basename(playbook_path)
-      script = "cd /work && #{ENGINE_ENV_STRIP} timeout #{@engine_timeout} " \
-               "#{engine_cmd} -i inventory.ini /work/#{basename} </dev/null"
+      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout, @check_mode)
       Cmd.run("podman", ["exec", "-w", "/work", name, "bash", "-c", script], timeout: @engine_timeout + 60.0)
     end
 

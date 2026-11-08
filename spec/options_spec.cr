@@ -65,6 +65,29 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--control"))
     end
 
+    it "parses --check and defaults it to false" do
+      refute(Options.parse(["run"]).check?)
+      assert(Options.parse(["run", "--check"]).check?)
+    end
+
+    it "refuses --check with --run-on-atlantic or --allow-mutation" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--check", "--run-on-atlantic"]) }
+      assert((err.message || "").includes?("--check"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--check", "--allow-mutation"]) }
+      assert((err.message || "").includes?("--check"))
+    end
+
+    it "derives Runner check mode: --check forces it on, podman stays real by default, local stays --check unless --allow-mutation" do
+      assert(Options.check_mode(Options.parse(["run"])))
+      assert(Options.check_mode(Options.parse(["run", "--check"])))
+      refute(Options.check_mode(Options.parse(["run", "--run-on-podman"])))
+      assert(Options.check_mode(Options.parse(["run", "--run-on-podman", "--check"])))
+      refute(Options.check_mode(Options.parse(["run", "--allow-mutation"])))
+      refute(Options.check_mode(Options.parse(["run", "--run-on-podman", "--allow-mutation"])))
+      refute(Options.check_mode(Options.parse(["run", "--run-on-atlantic"])))
+    end
+
     it "parses --refresh-podman-templates with --run-on-podman and refuses it without" do
       assert(Options.parse(["run", "--run-on-podman", "--refresh-podman-templates"]).refresh_podman_templates?)
       err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--refresh-podman-templates"]) }
