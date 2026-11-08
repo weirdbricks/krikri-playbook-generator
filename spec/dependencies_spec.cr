@@ -9,6 +9,15 @@ module KrikriPlaybookGenerator
       assert_equal([] of String, deps.supported)
     end
 
+    it "installs expect's and uri's python libraries on both real template families" do
+      sets = Dependencies.load.package_sets([] of String)
+
+      assert_includes(sets.real_debian, "python3-pexpect")
+      assert_includes(sets.real_rpm, "python3-pexpect")
+      assert_includes(sets.real_debian, "python3-idna")
+      assert_includes(sets.real_rpm, "python3-idna")
+    end
+
     it "unions base + selected module packages, partitioned by side" do
       deps = Dependencies.new(cluster_yaml_for_spec)
       sets = deps.package_sets(["community.general.sudoers"])

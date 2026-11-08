@@ -4,8 +4,7 @@
 # its system package, Python library, and/or Ansible collection installed
 # in the template images. This table is the UNION model: PodmanBackend
 # provisions one Debian and one Rocky template per batch, installing the
-# union of REAL_PACKAGES/KRIKRI_RUNTIME_LIBS plus everything listed here
-# for the modules in scope. That keeps provisioning simple (two images,
+# base lists below plus everything listed here for the modules in scope. That keeps provisioning simple (two images,
 # not one per module) and mirrors krikri/podman-diff's base installs.
 #
 # `supported:` is the chosen-support set (see Options --supported-community):
@@ -30,8 +29,8 @@
 supported: []
 
 deb_modules:
-  # Exactly the current REAL_PACKAGES/KRIKRI_RUNTIME_LIBS union, kept as
-  # data so the backend no longer hard-codes a single string.
+  # The base template installs, kept as data so the backend no longer
+  # hard-codes a single string.
   both: [ansible, python3, procps, cron, gnupg, git, openssh-client, python3-apt, python3-debian, debconf-utils, rsync, sudo, iptables, subversion]
   real: [python3-pexpect, python3-idna]
   # python3-pip: the pip module needs a working pip ON THE TARGET under both
@@ -49,7 +48,11 @@ rpm_modules:
   # open shared object file" right after the version assertion without
   # it (found launching the first 2.21.6 batch).
   both: [python3, libyaml, pcre2, openssl, libxml2, zstd, gmp, gnupg2, libxcrypt-compat]
-  real: [python3-pip, python3-dnf, python3-dnf-plugin-versionlock]
+  # python3-pexpect/python3-idna mirror the Debian real side: real expect
+  # gates on pexpect, real uri on idna, so an rpm batch holding either
+  # module errored as a harness gap ("multi-expect" and "multi-dnf5"
+  # playbooks) until both were installed here too.
+  real: [python3-pip, python3-dnf, python3-dnf-plugin-versionlock, python3-pexpect, python3-idna]
   # python3-pip on the krikri side too - same target-side requirement as the
   # Debian pair (see the comment there): both engines run pip on the target.
   krikri: [python3-pip]
