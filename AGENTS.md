@@ -132,6 +132,17 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   profile selection and Triage keep working unchanged), aggregates all
   tasks' mutations with `t<i>:` prefixes, and adds a `modules` array with
   each task's own module/chaos/mutations/wiring — `Triage` reads this back.
+  The playbook YAML is rendered by `PlaybookBuilder` itself instead of
+  Crystal's `YAML::Any#to_yaml`, which puts a sequence item at the same
+  column as its key (`tasks:` followed by `- name:`), something ansible-lint
+  reports as `yaml[indentation]`. Scalars still come from libyaml (same
+  quoting and escaping; multi-line folding only gets re-indented), and every
+  play/task/handler name starts with an uppercase letter for `name[casing]`
+  (`HANDLER_NAME` lives in `generator.cr` so a `notify:` target and the
+  handler it names can never drift apart). Linting a generated playbook
+  should therefore only report what the fuzzing itself injects
+  (`args[module]` for chaos mutations) plus the safety-profile heuristics
+  (`risky-file-permissions`, `risky-octal`).
   Verified live: a generated chaos playbook fails against real
   `ansible-playbook --check` with exactly the mutation the generator
   recorded (a `mutually exclusive` error matching a real
@@ -436,7 +447,10 @@ string-matching the file, including the v2 shape (register names,
 when/loop/notify wiring, the conditional handlers section, the sidecar's
 aggregated `t<i>:` mutations and per-task `modules` array) and writes
 the generator's seed as a first-line comment when one is passed (the
-random-by-default seed needs the file itself to carry it).
+random-by-default seed needs the file itself to carry it). Two specs guard
+the lint-clean rendering: every play/task name starts uppercase, and a
+nested sequence is indented under its key (the text is matched there, since
+the rule is about layout rather than meaning).
 `runner_spec.cr` unit-tests `Recap`/
 `PlaybookResult#divergent?` directly, plus real integration cases (a
 single-task `ansible.builtin.debug` — always safe/fast/idempotent — and a

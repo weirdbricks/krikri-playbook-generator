@@ -64,6 +64,37 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "starts every play and task name with an uppercase letter (ansible-lint name[casing])" do
+      dir = File.tempname("kpg-spec")
+      text = File.read(PlaybookBuilder.new(dir).build_scenarios([[sample_task]]).first)
+      play = YAML.parse(text).as_a.first
+
+      assert_equal("Krikri-playbook-generator: multi-task #0", play["name"].as_s)
+      play["tasks"].as_a.each do |task|
+        name = task["name"].as_s
+        assert(name[0].uppercase?, "task name #{name.inspect} should start uppercase")
+      end
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "indents a sequence under its key (ansible-lint yaml[indentation])" do
+      dir = File.tempname("kpg-spec")
+      tasks = [
+        GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new(Fixtures::SOURCE_FILES.first)}),
+        GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")},
+          notify: KrikriPlaybookGenerator::HANDLER_NAME),
+      ]
+      text = File.read(PlaybookBuilder.new(dir).build_scenarios([tasks]).first)
+
+      assert(text.matches?(/\n  tasks:\n    - name: /), text)
+      assert(text.matches?(/\n  handlers:\n    - name: /), text)
+      assert(text.matches?(/\n      ansible\.builtin\.stat:\n        path: /), text)
+      assert(text.matches?(/\n        msg: hi\n/), text)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "records mutation metadata in the meta.json sidecar for a chaos task" do
       dir = File.tempname("kpg-spec")
       path = PlaybookBuilder.new(dir).build([sample_task(chaos: true)]).first
@@ -106,7 +137,7 @@ module KrikriPlaybookGenerator
         second = GeneratedTask.new("copy", "ansible.builtin",
           {"src" => YAML::Any.new("{{ item }}"), "dest" => YAML::Any.new(Fixtures::DEST_PATHS.first)},
           [{"mode", ChaosKind::BadChoice}], loop_option: "src", loop_items: Fixtures::SOURCE_FILES,
-          notify: "kpg handler")
+          notify: KrikriPlaybookGenerator::HANDLER_NAME)
         third = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")},
           when_condition: "kpg_task_1 is succeeded")
         [first, second, third]
@@ -131,12 +162,12 @@ module KrikriPlaybookGenerator
         end
         assert_equal("kpg_task_1 is succeeded", tasks[2]["when"].as_s)
         assert_equal(Fixtures::SOURCE_FILES, tasks[1]["loop"].as_a.map(&.as_s))
-        assert_equal("kpg handler", tasks[1]["notify"].as_s)
+        assert_equal(KrikriPlaybookGenerator::HANDLER_NAME, tasks[1]["notify"].as_s)
         assert_equal("{{ item }}", tasks[1]["ansible.builtin.copy"]["src"].as_s)
 
         handlers = play["handlers"].as_a
         assert_equal(1, handlers.size)
-        assert_equal("kpg handler", handlers.first["name"].as_s)
+        assert_equal(KrikriPlaybookGenerator::HANDLER_NAME, handlers.first["name"].as_s)
         assert_equal("kpg multi-task handler ran", handlers.first["ansible.builtin.debug"]["msg"].as_s)
       ensure
         FileUtils.rm_rf(dir) if dir
@@ -173,7 +204,7 @@ module KrikriPlaybookGenerator
         assert_equal("mode", modules[1]["mutations"][0]["option"].as_s)
         assert_empty(modules[0]["wiring"].as_a)
         assert_equal("loop:src", modules[1]["wiring"][0].as_s)
-        assert_equal("notify:kpg handler", modules[1]["wiring"][1].as_s)
+        assert_equal("notify:#{KrikriPlaybookGenerator::HANDLER_NAME}", modules[1]["wiring"][1].as_s)
         assert_equal("when:kpg_task_1 is succeeded", modules[2]["wiring"][0].as_s)
       ensure
         FileUtils.rm_rf(dir) if dir

@@ -5,6 +5,12 @@ require "./overrides"
 require "random/pcg32"
 
 module KrikriPlaybookGenerator
+  # The handler a scenario task may notify. Every name a generated playbook
+  # carries (play, task, handler) starts with an uppercase letter because
+  # ansible-lint's name[casing] rule requires it, and the playbooks are meant
+  # to be lint-clean so a lint run only ever reports krikri's own behaviour.
+  HANDLER_NAME = "Kpg handler"
+
   enum ChaosKind
     Typo
     Hallucinate
@@ -126,7 +132,7 @@ module KrikriPlaybookGenerator
           task.when_condition = ["#{previous} is succeeded", "#{previous} is not skipped"].sample(@rng)
         end
         apply_loop_wiring!(task)
-        task.notify = "kpg handler" if @rng.rand < 0.4
+        task.notify = HANDLER_NAME if @rng.rand < 0.4
       end
     end
 

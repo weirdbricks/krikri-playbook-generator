@@ -22,7 +22,6 @@ module KrikriPlaybookGenerator
     STALE_PLAYBOOK = /\A\d{6}-.+-(?:happy|chaos)\.yml\z/
     STALE_META     = /\A\d{6}-.+-(?:happy|chaos)\.meta\.json\z/
 
-    HANDLER_NAME    = "kpg handler"
     HANDLER_MESSAGE = "kpg multi-task handler ran"
 
     def initialize(@out_dir : String, @seed : Int32? = nil)
@@ -33,6 +32,118 @@ module KrikriPlaybookGenerator
     private def seed_comment : String
       seed = @seed
       seed ? "# krikri-playbook-generator seed=#{seed}\n" : ""
+    end
+
+    # ansible-lint's name[casing] rule wants an uppercase first letter on
+    # every play, task and handler name; only the first character is touched
+    # so the rest of the name stays exactly as generated.
+    private def named(name : String) : String
+      name.empty? ? name : name[0].upcase.to_s + name[1..]
+    end
+
+    # Crystal's own YAML emitter un-indents a sequence under its key
+    # (`tasks:` followed by `- name:` at the same column), which ansible-lint
+    # reports as yaml[indentation]. Rendering the document here keeps the
+    # scalars exactly as libyaml formats them (same quoting, same escaping)
+    # while indenting nested blocks by two, the ansible standard.
+    private def yaml_document(node : YAML::Any) : String
+      String.build do |io|
+        io << "---\n"
+        emit(io, node, 0)
+      end
+    end
+
+    private def emit(io : IO, node : YAML::Any, indent : Int32) : Nil
+      raw = node.raw
+      case raw
+      when Hash
+        if raw.empty?
+          io << " " * indent << "{}\n"
+        else
+          emit_map(io, raw, indent)
+        end
+      when Array
+        if raw.empty?
+          io << " " * indent << "[]\n"
+        else
+          emit_sequence(io, raw, indent)
+        end
+      else
+        emit_scalar(io, node, indent, inline_prefix: nil)
+      end
+    end
+
+    private def emit_map(io : IO, hash : Hash(YAML::Any, YAML::Any), indent : Int32,
+                         after_dash : Bool = false) : Nil
+      hash.each_with_index do |(key, value), index|
+        io << (index == 0 && after_dash ? " " : " " * indent)
+        io << scalar_text(key) << ":"
+        emit_value(io, value, indent)
+      end
+    end
+
+    private def emit_sequence(io : IO, array : Array(YAML::Any), indent : Int32) : Nil
+      array.each do |element|
+        raw = element.raw
+        io << " " * indent << "-"
+        case raw
+        when Hash
+          if raw.empty?
+            io << " {}\n"
+          else
+            emit_map(io, raw, indent + 2, after_dash: true)
+          end
+        when Array
+          if raw.empty?
+            io << " []\n"
+          else
+            io << "\n"
+            emit(io, element, indent + 2)
+          end
+        else
+          emit_scalar(io, element, indent, inline_prefix: " ")
+        end
+      end
+    end
+
+    private def emit_value(io : IO, value : YAML::Any, indent : Int32) : Nil
+      raw = value.raw
+      case raw
+      when Hash
+        if raw.empty?
+          io << " {}\n"
+        else
+          io << "\n"
+          emit(io, value, indent + 2)
+        end
+      when Array
+        if raw.empty?
+          io << " []\n"
+        else
+          io << "\n"
+          emit(io, value, indent + 2)
+        end
+      else
+        emit_scalar(io, value, indent, inline_prefix: " ")
+      end
+    end
+
+    private def emit_scalar(io : IO, value : YAML::Any, indent : Int32, inline_prefix : String?) : Nil
+      lines = scalar_text(value).lines
+      io << inline_prefix.to_s << lines.first
+      lines[1..].each do |line|
+        io << "\n"
+        io << " " * (indent + 2) << line unless line.blank?
+      end
+      io << "\n"
+    end
+
+    # One scalar rendered the way libyaml would (quoting, escaping and
+    # multi-line folding all included), minus the `--- ` document start
+    # YAML::Any#to_yaml prepends.
+    private def scalar_text(value : YAML::Any) : String
+      text = value.to_yaml.sub(/\A--- ?/, "").strip
+      text.empty? ? "null" : text
     end
 
     def build(tasks : Array(GeneratedTask)) : Array(String)
@@ -72,18 +183,18 @@ module KrikriPlaybookGenerator
       task.args.each { |name, value| args[YAML::Any.new(name)] = value }
 
       task_body = {} of YAML::Any => YAML::Any
-      task_body[YAML::Any.new("name")] = YAML::Any.new("#{task.module_name} ##{index}")
+      task_body[YAML::Any.new("name")] = YAML::Any.new(named("#{task.module_name} ##{index}"))
       task_body[YAML::Any.new(task.fqcn)] = task.free_form ? YAML::Any.new(task.free_form) : YAML::Any.new(args)
       task_body[YAML::Any.new("register")] = YAML::Any.new("krikri_playbook_generator_result")
       task_body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
 
       play = {} of YAML::Any => YAML::Any
-      play[YAML::Any.new("name")] = YAML::Any.new("krikri-playbook-generator: #{task.module_name} ##{index}")
+      play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: #{task.module_name} ##{index}"))
       play[YAML::Any.new("hosts")] = YAML::Any.new("all")
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       play[YAML::Any.new("tasks")] = YAML::Any.new([YAML::Any.new(task_body)])
 
-      YAML::Any.new([YAML::Any.new(play)]).to_yaml
+      yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
 
     private def metadata_json(task : GeneratedTask, playbook_path : String) : String
@@ -122,7 +233,7 @@ module KrikriPlaybookGenerator
     private def scenario_yaml(tasks : Array(GeneratedTask), index : Int32) : String
       task_bodies = tasks.map_with_index do |task, task_index|
         body = {} of YAML::Any => YAML::Any
-        body[YAML::Any.new("name")] = YAML::Any.new("#{task.module_name} ##{index}.#{task_index}")
+        body[YAML::Any.new("name")] = YAML::Any.new(named("#{task.module_name} ##{index}.#{task_index}"))
         body[YAML::Any.new(task.fqcn)] = task.free_form ? YAML::Any.new(task.free_form) : scenario_args(task)
         body[YAML::Any.new("register")] = YAML::Any.new("kpg_task_#{task_index}")
         body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
@@ -135,7 +246,7 @@ module KrikriPlaybookGenerator
       end
 
       play = {} of YAML::Any => YAML::Any
-      play[YAML::Any.new("name")] = YAML::Any.new("krikri-playbook-generator: multi-task ##{index}")
+      play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: multi-task ##{index}"))
       play[YAML::Any.new("hosts")] = YAML::Any.new("all")
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
@@ -148,7 +259,7 @@ module KrikriPlaybookGenerator
         play[YAML::Any.new("handlers")] = YAML::Any.new([YAML::Any.new(handler)])
       end
 
-      YAML::Any.new([YAML::Any.new(play)]).to_yaml
+      yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
 
     private def scenario_args(task : GeneratedTask) : YAML::Any
