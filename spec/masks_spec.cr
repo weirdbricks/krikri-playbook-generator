@@ -109,6 +109,19 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("0280007E", "0280007F")))
     end
 
+    it "masks the HTTP Date header echoed in uri results, and nothing else" do
+      a = %("date": "Tue, 10 Nov 2026 05:22:35 GMT", "elapsed": 0, "url": "http://127.0.0.1:18888/template.j2"}
+)
+      b = %("date": "Tue, 10 Nov 2026 05:22:37 GMT", "elapsed": 0, "url": "http://127.0.0.1:18888/template.j2"}
+)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      assert(ByteDiff.mask(a).includes?(%("date": "<TIME>")))
+      # a different header name or a malformed date is not touched
+      untouched = %("expires": "Thu, 01 Jan 1970 00:00:01 GMT"}
+)
+      assert_equal(untouched, ByteDiff.mask(untouched))
+    end
+
     it "does not mask short numbers that carry real meaning" do
       text = "rc=2 changed=1 port=22\n"
       assert_equal(text, ByteDiff.mask(text))

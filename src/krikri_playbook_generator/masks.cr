@@ -104,6 +104,14 @@ module KrikriPlaybookGenerator
         "starts with a non-[a-z0-9_] character such as `.`) or the closing quote",
       },
       {
+        Regex.new("(\"date\": \")(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \\d\\d (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \\d{4} \\d\\d:\\d\\d:\\d\\d GMT\""),
+        "\\1<TIME>\"",
+        "uri's result echoes the HTTP response's Date header, stamped by the server at " \
+        "request time; the two engines run seconds apart, so the value can never match " \
+        "by construction (the header's presence must still match). Same class as " \
+        "krikri-role-tester's http-date mask",
+      },
+      {
         Regex.new("\\b\\d{13,}\\b"),
         "N",
         "long digit runs are epoch-millis/nonce-class values (task IDs, temp suffixes) " \
