@@ -122,6 +122,24 @@ module KrikriPlaybookGenerator
       assert_equal(untouched, ByteDiff.mask(untouched))
     end
 
+    it "masks the random mkstemp name in a get_url src result value, and nothing else" do
+      a = %("changed": false, "msg": "Destination  does not exist", "src": "/opt/kpg-fixtures/dir/tmpk9f5638a", "url": "http://127.0.0.1:18888/dir/inner.txt"}
+)
+      b = %("changed": false, "msg": "Destination  does not exist", "src": "/opt/kpg-fixtures/dir/tmpg4_ofcgt", "url": "http://127.0.0.1:18888/dir/inner.txt"}
+)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      assert(ByteDiff.mask(a).includes?(%("src": "/opt/kpg-fixtures/dir/tmp<RND>")))
+      # a src that is not a bare no-prefix mkstemp component is not touched
+      untouched = %("src": "/opt/kpg-fixtures/dir/inner.txt"}
+)
+      assert_equal(untouched, ByteDiff.mask(untouched))
+      # the same shape in a non-src JSON key is not touched (issue #1120's
+      # mask is anchored on the key so other values keep their bytes)
+      other_key = %("dest": "/opt/kpg-fixtures/dir/tmpk9f5638a"}
+)
+      assert_equal(other_key, ByteDiff.mask(other_key))
+    end
+
     it "does not mask short numbers that carry real meaning" do
       text = "rc=2 changed=1 port=22\n"
       assert_equal(text, ByteDiff.mask(text))

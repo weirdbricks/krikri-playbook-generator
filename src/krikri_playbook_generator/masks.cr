@@ -118,6 +118,16 @@ module KrikriPlaybookGenerator
         "that differ per run; short numbers (rcs, counters, ports) stay unmasked",
       },
       {
+        Regex.new("(\x22src\x22: \x22[^\x22]*/tmp)[a-z0-9_]{8}(\x22)"),
+        "\\1<RND>\\2",
+        "get_url's failure result echoes the staged download's path as `src`, and " \
+        "staging is Python tempfile.mkstemp(dir=tmp_dest) with no prefix/suffix: " \
+        "tmp + 8 random [a-z0-9_] characters - random per run on both engines " \
+        "and never matchable; the rest of the fatal JSON (checksums, dest, msg) " \
+        "must still match. Anchored on the `src` JSON key and a bare `tmp` + 8 " \
+        "component (the no-prefix mkstemp shape), so other src values stay raw",
+      },
+      {
         Regex.new("Last metadata expiration check: [^\\n]*? ago on [^\\n]*"),
         "Last metadata expiration check: <DNF-CACHE-AGE> ago on <DNF-CACHE-TIME>",
         "dnf prints the age of its metadata cache and the wall-clock time it was " \
