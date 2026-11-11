@@ -197,5 +197,36 @@ module KrikriPlaybookGenerator
     ensure
       FileUtils.rm_rf(dir) if dir
     end
+
+    it "prunes only tags beyond the kept count, oldest first, never the image itself" do
+      listing = <<-TEXT
+        localhost/kpg-img-krikri-debian:fresh #{Time.utc.to_rfc3339}
+        localhost/kpg-img-krikri-debian:mid #{(Time.utc - 1.hour).to_rfc3339}
+        localhost/kpg-img-krikri-debian:old #{(Time.utc - 2.hours).to_rfc3339}
+        localhost/kpg-img-krikri-debian:ancient #{(Time.utc - 3.hours).to_rfc3339}
+        TEXT
+      candidates = PodmanBackend.prune_candidates(listing, "kpg-img-krikri-debian:fresh", 2).as(Array(String))
+      assert_equal(["localhost/kpg-img-krikri-debian:old", "localhost/kpg-img-krikri-debian:ancient"], candidates,
+        "keep=2 must keep the newest other tag and the image itself")
+    end
+
+    it "treats the short image name as its localhost/ equivalent so a fresh commit is never evicted" do
+      listing = (0...12).map do |i|
+        "localhost/kpg-img-krikri-debian:t#{i} #{(Time.utc - (12 - i).minutes).to_rfc3339}"
+      end.join("\n")
+      candidates = PodmanBackend.prune_candidates(listing, "kpg-img-krikri-debian:t11", 10).as(Array(String))
+      assert_equal(["localhost/kpg-img-krikri-debian:t1", "localhost/kpg-img-krikri-debian:t0"], candidates,
+        "the just-committed t11 must survive: podman lists it with a localhost/ prefix")
+      refute(candidates.includes?("localhost/kpg-img-krikri-debian:t11"))
+    end
+
+    it "aborts the prune when an age does not parse instead of evicting arbitrary tags" do
+      listing = <<-TEXT
+        localhost/kpg-img-krikri-debian:a 6 hours ago
+        localhost/kpg-img-krikri-debian:b #{Time.utc.to_rfc3339}
+        TEXT
+      assert_nil(PodmanBackend.prune_candidates(listing, "kpg-img-krikri-debian:b", 10),
+        "{{.Created}}-style ages parsed as 0 and once evicted the just-built image")
+    end
   end
 end

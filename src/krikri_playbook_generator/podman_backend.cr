@@ -446,19 +446,39 @@ module KrikriPlaybookGenerator
     private def prune_other_tags(image : String) : Nil
       repository = image.split(":").first
       result = Cmd.run("podman", ["images", "--filter", "reference=#{repository}:*",
-                                  "--format", "{{.Repository}}:{{.Tag}} {{.Created}}"], timeout: 60.0)
+                                  "--format", "{{.Repository}}:{{.Tag}} {{.CreatedAt}}"], timeout: 60.0)
       return unless Cmd.success?(result)
 
       keep = @refresh_templates ? 1 : MAX_CACHED_TEMPLATES
-      tags = result.stdout.lines.compact_map do |line|
-        ref, created = line.split(" ")
-        next unless ref && created && ref != image
-        {ref, created.to_i? || 0}
-      end
-      tags.sort_by! { |(_, created)| -created }
-      tags.skip(keep - 1).each do |(ref, _)|
+      candidates = PodmanBackend.prune_candidates(result.stdout, image, keep)
+      return unless candidates
+      candidates.each do |ref|
         Cmd.run("podman", ["rmi", ref], timeout: 300.0)
       end
+    end
+
+    # Visible for specs: the tags a prune of `image`'s repository removes, oldest
+    # first beyond the kept count. `{{.Created}}` renders as "6 hours ago", which
+    # parses as 0 for every tag and once made the eviction pick arbitrary tags,
+    # including the just-committed image this same run was about to start from.
+    # `{{.CreatedAt}}` is RFC3339; an age that does not parse aborts the prune,
+    # because a cache cap that cannot order the tags must not guess.
+    def self.prune_candidates(listing : String, image : String, keep : Int) : Array(String)?
+      tags = listing.lines.compact_map do |line|
+        ref, created = line.split(" ", 2)
+        next unless created
+        begin
+          {ref, Time.parse_rfc3339(created)}
+        rescue Time::Format::Error
+          nil
+        end
+      end
+      return if tags.size != listing.lines.count { |line| !line.blank? }
+      tags.sort_by! { |(_, created)| -created.to_unix }
+      # The image names carry no localhost/ prefix while podman lists the full
+      # reference, so the self match has to normalize the prefix away too.
+      tags.reject! { |(ref, _)| ref == image || ref.lchop("localhost/") == image }
+      tags.skip(keep - 1).map(&.first)
     end
 
     private def image_exists?(reference : String) : Bool
