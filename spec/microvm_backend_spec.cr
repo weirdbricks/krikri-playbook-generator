@@ -25,19 +25,19 @@ module KrikriPlaybookGenerator
     end
 
     it "creates overlays that inherit the base image's size" do
-      command = MicrovmBackend.overlay_command("/base/gold.qcow2", "/work/disk.qcow2")
-      assert_equal("qemu-img create -f qcow2 -F qcow2 -b /base/gold.qcow2 /work/disk.qcow2", command)
-      refute_includes(command, " 4G ")
+      args = MicrovmBackend.overlay_args("/base/gold.qcow2", "/work/disk.qcow2")
+      assert_equal(%w[create -f qcow2 -F qcow2 -b /base/gold.qcow2 /work/disk.qcow2], args)
+      refute_includes(args.join(" "), " 4G ")
     end
 
     it "boots with slirp hostfwd on the kpg address space and a separate port from the role tester" do
-      command = MicrovmBackend.boot_command("qemu-system-x86_64", "kpg-real-1", "/w/disk.qcow2",
+      args = MicrovmBackend.boot_args("kpg-real-1", "/w/disk.qcow2",
         "/w/seed.iso", "127.90.3.1", MicrovmBackend::SSH_PORT, "/w/console.log", "/w/qemu.pid")
-      assert_includes(command, "hostfwd=tcp:127.90.3.1:#{MicrovmBackend::SSH_PORT}-:22")
-      assert_includes(command, "-enable-kvm")
-      assert_includes(command, "-M q35")
-      assert_includes(command, "-drive file=/w/disk.qcow2,if=virtio,format=qcow2")
-      assert_includes(command, "-drive file=/w/seed.iso,if=virtio,format=raw,readonly=on")
+      assert_includes(args, "-enable-kvm")
+      assert_equal("q35", args[args.index!("-M") + 1])
+      assert_includes(args, "user,model=virtio-net-pci,hostfwd=tcp:127.90.3.1:#{MicrovmBackend::SSH_PORT}-:22")
+      assert_includes(args, "file=/w/disk.qcow2,if=virtio,format=qcow2")
+      assert_includes(args, "file=/w/seed.iso,if=virtio,format=raw,readonly=on")
       refute_equal(2322, MicrovmBackend::SSH_PORT)
     end
 

@@ -218,18 +218,21 @@ module KrikriPlaybookGenerator
 
     # A fixed 4G overlay truncated Rocky's 10G cloud image, so its kernel
     # could not find its root device; overlays must inherit the base size.
-    def self.overlay_command(base : String, overlay : String) : String
-      "qemu-img create -f qcow2 -F qcow2 -b #{Process.quote(base)} #{Process.quote(overlay)}"
+    # Argument vectors, not shell strings: Cmd.run execs one binary plus
+    # argv (unlike krikri-role-tester's shell-backed Cmd), so a command line
+    # passed as argv[0] is looked up as an executable and dies File::NotFound.
+    def self.overlay_args(base : String, overlay : String) : Array(String)
+      ["create", "-f", "qcow2", "-F", "qcow2", "-b", base, overlay]
     end
 
-    def self.boot_command(qemu : String, name : String, overlay : String, seed : String,
-                          ip : String, port : Int32, console : String, pidfile : String) : String
-      "#{qemu} -enable-kvm -M q35 -cpu host -smp #{VM_CPUS} -m #{VM_MEM_MB} " \
-        "-drive file=#{Process.quote(overlay)},if=virtio,format=qcow2 " \
-        "-drive file=#{Process.quote(seed)},if=virtio,format=raw,readonly=on " \
-        "-nic user,model=virtio-net-pci,hostfwd=tcp:#{ip}:#{port}-:22 " \
-        "-display none -serial file:#{Process.quote(console)} " \
-        "-daemonize -pidfile #{Process.quote(pidfile)} -name #{Process.quote(name)}"
+    def self.boot_args(name : String, overlay : String, seed : String, ip : String, port : Int32,
+                       console : String, pidfile : String) : Array(String)
+      ["-enable-kvm", "-M", "q35", "-cpu", "host", "-smp", VM_CPUS.to_s, "-m", VM_MEM_MB.to_s,
+       "-drive", "file=#{overlay},if=virtio,format=qcow2",
+       "-drive", "file=#{seed},if=virtio,format=raw,readonly=on",
+       "-nic", "user,model=virtio-net-pci,hostfwd=tcp:#{ip}:#{port}-:22",
+       "-display", "none", "-serial", "file:#{console}",
+       "-daemonize", "-pidfile", pidfile, "-name", name]
     end
 
     # cloud-init NoCloud needs files named user-data/meta-data in the seed
@@ -388,7 +391,7 @@ module KrikriPlaybookGenerator
     private def bake(gold : String, profile : Profile) : Nil
       Log.info("microvm", "baking #{File.basename(gold)} (first use, a few minutes)")
       base = MicrovmBackend.cloud_path(@dir, profile.os)
-      created = Cmd.run(MicrovmBackend.overlay_command(base, gold), timeout: 60.0)
+      created = Cmd.run("qemu-img", MicrovmBackend.overlay_args(base, gold), timeout: 60.0)
       unless created.rc == 0
         raise MicrovmProvisionError.new("qemu-img create #{gold} failed: #{created.stderr.lines.last(3).join(" | ")}")
       end
@@ -498,7 +501,7 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir)
       Dir.mkdir_p(dir)
       overlay = File.join(dir, "disk.qcow2")
-      created = Cmd.run(MicrovmBackend.overlay_command(gold, overlay), timeout: 60.0)
+      created = Cmd.run("qemu-img", MicrovmBackend.overlay_args(gold, overlay), timeout: 60.0)
       unless created.rc == 0
         raise MicrovmProvisionError.new("qemu-img create #{name} failed: #{created.stderr.lines.last(3).join(" | ")}")
       end
@@ -513,7 +516,7 @@ module KrikriPlaybookGenerator
       Dir.mkdir_p(dir)
       console = File.join(dir, "console.log")
       pidfile = File.join(dir, "qemu.pid")
-      result = Cmd.run(MicrovmBackend.boot_command(qemu, name, overlay, seed, ip, SSH_PORT, console, pidfile),
+      result = Cmd.run(qemu, MicrovmBackend.boot_args(name, overlay, seed, ip, SSH_PORT, console, pidfile),
         timeout: 60.0)
       unless result.rc == 0
         raise MicrovmProvisionError.new("qemu start #{name} failed: #{result.stderr.lines.last(3).join(" | ")}")
