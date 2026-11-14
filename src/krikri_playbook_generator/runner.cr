@@ -198,10 +198,12 @@ module KrikriPlaybookGenerator
                    @ansible_playbook_bin : String = "ansible-playbook",
                    @krikri_bin : String = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @check_mode : Bool = true, @run_on_podman : Bool = false,
-                   @run_on_atlantic : Bool = false,
+                   @run_on_atlantic : Bool = false, @run_on_microvm : Bool = false,
+                   @run_on_mixed : Bool = false,
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120,
                    @control : Bool = false, @refresh_podman_templates : Bool = false,
-                   @podman_parallel : Int32 = 1)
+                   @podman_parallel : Int32 = 1, @microvm_dir : String = MicrovmBackend::DEFAULT_DIR,
+                   @microvm_parallel : Int32 = 1)
     end
 
     # One line per finished playbook, so a long batch shows where it is:
@@ -228,6 +230,12 @@ module KrikriPlaybookGenerator
       if @run_on_atlantic && !AtlanticBackend.available?
         raise AtlanticProvisionError.new("--run-on-atlantic was requested but the KeePass credential source isn't available")
       end
+      if @run_on_microvm && !MicrovmBackend.available?
+        raise MicrovmProvisionError.new("--run-on-microvm was requested but qemu-system-x86_64 or /dev/kvm isn't available")
+      end
+      if @run_on_mixed && !PodmanBackend.available?
+        raise PodmanProvisionError.new("--run-on-mixed was requested but `podman` isn't on PATH")
+      end
 
       Log.info("runner", "starting #{@playbook_paths.size} playbook(s) " \
                          "(backend=#{backend_label}, results=#{@results_dir})")
@@ -235,6 +243,10 @@ module KrikriPlaybookGenerator
       results = Log.phase("runner", "executing #{@playbook_paths.size} playbook(s) (#{backend_label})") do
         if @run_on_atlantic
           run_via_atlantic
+        elsif @run_on_mixed
+          run_via_mixed
+        elsif @run_on_microvm
+          run_via_microvm
         elsif @run_on_podman
           run_via_podman
         else
@@ -250,7 +262,71 @@ module KrikriPlaybookGenerator
     end
 
     private def backend_label : String
-      @run_on_atlantic ? "atlantic" : (@run_on_podman ? "podman" : "local")
+      return "atlantic" if @run_on_atlantic
+      return "microvm" if @run_on_microvm
+      return "mixed" if @run_on_mixed
+      @run_on_podman ? "podman" : "local"
+    end
+
+    # The cheap backend for each playbook: podman unless a task's module
+    # needs a real service or kernel (db, containers, misc, firewalld,
+    # SELinux), which only a microVM (or Atlantic) can host. Modules that
+    # are microvm-capable but do not need it (rpm family) stay on podman's
+    # Rocky template, which is much cheaper than a VM boot.
+    private def run_via_mixed : Array(PlaybookResult)
+      podman_paths = [] of String
+      microvm_paths = [] of String
+      microvm_ready = MicrovmBackend.available?
+      if !microvm_ready && @playbook_paths.any? { |path| MicrovmBackend.microvm_only?(load_meta(path).try(&.module_names) || [] of String) }
+        Log.info("runner", "warning: qemu-system-x86_64 or /dev/kvm is not available; service modules run on podman and will likely match-fail")
+      end
+      @playbook_paths.each do |path|
+        names = load_meta(path).try(&.module_names) || [] of String
+        if microvm_ready && MicrovmBackend.microvm_only?(names)
+          microvm_paths << path
+        else
+          podman_paths << path
+        end
+      end
+      Log.info("runner", "mixed: #{podman_paths.size} playbook(s) on podman, #{microvm_paths.size} on microvm")
+      results = [] of PlaybookResult
+      results.concat(run_via_podman(podman_paths)) unless podman_paths.empty?
+      results.concat(run_via_microvm(microvm_paths)) unless microvm_paths.empty?
+      @playbook_paths.map { |path| results.find { |result| result.playbook == path } || raise "playbook #{path} never ran" }
+    end
+
+    # Groups the batch by the golden image the playbooks need (Ubuntu or
+    # Rocky), bakes/reuses one golden per OS, then runs each playbook in its
+    # own fresh VM pair. The OS choice mirrors the podman path: rpm and
+    # SELinux modules need the Rocky image, everything else runs on Ubuntu.
+    private def run_via_microvm(paths : Array(String) = @playbook_paths) : Array(PlaybookResult)
+      return [] of PlaybookResult if paths.empty?
+      MicrovmBackend.cleanup_stale(@microvm_dir)
+      backend = MicrovmBackend.new(@krikri_bin, @engine_timeout, @microvm_dir,
+        control: @control, check_mode: @check_mode)
+      profiles = Hash(String, Array(String)).new do |hash, os|
+        hash[os] = [] of String
+      end
+      paths.each do |path|
+        names = load_meta(path).try(&.module_names) || [] of String
+        profiles[MicrovmBackend.profile_for(names)] << path
+      end
+      begin
+        profiles.each_key { |os| backend.provision(os) }
+        Log.info("runner", "microvm: running #{paths.size} playbook(s) " \
+                           "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
+        slots = Atomic(Int32).new(0)
+        Runner.in_parallel(paths, @microvm_parallel) do |path|
+          guarded(path) do
+            os = MicrovmBackend.profile_for(load_meta(path).try(&.module_names) || [] of String)
+            outcome = backend.run_playbook(path, os, slots.add(1))
+            progress(PlaybookResult.new(path, to_engine_run("ansible", outcome[:ansible]),
+              to_engine_run("krikri", outcome[:krikri]), load_meta(path)))
+          end
+        end
+      ensure
+        backend.teardown
+      end
     end
 
     # Groups the batch by Atlantic profile (via each playbook's meta sidecar
@@ -290,8 +366,9 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def run_via_podman : Array(PlaybookResult)
-      fqcns = @playbook_paths.compact_map do |path|
+    private def run_via_podman(paths : Array(String) = @playbook_paths) : Array(PlaybookResult)
+      return [] of PlaybookResult if paths.empty?
+      fqcns = paths.compact_map do |path|
         meta = load_meta(path)
         next unless meta
 
@@ -308,15 +385,15 @@ module KrikriPlaybookGenerator
         profiles = Hash(PodmanBackend::Profile, Array(String)).new do |hash, profile|
           hash[profile] = [] of String
         end
-        @playbook_paths.each do |path|
+        paths.each do |path|
           profiles[podman_profile_for(path)] << path
         end
         profiles.each_key { |profile| backend.provision(profile) }
-        profile_counts = profiles.map { |profile, paths| [profile, paths.size] }
+        profile_counts = profiles.map { |profile, batch| [profile, batch.size] }
         Log.info("runner", "podman: running #{profiles.values.sum(&.size)} playbook(s) " \
                            "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
-        profiles.flat_map do |profile, paths|
-          Runner.in_parallel(paths, @podman_parallel) do |path|
+        profiles.flat_map do |profile, batch|
+          Runner.in_parallel(batch, @podman_parallel) do |path|
             guarded(path) { progress(run_playbook_via_podman(backend, path, profile)) }
           end
         end

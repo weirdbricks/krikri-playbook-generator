@@ -46,6 +46,27 @@ module KrikriPlaybookGenerator
       assert_empty(deps.unknown?(["community.general.sudoers"]))
     end
 
+    it "derives the collection to install from a module's FQCN" do
+      assert_equal("community.general", Dependencies.collection_for("community.general.ini_file"))
+      assert_equal("ansible.posix", Dependencies.collection_for("ansible.posix.synchronize"))
+      assert_nil(Dependencies.collection_for("ansible.builtin.copy"))
+      assert_nil(Dependencies.collection_for("copy"))
+
+      deps = Dependencies.new(<<-YAML)
+        deb_modules:
+          both: [python3]
+        rpm_modules:
+          both: [python3]
+        community.general.ini_file:
+          real:
+            debian_packages: []
+        YAML
+      sets = deps.package_sets(["community.general.ini_file"])
+      assert_includes(sets.collections, "community.general")
+      assert_equal(["community.general"], deps.package_sets(["ansible.builtin.copy"]).collections.empty? ? ["community.general"] : [] of String,
+        "core modules must not add a collection install")
+    end
+
     it "supported_module_names filters the ansible-doc listing to installed ones" do
       listing = JSON.parse(%({"community.general.sudoers": {}, "ansible.builtin.copy": {}, "ansible.builtin.apt": {}}))
       names = SchemaScanner.supported_module_names(listing, ["community.general.sudoers", "community.general.missing"])

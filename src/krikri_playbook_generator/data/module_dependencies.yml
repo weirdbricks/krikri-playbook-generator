@@ -57,6 +57,463 @@ rpm_modules:
   # Debian pair (see the comment there): both engines run pip on the target.
   krikri: [python3-pip]
 
+
+# Per-module entries for the collections krikri implements. The real engine
+# needs the module's own python library and the collection itself (the
+# `collections` key feeds ansible-galaxy on the real side); krikri speaks the
+# protocol/file format natively and usually needs only the system binary.
+# Names are the Debian/Ubuntu and RPM spellings of the same requirement; a
+# package that does not exist fails the template build loudly, which is the
+# signal to correct the entry.
+
+ansible.posix.acl:
+  both:
+    debian_packages: [acl]
+    rpm_packages: [acl]
+ansible.posix.firewalld:
+  real:
+    debian_packages: [python3-firewall]
+    rpm_packages: [python3-firewall]
+    collections: [ansible.posix]
+  both:
+    debian_packages: [firewalld]
+    rpm_packages: [firewalld]
+ansible.posix.firewalld_info:
+  real:
+    debian_packages: [python3-firewall]
+    rpm_packages: [python3-firewall]
+    collections: [ansible.posix]
+  both:
+    debian_packages: [firewalld]
+    rpm_packages: [firewalld]
+ansible.posix.mount:
+  real:
+    collections: [ansible.posix]
+ansible.posix.seboolean:
+  both:
+    debian_packages: [policycoreutils, python3-selinux]
+    rpm_packages: [policycoreutils, libselinux-utils, python3-libselinux]
+  real:
+    collections: [ansible.posix]
+ansible.posix.selinux:
+  both:
+    debian_packages: [policycoreutils, python3-selinux]
+    rpm_packages: [policycoreutils, libselinux-utils, python3-libselinux]
+  real:
+    collections: [ansible.posix]
+ansible.posix.synchronize:
+  both:
+    debian_packages: [rsync]
+    rpm_packages: [rsync]
+  real:
+    collections: [ansible.posix]
+ansible.posix.sysctl:
+  both:
+    debian_packages: [procps]
+    rpm_packages: [procps-ng]
+  real:
+    collections: [ansible.posix]
+ansible.posix.authorized_key:
+  real:
+    collections: [ansible.posix]
+
+community.general.alternatives:
+  real:
+    collections: [community.general]
+community.general.apache2_module:
+  both:
+    debian_packages: [apache2]
+    rpm_packages: [httpd]
+  real:
+    collections: [community.general]
+community.general.capabilities:
+  both:
+    debian_packages: [libcap2-bin]
+    rpm_packages: [libcap]
+  real:
+    collections: [community.general]
+community.general.cpanm:
+  both:
+    debian_packages: [cpanminus, gcc]
+    rpm_packages: [perl-App-cpanminus, gcc]
+  real:
+    collections: [community.general]
+community.general.dnf_versionlock:
+  real:
+    rpm_packages: [python3-dnf-plugin-versionlock]
+    collections: [community.general]
+  krikri:
+    rpm_packages: [python3-dnf-plugin-versionlock]
+community.general.easy_install:
+  both:
+    debian_packages: [python3-setuptools]
+    rpm_packages: [python3-setuptools]
+  real:
+    collections: [community.general]
+community.general.filesystem:
+  both:
+    debian_packages: [e2fsprogs, xfsprogs]
+    rpm_packages: [e2fsprogs, xfsprogs]
+  real:
+    collections: [community.general]
+community.general.gem:
+  both:
+    debian_packages: [ruby]
+    rpm_packages: [ruby]
+  real:
+    collections: [community.general]
+community.general.htpasswd:
+  both:
+    debian_packages: [apache2-utils]
+    rpm_packages: [httpd-tools]
+  real:
+    collections: [community.general]
+community.general.java_cert:
+  both:
+    debian_packages: [default-jre-headless]
+    rpm_packages: [java-17-openjdk-headless]
+  real:
+    collections: [community.general]
+community.general.kernel_blacklist:
+  both:
+    debian_packages: [kmod]
+    rpm_packages: [kmod]
+  real:
+    collections: [community.general]
+community.general.locale_gen:
+  both:
+    debian_packages: [locales]
+  real:
+    collections: [community.general]
+community.general.lvg:
+  both:
+    debian_packages: [lvm2]
+    rpm_packages: [lvm2]
+  real:
+    collections: [community.general]
+community.general.lvol:
+  both:
+    debian_packages: [lvm2]
+    rpm_packages: [lvm2]
+  real:
+    collections: [community.general]
+community.general.make:
+  both:
+    debian_packages: [make, gcc]
+    rpm_packages: [make, gcc]
+  real:
+    collections: [community.general]
+community.general.modprobe:
+  both:
+    debian_packages: [kmod]
+    rpm_packages: [kmod]
+  real:
+    collections: [community.general]
+community.general.npm:
+  both:
+    debian_packages: [nodejs, npm]
+    rpm_packages: [nodejs, npm]
+  real:
+    collections: [community.general]
+community.general.nsupdate:
+  real:
+    debian_packages: [python3-dnspython]
+    rpm_packages: [python3-dns]
+    collections: [community.general]
+  both:
+    debian_packages: [bind9utils]
+    rpm_packages: [bind-utils]
+community.general.pam_limits:
+  both:
+    debian_packages: [libpam-modules]
+    rpm_packages: [pam]
+  real:
+    collections: [community.general]
+community.general.pamd:
+  both:
+    debian_packages: [libpam-runtime]
+    rpm_packages: [pam]
+  real:
+    collections: [community.general]
+community.general.parted:
+  both:
+    debian_packages: [parted]
+    rpm_packages: [parted]
+  real:
+    collections: [community.general]
+community.general.sefcontext:
+  both:
+    debian_packages: [policycoreutils, python3-selinux]
+    rpm_packages: [policycoreutils-python-utils, python3-libselinux]
+  real:
+    collections: [community.general]
+community.general.seport:
+  both:
+    debian_packages: [policycoreutils, python3-selinux]
+    rpm_packages: [policycoreutils-python-utils, python3-libselinux]
+  real:
+    collections: [community.general]
+community.general.snap:
+  both:
+    debian_packages: [snapd]
+  real:
+    collections: [community.general]
+community.general.timezone:
+  both:
+    debian_packages: [tzdata]
+    rpm_packages: [tzdata]
+  real:
+    collections: [community.general]
+community.general.ufw:
+  both:
+    debian_packages: [ufw]
+    rpm_packages: [ufw]
+  real:
+    collections: [community.general]
+community.general.xml:
+  real:
+    debian_packages: [python3-lxml]
+    rpm_packages: [python3-lxml]
+    collections: [community.general]
+community.general.yum_versionlock:
+  real:
+    rpm_packages: [python3-dnf-plugin-versionlock]
+    collections: [community.general]
+  krikri:
+    rpm_packages: [python3-dnf-plugin-versionlock]
+community.general.zfs:
+  both:
+    debian_packages: [zfsutils-linux]
+  real:
+    collections: [community.general]
+
+ansible.mysql.mysql_db:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [ansible.mysql]
+  both:
+    debian_packages: [mariadb-client]
+ansible.mysql.mysql_info:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [ansible.mysql]
+  both:
+    debian_packages: [mariadb-client]
+ansible.mysql.mysql_query:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [ansible.mysql]
+  both:
+    debian_packages: [mariadb-client]
+ansible.mysql.mysql_user:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [ansible.mysql]
+  both:
+    debian_packages: [mariadb-client]
+community.mysql.mysql_db:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [community.mysql]
+  both:
+    debian_packages: [mariadb-client]
+community.mysql.mysql_info:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [community.mysql]
+  both:
+    debian_packages: [mariadb-client]
+community.mysql.mysql_query:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [community.mysql]
+  both:
+    debian_packages: [mariadb-client]
+community.mysql.mysql_user:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [community.mysql]
+  both:
+    debian_packages: [mariadb-client]
+community.mysql.mysql_variables:
+  real:
+    debian_packages: [python3-pymysql]
+    collections: [community.mysql]
+  both:
+    debian_packages: [mariadb-client]
+community.postgresql.postgresql_db:
+  real:
+    debian_packages: [python3-psycopg2]
+    collections: [community.postgresql]
+  both:
+    debian_packages: [postgresql-client]
+community.postgresql.postgresql_privs:
+  real:
+    debian_packages: [python3-psycopg2]
+    collections: [community.postgresql]
+  both:
+    debian_packages: [postgresql-client]
+community.postgresql.postgresql_query:
+  real:
+    debian_packages: [python3-psycopg2]
+    collections: [community.postgresql]
+  both:
+    debian_packages: [postgresql-client]
+community.postgresql.postgresql_user:
+  real:
+    debian_packages: [python3-psycopg2]
+    collections: [community.postgresql]
+  both:
+    debian_packages: [postgresql-client]
+
+community.rabbitmq.rabbitmq_plugin:
+  real:
+    debian_packages: [python3-pika]
+    collections: [community.rabbitmq]
+  both:
+    debian_packages: [rabbitmq-server]
+community.rabbitmq.rabbitmq_user:
+  real:
+    debian_packages: [python3-pika]
+    collections: [community.rabbitmq]
+  both:
+    debian_packages: [rabbitmq-server]
+
+community.crypto.openssl_privatekey:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_privatekey_info:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_publickey:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_publickey_info:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_csr:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_csr_info:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_dhparam:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssl_pkcs12:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.x509_certificate:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.x509_certificate_info:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.get_certificate:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssl]
+community.crypto.openssh_keypair:
+  real:
+    debian_packages: [python3-cryptography]
+    collections: [community.crypto]
+  both:
+    debian_packages: [openssh-client]
+    rpm_packages: [openssh-clients]
+
+community.docker.docker_image:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+community.docker.docker_image_build:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+community.docker.docker_container:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+community.docker.docker_login:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+community.docker.docker_network:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+community.docker.docker_network_info:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+community.docker.docker_compose_v2:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io, docker-compose-v2]
+community.docker.current_container_facts:
+  real:
+    debian_packages: [python3-docker]
+    collections: [community.docker]
+  both:
+    debian_packages: [docker.io]
+containers.podman.podman_image:
+  real:
+    collections: [containers.podman]
+  both:
+    debian_packages: [podman]
+    rpm_packages: [podman]
+containers.podman.podman_container:
+  real:
+    collections: [containers.podman]
+  both:
+    debian_packages: [podman]
+    rpm_packages: [podman]
+
 # Example entry, kept empty-list valid YAML to document the schema:
 # community.general.sudoers:
 #   real:

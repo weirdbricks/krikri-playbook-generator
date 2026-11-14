@@ -55,3 +55,56 @@ module KrikriPlaybookGenerator
     end
   end
 end
+
+module KrikriPlaybookGenerator
+  describe SchemaScanner do
+    it "keeps a krikri module that ansible-doc can resolve and drops the ones it cannot" do
+      listing = JSON.parse(%({"ansible.builtin.copy": {}, "ansible.builtin.apt": {},
+                              "ansible.posix.synchronize": {}, "community.crypto.openssl_privatekey": {}}))
+      names = SchemaScanner.names_from_listing(listing, %w[
+        ansible.posix.synchronize community.crypto.openssl_privatekey ansible.builtin.py_module virt_net
+      ])
+      assert_includes(names, "ansible.posix.synchronize")
+      assert_includes(names, "community.crypto.openssl_privatekey")
+      refute_includes(names, "py_module")
+      refute_includes(names, "virt_net")
+      assert_includes(names, "copy")
+    end
+
+    it "excludes modules the harness cannot exercise even when krikri implements them" do
+      listing = JSON.parse(%({"ansible.builtin.copy": {},
+                              "amazon.aws.ec2_instance": {}, "amazon.aws.iam_user_info": {}}))
+      names = SchemaScanner.names_from_listing(listing, %w[
+        amazon.aws.ec2_instance amazon.aws.iam_user_info
+      ])
+      refute_includes(names, "amazon.aws.ec2_instance")
+      refute_includes(names, "amazon.aws.iam_user_info")
+    end
+
+    it "maps krikri's bare virt_net spelling to the collection FQCN ansible-doc can scan" do
+      assert_equal("community.libvirt.virt_net", SchemaScanner::SCOPE_ALIASES["virt_net"])
+    end
+
+    it "reads the supported-module list from the engine binary" do
+      bin = File.tempname("kpg-scope-bin")
+      File.write(bin, <<-SH)
+        #!/bin/sh
+        printf '["ansible.builtin.copy","ansible.posix.synchronize","virt_net"]'
+      SH
+      File.chmod(bin, 0o755)
+      assert_equal(%w[ansible.builtin.copy ansible.posix.synchronize community.libvirt.virt_net],
+        SchemaScanner.krikri_module_names(bin))
+    ensure
+      File.delete(bin) if bin
+    end
+
+    it "yields no scope when the engine binary cannot list modules" do
+      bin = File.tempname("kpg-scope-bad")
+      File.write(bin, "#!/bin/sh\necho 'unknown option' >&2\nexit 1\n")
+      File.chmod(bin, 0o755)
+      assert_equal([] of String, SchemaScanner.krikri_module_names(bin))
+    ensure
+      File.delete(bin) if bin
+    end
+  end
+end

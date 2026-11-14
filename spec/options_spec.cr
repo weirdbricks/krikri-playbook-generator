@@ -113,6 +113,41 @@ module KrikriPlaybookGenerator
       assert(opts.run_on_podman?)
     end
 
+    it "parses --run-on-microvm and its parallel/dir flags" do
+      opts = Options.parse(["run", "--run-on-microvm", "--microvm-parallel", "3", "--microvm-dir", "/tmp/kpg-vm"])
+      assert(opts.run_on_microvm?)
+      assert_equal(3, opts.microvm_parallel)
+      assert_equal("/tmp/kpg-vm", opts.microvm_dir)
+    end
+
+    it "refuses --microvm-parallel without --run-on-microvm" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--microvm-parallel", "2"]) }
+      assert((err.message || "").includes?("--microvm-parallel"))
+    end
+
+    it "refuses two run backends at once" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--run-on-microvm"]) }
+      assert((err.message || "").includes?("only one"))
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-mixed", "--run-on-microvm"]) }
+      assert((err.message || "").includes?("only one"))
+    end
+
+    it "parses --run-on-mixed and keeps podman flags usable with it" do
+      opts = Options.parse(["run", "--run-on-mixed", "--podman-parallel", "2"])
+      assert(opts.run_on_mixed?)
+      assert_equal(2, opts.podman_parallel)
+      refute(Options.check_mode(opts))
+    end
+
+    it "allows --control with a microvm backend" do
+      assert(Options.parse(["run", "--run-on-microvm", "--control"]).control?)
+    end
+
+    it "parses --scope-from-krikri" do
+      refute(Options.parse(["modules"]).scope_from_krikri?)
+      assert(Options.parse(["modules", "--scope-from-krikri"]).scope_from_krikri?)
+    end
+
     it "expands a tilde --out to an absolute path under the real HOME" do
       opts = Options.parse(["generate", "--out", "~/foo/kpg"])
       home = ENV["HOME"]

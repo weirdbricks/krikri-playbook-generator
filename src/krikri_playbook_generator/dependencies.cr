@@ -46,6 +46,12 @@ module KrikriPlaybookGenerator
       krikri_rpm += union_entries(module_fqcns, "krikri_rpm")
       python = union_entries(module_fqcns, "python") + union_entries(module_fqcns, "real_python")
       collections = union_entries(module_fqcns, "collections") + union_entries(module_fqcns, "real_collections")
+      # The real engine resolves a module through its collection, so a
+      # module's FQCN already names the collection that must be installed;
+      # deriving it here means a new module in the scope works without a
+      # hand-written `collections:` entry (forgetting one turned every task
+      # of that module into a "couldn't resolve module/action" harness gap).
+      collections += module_fqcns.compact_map { |fqcn| Dependencies.collection_for(fqcn) }
 
       PackageSets.new(
         real_debian.uniq!, krikri_debian.uniq!,
@@ -60,6 +66,16 @@ module KrikriPlaybookGenerator
       real = (base["real"]? || [] of String) + (base["both"]? || [] of String)
       krikri = (base["krikri"]? || [] of String) + (base["both"]? || [] of String)
       {real, krikri}
+    end
+
+    # `community.general.ini_file` -> `community.general`; nil for the core
+    # namespace (bundled with ansible-core) and for bare module names.
+    def self.collection_for(fqcn : String) : String?
+      parts = fqcn.split('.')
+      return if parts.size < 3
+      namespace = parts[0, 2].join('.')
+      return if namespace == "ansible.builtin" || namespace == "ansible.legacy"
+      namespace
     end
 
     private def union_entries(module_fqcns : Array(String), key : String) : Array(String)

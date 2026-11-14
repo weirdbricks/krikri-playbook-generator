@@ -17,10 +17,12 @@ module KrikriPlaybookGenerator
       playbooks = playbook_paths_for_run(opts)
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, check_mode: Options.check_mode(opts), run_on_podman: opts.run_on_podman?,
-        run_on_atlantic: opts.run_on_atlantic?,
+        run_on_atlantic: opts.run_on_atlantic?, run_on_microvm: opts.run_on_microvm?,
+        run_on_mixed: opts.run_on_mixed?,
         keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
         refresh_podman_templates: opts.refresh_podman_templates?,
-        podman_parallel: opts.podman_parallel).run
+        podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
+        microvm_parallel: opts.microvm_parallel).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -35,7 +37,7 @@ module KrikriPlaybookGenerator
         0
       end
     in Command::Modules
-      print_module_scope(json: opts.json?)
+      print_module_scope(json: opts.json?, opts: opts)
     end
   rescue e : InvalidOptionsError
     STDERR.puts "error: #{e.message}"
@@ -55,13 +57,23 @@ module KrikriPlaybookGenerator
   rescue e : AtlanticProvisionError
     STDERR.puts "error: #{e.message}"
     1
+  rescue e : MicrovmProvisionError
+    STDERR.puts "error: #{e.message}"
+    1
   end
 
   # The default scope (ansible.builtin core + promoted supported FQCNs),
   # for callers that need the list without scanning it - krikri-loop
   # builds its kpg rotation from this instead of hand-duplicating it.
-  private def self.print_module_scope(json : Bool) : Int32
-    scope = SchemaScanner.default_module_names
+  # `--scope-from-krikri` widens it to everything the engine itself reports,
+  # so the rotation reaches the collection modules krikri implements instead
+  # of only the ansible.builtin core.
+  private def self.print_module_scope(json : Bool, opts : Options) : Int32
+    extra = opts.scope_from_krikri? ? SchemaScanner.krikri_module_names(opts.krikri_bin) : [] of String
+    if opts.scope_from_krikri? && extra.empty?
+      STDERR.puts "warning: #{opts.krikri_bin.inspect} reported no supported modules (no --list-modules support?); scope stays core-only"
+    end
+    scope = SchemaScanner.default_module_names(Dependencies.load.supported + extra)
     puts scope.to_json if json
     scope.each { |name| puts name } unless json
     0

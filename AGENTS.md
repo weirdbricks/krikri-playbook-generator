@@ -206,6 +206,23 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   checkout's last build-input commit`. Every probe is best-effort (30s
   timeout, `"unavailable"` on failure, never fails the run); the command
   runner is injectable as a `Proc` so the spec can fake it.
+- `src/krikri_playbook_generator/microvm_backend.cr` — `MicrovmBackend`.
+  **Implemented**: the local KVM backend for modules a plain container
+  cannot host (db, docker/podman, zfs/snap/rabbitmq/libvirt/nsupdate,
+  firewalld/SELinux). It bakes ONE golden per OS — Ubuntu 24.04 minimal
+  and Rocky 9 cloud images — keyed by the dependency table's package
+  union plus the profile prep (`fingerprint`), installs the pinned
+  ansible-core and the collections the real engine needs, then boots two
+  throwaway qcow2 overlays per playbook (one VM per engine, so no state
+  can leak between the engine runs) on `127.90.<slot>.1/.2` with sshd
+  published on 2422 and stages the krikri binary over scp. `--run-on-mixed`
+  routes a batch here per playbook (`MicrovmBackend.microvm_only?`) and
+  keeps everything else on podman; `--run-on-microvm` forces it for the
+  whole batch. A golden without its `.ok` marker is discarded and re-baked
+  (a bake that died leaves the file behind). Missing optional packages
+  warn instead of failing the bake, so one bad entry cannot cost the whole
+  profile; the golden is never shared with the role tester's backend
+  (different image set, and its bake lock is per process).
 - `src/krikri_playbook_generator/podman_backend.cr` — `PodmanBackend`.
   **Implemented (v0.0.8, rewritten for isolation)**: provisions ONE
   template pair from `docker.io/library/debian:trixie-slim`
@@ -317,11 +334,21 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   and `report`); a `--min-happy-success` gate violation exits 1, as do
   tool errors. Plain `run` still supports
   `--run-on-podman` on its own, for re-running an already-generated
-  `--out` directory. `Command::Modules` prints the default scope —
+  `--out` directory; `--run-on-microvm` does the same with the local KVM
+  backend, and `--run-on-mixed` splits the batch (podman unless a module
+  needs a service/kernel). `Command::Modules` prints the default scope —
   ansible.builtin core plus the promoted `supported:` FQCNs, read from
   the same installed `ansible-doc` listing `scan` uses (`SchemaScanner.default_module_names`)
-  — as one name per line, or one JSON array with `--json`; krikri-loop
-  sources its kpg rotation from it instead of hand-duplicating the list.
+  — as one name per line, or one JSON array with `--json`. With
+  `--scope-from-krikri` the listing also includes every module the
+  `--krikri-bin` binary reports through its own `--list-modules`, filtered
+  to what `ansible-doc` can actually scan; that is the scope krikri-loop
+  uses, so the rotation follows the engine's registry instead of a
+  hand-kept list. Modules the harness can never exercise (AWS credentials,
+  macOS homebrew, krikri's internal `py_module`) are dropped by
+  `SCOPE_EXCLUDED`; the bare `virt_net` alias is mapped to
+  `community.libvirt.virt_net` by `SCOPE_ALIASES` so ansible-doc can find
+  it.
   Exit code 0 (a failed `ansible-doc --list` is a tool error, exit 1).
 
 Every stub is now implemented (`Options`, `Preflight`, `SchemaScanner`,
@@ -374,6 +401,14 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   slower to provision than a plain local `--check` run and needs `podman`
   installed; the person running this tool chooses when that tradeoff is
   worth it. Don't make `PodmanBackend.available?` alone flip the default.
+- **Per-playbook isolation on the microVM path is a hard requirement too** —
+  every playbook gets a fresh overlay per engine derived from the profile
+  golden. Never reuse one VM for both engines: the first engine's files
+  and services would be visible to the second, which turns an idempotent
+  module into a false divergence. The goldens are keyed by the dependency
+  fingerprint, so changing a module's packages or the prep rebakes exactly
+  once; never bake per batch, or a six-module rotation pays minutes of
+  bake per cycle.
 - **Per-playbook isolation on the podman path is a hard requirement** —
   every playbook runs in a fresh container pair from the committed
   template images; never go back to reusing one container pair across a
@@ -397,7 +432,10 @@ Documented deliberately, not silently:
 - Atlantic.net batches only cover the modules listed in
   `AtlanticBackend::PROFILE_FOR_MODULE` (rpm/db/containers/misc); an
   unlisted module is refused, not run somewhere that cannot satisfy its
-  happy path, so widening that coverage means adding a profile.
+  happy path, so widening that coverage means adding a profile. The local
+  microVM backend (`--run-on-microvm`/`--run-on-mixed`) now hosts exactly
+  those service modules for free, so Atlantic is only needed for
+  infrastructure this machine cannot virtualize.
 - `PodmanBackend` installs a UNION dependency set (base lists plus
   `Dependencies#supported`'s extras) rather than podman-diff's dozens
   of per-module installs gated on a hand-picked case list — a randomly

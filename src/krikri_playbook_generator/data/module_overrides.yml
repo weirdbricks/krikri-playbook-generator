@@ -827,6 +827,33 @@ modules:
   reboot:
     not_applicable: true
 
+  # Not exercisable by this harness at all: the AWS modules need cloud
+  # credentials and a live account, homebrew is macOS-only, and py_module
+  # is krikri's own module runner (real ansible has no counterpart to
+  # compare against). SchemaScanner::SCOPE_EXCLUDED keeps them out of the
+  # derived scope; these entries keep a --all-modules batch from counting
+  # them as wasted coverage.
+  ec2_ami_info:
+    not_applicable: true
+  ec2_instance:
+    not_applicable: true
+  ec2_key:
+    not_applicable: true
+  ec2_metadata_facts:
+    not_applicable: true
+  ec2_security_group:
+    not_applicable: true
+  ec2_vpc_net_info:
+    not_applicable: true
+  ec2_vpc_subnet_info:
+    not_applicable: true
+  iam_user_info:
+    not_applicable: true
+  homebrew:
+    not_applicable: true
+  py_module:
+    not_applicable: true
+
   # apt_repository's `repo` is its free-form line; a random word is not a
   # valid deb line. `update_cache` defaults to TRUE in the module's
   # argument_spec, so it must be turned off explicitly or every happy path

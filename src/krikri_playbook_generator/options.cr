@@ -25,6 +25,7 @@ module KrikriPlaybookGenerator
     property modules : Array(String)?
     property? all_modules : Bool
     property? supported_community : Bool
+    property? scope_from_krikri : Bool
     property seed : Int32
     property count : Int32
     property chaos_percentage : Float64
@@ -38,27 +39,33 @@ module KrikriPlaybookGenerator
     property? check : Bool
     property? run_on_podman : Bool
     property? run_on_atlantic : Bool
+    property? run_on_microvm : Bool
+    property? run_on_mixed : Bool
     property? keep_going : Bool
     property? control : Bool
     property? json : Bool
     property? refresh_podman_templates : Bool
     property podman_parallel : Int32
+    property microvm_parallel : Int32
+    property microvm_dir : String
     property engine_timeout : Int32
     property min_happy_success : Float64?
     property tasks_per_playbook : Int32
     property? seed_given : Bool
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
-                   @supported_community = false,
+                   @supported_community = false, @scope_from_krikri = false,
                    @chaos_percentage = 0.0, @chaos_kinds = %w[typo hallucinate wrong-type bad-choice violate-constraint jinja],
                    @out_dir = "playbooks/", @results_dir = "~/scratch/mfz-results",
                    @atlantic_hosts = 22, @ansible_playbook_bin = "ansible-playbook",
                    @krikri_bin = "/home/labros/git_work/krikri/bin/krikri-playbook",
                    @allow_mutation = false, @check = false, @run_on_podman = false,
-                   @run_on_atlantic = false,
+                   @run_on_atlantic = false, @run_on_microvm = false, @run_on_mixed = false,
                    @keep_going = false, @engine_timeout = 120, @control = false,
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
-                   @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1)
+                   @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
+                   @microvm_parallel = 1,
+                   @microvm_dir = "/home/labros/.local/share/krikri-playbook-generator/microvm")
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -80,6 +87,7 @@ module KrikriPlaybookGenerator
         dsl.on("--modules LIST", "comma-separated module names") { |v| opts.modules = v.split(',') }
         dsl.on("--all-modules", "scan every installed module, collections included (default: ansible.builtin core only)") { opts.all_modules = true }
         dsl.on("--supported-community", "also scan the community modules chosen for support (data/module_dependencies.yml: supported)") { opts.supported_community = true }
+        dsl.on("--scope-from-krikri", "add every module the --krikri-bin binary reports (--list-modules) to the modules scope, so kpg covers everything the engine implements") { opts.scope_from_krikri = true }
         dsl.on("--seed N", "RNG seed (default: a fresh random seed, echoed in the log and in each playbook's first-line comment)") do |v|
           opts.seed = parse_int(v, "--seed")
           opts.seed_given = true
@@ -96,6 +104,10 @@ module KrikriPlaybookGenerator
         dsl.on("--check", "run the engines with --check (podman runs are real by default; local runs already default to --check --diff)") { opts.check = true }
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
         dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
+        dsl.on("--run-on-microvm", "run each playbook in a fresh local KVM microVM pair (requires qemu-system-x86_64 and /dev/kvm)") { opts.run_on_microvm = true }
+        dsl.on("--run-on-mixed", "podman for the playbooks its containers can host, microVM for the ones needing a service/kernel (db, docker, zfs, firewalld, selinux)") { opts.run_on_mixed = true }
+        dsl.on("--microvm-dir DIR", "state dir for the microvm goldens, cloud images and run records (default: ~/.local/share/krikri-playbook-generator/microvm)") { |v| opts.microvm_dir = expand_path(v) }
+        dsl.on("--microvm-parallel N", "run N playbooks at once on microvm, each in its own VM pair (default: 1)") { |v| opts.microvm_parallel = parse_int(v, "--microvm-parallel") }
         dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }
         dsl.on("--refresh-podman-templates", "ignore the podman template image cache and rebuild the templates from scratch") { opts.refresh_podman_templates = true }
         dsl.on("--podman-parallel N", "run N playbooks at once on podman, each in its own container pair (default: 1)") { |v| opts.podman_parallel = parse_int(v, "--podman-parallel") }
@@ -117,6 +129,7 @@ module KrikriPlaybookGenerator
       opts.results_dir = expand_path(rest.first) if opts.command.report? && !rest.empty?
       opts.out_dir = expand_path(opts.out_dir)
       opts.results_dir = expand_path(opts.results_dir)
+      opts.microvm_dir = expand_path(opts.microvm_dir)
 
       check_conflicts!(opts)
       parse_chaos_kinds(opts.chaos_kinds)
@@ -129,7 +142,7 @@ module KrikriPlaybookGenerator
     # runs are real by default), local runs stay --check --diff unless
     # --allow-mutation, and atlantic runs are always real.
     def self.check_mode(opts : Options) : Bool
-      opts.check? || (!opts.run_on_podman? && !opts.run_on_atlantic? && !opts.allow_mutation?)
+      opts.check? || (!opts.run_on_podman? && !opts.run_on_atlantic? && !opts.run_on_microvm? && !opts.run_on_mixed? && !opts.allow_mutation?)
     end
 
     private def self.check_conflicts!(opts : Options) : Nil
@@ -146,10 +159,12 @@ module KrikriPlaybookGenerator
 
     # The flags that only make sense for (or contradict) --run-on-podman.
     private def self.check_podman_conflicts!(opts : Options) : Nil
-      raise InvalidOptionsError.new("--run-on-podman and --run-on-atlantic are mutually exclusive") if opts.run_on_podman? && opts.run_on_atlantic?
-      raise InvalidOptionsError.new("--control needs --run-on-podman") if opts.control? && !opts.run_on_podman?
-      raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman?
-      raise InvalidOptionsError.new("--podman-parallel needs --run-on-podman") if opts.podman_parallel > 1 && !opts.run_on_podman?
+      runners = [opts.run_on_podman?, opts.run_on_atlantic?, opts.run_on_microvm?, opts.run_on_mixed?].count(true)
+      raise InvalidOptionsError.new("only one of --run-on-podman/--run-on-atlantic/--run-on-microvm may be given") if runners > 1
+      raise InvalidOptionsError.new("--control needs a backend (--run-on-podman, --run-on-microvm or --run-on-mixed)") if opts.control? && !opts.run_on_podman? && !opts.run_on_microvm? && !opts.run_on_mixed?
+      raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman? && !opts.run_on_mixed?
+      raise InvalidOptionsError.new("--podman-parallel needs --run-on-podman") if opts.podman_parallel > 1 && !opts.run_on_podman? && !opts.run_on_mixed?
+      raise InvalidOptionsError.new("--microvm-parallel needs --run-on-microvm") if opts.microvm_parallel > 1 && !opts.run_on_microvm?
     end
 
     # Check mode and real mutation are opposite run modes, and an
@@ -160,6 +175,9 @@ module KrikriPlaybookGenerator
     end
 
     private def self.check_scope_conflicts!(opts : Options) : Nil
+      if opts.scope_from_krikri? && !opts.command.modules?
+        raise InvalidOptionsError.new("--scope-from-krikri is only valid with the modules command")
+      end
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
@@ -170,7 +188,7 @@ module KrikriPlaybookGenerator
     private def self.check_happy_gate_target!(opts : Options) : Nil
       return unless opts.min_happy_success
 
-      usable = opts.command.report? || (opts.command.generate? && (opts.run_on_podman? || opts.run_on_atlantic?))
+      usable = opts.command.report? || (opts.command.generate? && (opts.run_on_podman? || opts.run_on_atlantic? || opts.run_on_microvm? || opts.run_on_mixed?))
       return if usable
 
       raise InvalidOptionsError.new("--min-happy-success needs a report, or a generate that runs a backend (--run-on-podman/--run-on-atlantic)")
@@ -196,6 +214,7 @@ module KrikriPlaybookGenerator
       raise InvalidOptionsError.new("--tasks-per-playbook must be a positive integer, got #{opts.tasks_per_playbook}") if opts.tasks_per_playbook < 1
       raise InvalidOptionsError.new("--engine-timeout must be a positive integer, got #{opts.engine_timeout}") if opts.engine_timeout <= 0
       raise InvalidOptionsError.new("--podman-parallel must be a positive integer, got #{opts.podman_parallel}") if opts.podman_parallel < 1
+      raise InvalidOptionsError.new("--microvm-parallel must be a positive integer, got #{opts.microvm_parallel}") if opts.microvm_parallel < 1
       unless opts.chaos_percentage.in?(0.0..100.0)
         raise InvalidOptionsError.new("--chaos-percentage must be between 0 and 100, got #{opts.chaos_percentage}")
       end
