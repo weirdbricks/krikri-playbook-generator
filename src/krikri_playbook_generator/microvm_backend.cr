@@ -52,9 +52,13 @@ module KrikriPlaybookGenerator
 
     DEFAULT_DIR = File.expand_path("~/.local/share/krikri-playbook-generator/microvm", home: true)
 
+    # Rocky 10, not 9: the goldens carry the same pinned ansible-core the
+    # podman rpm template and Atlantic's rpm profile use, and Rocky 9's
+    # Python 3.9 cannot install it. Rocky 10 is also the release those two
+    # backends already run, so an rpm module's behaviour matches.
     CLOUD_IMAGES = {
       "ubuntu" => "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img",
-      "rocky"  => "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
+      "rocky"  => "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
     }
 
     BASE_PACKAGES = {
@@ -256,9 +260,9 @@ module KrikriPlaybookGenerator
     end
 
     def self.ssh_options(key_path : String) : Array(String)
-      ["-i", key_path, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-       "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=15",
-       "-o", "ConnectionAttempts=6", "-o", "ServerAliveInterval=30"]
+      ["-p", SSH_PORT.to_s, "-i", key_path, "-o", "IdentitiesOnly=yes",
+       "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+       "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=6", "-o", "ServerAliveInterval=30"]
     end
 
     # The engine command inside the VM: identical for both engines, run from
@@ -344,6 +348,16 @@ module KrikriPlaybookGenerator
     @bench_key : String?
     @krikri_tar : String?
 
+    # Test/debug override: a bake that cannot reach sshd is a slow failure,
+    # so the wait is tunable without rebuilding while diagnosing one.
+    private def boot_secs : Int32
+      ENV["KPG_MICROVM_BOOT_SECS"]?.try(&.to_i?) || BOOT_SECS
+    end
+
+    private def bake_secs : Int32
+      ENV["KPG_MICROVM_BAKE_SECS"]?.try(&.to_i?) || BAKE_SECS
+    end
+
     private def work_dir : String
       @work_dir ||= begin
         path = File.join(@dir, "work-#{Process.pid}")
@@ -399,7 +413,7 @@ module KrikriPlaybookGenerator
       seed = write_seed("bake-#{profile.os}", profile.os, "kpg-bake-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-bake-#{profile.os}", BAKE_ADDR, File.join(work_dir, "bake"))
       begin
-        wait_ssh(vm, BAKE_SECS)
+        wait_ssh(vm, bake_secs)
         install_golden_packages(vm, profile)
         run_prep(vm, profile)
         seed_fixtures(vm)
@@ -420,7 +434,7 @@ module KrikriPlaybookGenerator
       seed = write_seed("verify-#{profile.os}", profile.os, "kpg-verify-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-verify-#{profile.os}", BAKE_ADDR, File.join(work_dir, "verify"))
       begin
-        wait_ssh(vm, BOOT_SECS)
+        wait_ssh(vm, boot_secs)
         assert_ansible_version(vm)
       ensure
         stop_vm(vm) rescue nil
@@ -429,6 +443,9 @@ module KrikriPlaybookGenerator
 
     private def install_golden_packages(vm : Vm, profile : Profile) : Nil
       failures = [] of String
+      # The staged binary and the per-playbook workdir are created here so
+      # every boot from the golden already has them.
+      run_script(vm, "mkdir -p /work /opt/krikri/bin", 60.0)
       index = profile.os == "rocky" ? "dnf makecache -q 2>/dev/null || true" : "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq"
       run_script(vm, index, 900.0)
       install_cmd = profile.os == "rocky" ? "dnf install -y -q" : "apt-get install -y -qq --no-install-recommends"
@@ -446,12 +463,20 @@ module KrikriPlaybookGenerator
     end
 
     private def install_ansible(vm : Vm, profile : Profile) : Nil
-      script = "pip3 install --quiet #{ANSIBLE_CORE_PIN} 2>/dev/null || " \
-               "pip3 install --quiet --break-system-packages #{ANSIBLE_CORE_PIN}"
-      unless profile.collections.empty?
-        script += "\nansible-galaxy collection install #{profile.collections.join(" ")} 2>&1 | tail -5"
+      script = "pip3 install #{ANSIBLE_CORE_PIN} || " \
+               "pip3 install --break-system-packages #{ANSIBLE_CORE_PIN}"
+      result = run_script(vm, script, 1200.0)
+      unless result.rc == 0
+        tail = (result.stdout + result.stderr).lines.map(&.strip).reject(&.empty?).last(5).join(" | ")
+        raise MicrovmProvisionError.new("installing #{ANSIBLE_CORE_PIN} on the #{profile.os} golden failed: #{tail}")
       end
-      run_script(vm, script, 1200.0)
+      return if profile.collections.empty?
+
+      galaxy = run_script(vm, "ansible-galaxy collection install #{profile.collections.join(" ")}", 1200.0)
+      unless galaxy.rc == 0
+        tail = (galaxy.stdout + galaxy.stderr).lines.map(&.strip).reject(&.empty?).last(5).join(" | ")
+        raise MicrovmProvisionError.new("installing collections on the #{profile.os} golden failed: #{tail}")
+      end
     end
 
     private def run_prep(vm : Vm, profile : Profile) : Nil
@@ -507,7 +532,7 @@ module KrikriPlaybookGenerator
       end
       seed = write_seed("run-#{name}", os, "#{name}-#{Time.utc.to_unix_ms}")
       vm = boot(overlay, seed, name, ip, dir)
-      wait_ssh(vm, BOOT_SECS)
+      wait_ssh(vm, boot_secs)
       stage_krikri(vm) if stage_krikri_binary
       vm
     end
@@ -580,8 +605,8 @@ module KrikriPlaybookGenerator
     private def prep_vm(vm : Vm, playbook_path : String) : Nil
       seed_fixtures(vm)
       basename = File.basename(playbook_path)
-      copy = Cmd.run("scp", ["-i", vm.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-                             "-o", "UserKnownHostsFile=/dev/null",
+      copy = Cmd.run("scp", ["-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
+                             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                              playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise MicrovmProvisionError.new("playbook upload to #{vm.ip} failed: #{copy.stderr}") unless copy.rc == 0
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
@@ -595,8 +620,8 @@ module KrikriPlaybookGenerator
     private def stage_krikri(vm : Vm) : Nil
       return if @control
       tar = krikri_tar
-      scp = Cmd.run("scp", ["-i", vm.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-                            "-o", "UserKnownHostsFile=/dev/null",
+      scp = Cmd.run("scp", ["-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
+                            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                             tar, "root@#{vm.ip}:/tmp/kpg-krikri.tar.gz"], timeout: 300.0)
       raise MicrovmProvisionError.new("krikri upload to #{vm.ip} failed: #{scp.stderr}") unless scp.rc == 0
       result = run_script(vm, "tar -xzf /tmp/kpg-krikri.tar.gz -C /opt/krikri/bin && rm -f /tmp/kpg-krikri.tar.gz && " \

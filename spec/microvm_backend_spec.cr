@@ -41,6 +41,12 @@ module KrikriPlaybookGenerator
       refute_equal(2322, MicrovmBackend::SSH_PORT)
     end
 
+    it "connects on the published ssh port, not the guest's 22" do
+      options = MicrovmBackend.ssh_options("/k/bench_key")
+      assert_equal(MicrovmBackend::SSH_PORT.to_s, options[options.index!("-p") + 1])
+      assert_includes(options, "/k/bench_key")
+    end
+
     it "authorizes the bench key for root and disables root login only through the key" do
       user_data = MicrovmBackend.seed_user_data("ssh-ed25519 AAAA test")
       assert_includes(user_data, "#cloud-config")

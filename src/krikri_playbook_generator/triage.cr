@@ -1,5 +1,6 @@
 require "json"
 require "./masks"
+require "./microvm_backend"
 require "./overrides"
 
 module KrikriPlaybookGenerator
@@ -253,9 +254,13 @@ module KrikriPlaybookGenerator
     end
 
     # Copy-paste repro for a single divergent playbook: `run` accepts a
-    # playbook file path directly and re-runs it in a fresh container pair.
-    def self.repro_command(playbook_path : String) : String
-      "krikri-playbook-generator run #{playbook_path} --run-on-podman --results-dir /tmp/kpg-repro"
+    # playbook file path directly and re-runs it in a fresh host pair. The
+    # backend must be one that can host the playbook's module at all - a
+    # database or container module needs the microVM path, and sending it to
+    # podman would "reproduce" nowhere.
+    def self.repro_command(playbook_path : String, module_names : Array(String) = [] of String) : String
+      backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
+      "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
     end
 
     private def result_lines : Array(ResultLine)

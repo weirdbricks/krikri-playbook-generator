@@ -95,9 +95,16 @@ module KrikriPlaybookGenerator
     end
 
     it "formats a copy-paste repro command for an example playbook" do
-      command = Triage.repro_command("/tmp/playbooks/000001-copy-happy.yml")
+      command = Triage.repro_command("/tmp/playbooks/000001-copy-happy.yml", ["copy"])
       assert(command.includes?("run /tmp/playbooks/000001-copy-happy.yml"))
       assert(command.includes?("--run-on-podman"))
+    end
+
+    it "points a service module's repro at the backend that can host it" do
+      command = Triage.repro_command("/tmp/playbooks/000001-postgresql_db-happy.yml",
+        ["community.postgresql.postgresql_db"])
+      assert(command.includes?("--run-on-mixed"))
+      refute(command.includes?("--run-on-podman"))
     end
 
     it "reports per-module happy-path failures on real ansible with the first error line" do

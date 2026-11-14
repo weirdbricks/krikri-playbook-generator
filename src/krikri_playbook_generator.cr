@@ -226,7 +226,7 @@ module KrikriPlaybookGenerator
       end
       example = finding.playbooks.first
       puts "  example: #{example}"
-      puts "  repro: #{Triage.repro_command(example)}"
+      puts "  repro: #{Triage.repro_command(example, [finding.module_name])}"
     end
   end
 
