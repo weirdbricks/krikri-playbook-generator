@@ -139,13 +139,18 @@ module KrikriPlaybookGenerator
   # apply the happy-path success gate. Without a run backend there is
   # nothing to execute, so the batch just stops after building.
   private def self.run_generated(opts : Options, playbooks : Array(String)) : Int32
-    return 0 unless opts.run_on_podman? || opts.run_on_atlantic?
+    unless opts.run_on_podman? || opts.run_on_atlantic? || opts.run_on_microvm? || opts.run_on_mixed?
+      return 0
+    end
 
     results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
-      opts.krikri_bin, check_mode: Options.check_mode(opts), run_on_podman: opts.run_on_podman?, run_on_atlantic: opts.run_on_atlantic?,
+      opts.krikri_bin, check_mode: Options.check_mode(opts), run_on_podman: opts.run_on_podman?,
+      run_on_atlantic: opts.run_on_atlantic?, run_on_microvm: opts.run_on_microvm?,
+      run_on_mixed: opts.run_on_mixed?,
       keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
       refresh_podman_templates: opts.refresh_podman_templates?,
-      podman_parallel: opts.podman_parallel).run
+      podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
+      microvm_parallel: opts.microvm_parallel).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)
