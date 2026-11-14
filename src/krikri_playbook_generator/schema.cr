@@ -133,14 +133,19 @@ module KrikriPlaybookGenerator
     }
 
     # Modules krikri implements but this harness cannot exercise: they need
-    # AWS credentials and a cloud, macOS, or they are krikri-internal (no
-    # real ansible counterpart exists to compare against). Excluding them
-    # keeps the rotation free of playbooks that can only ever be wasted.
+    # AWS credentials and a cloud, macOS, they are krikri-internal (no real
+    # ansible counterpart exists to compare against), or they are play-level
+    # keywords ansible does not accept inside `tasks:`. Excluding them keeps
+    # the rotation free of playbooks that can only ever be wasted.
     SCOPE_EXCLUDED = Set{
       "py_module", "homebrew",
       "ec2_ami_info", "ec2_instance", "ec2_key", "ec2_security_group",
       "ec2_vpc_net_info", "ec2_vpc_subnet_info", "ec2_metadata_facts",
       "iam_user_info",
+      # import_playbook is a play/playbook-level directive: it takes a
+      # playbook file and cannot be a task, so every generated task form
+      # of it fails on real ansible before reaching any module logic.
+      "import_playbook",
     }
 
     def self.fetch_module_listing : JSON::Any
@@ -150,7 +155,7 @@ module KrikriPlaybookGenerator
     end
 
     def self.names_from_listing(listing : JSON::Any, supported : Array(String)?) : Array(String)
-      names = core_module_names(listing)
+      names = core_module_names(listing).reject { |name| SCOPE_EXCLUDED.includes?(name) }
       return names if supported.nil? || supported.empty?
 
       extra = supported_module_names(listing, supported.reject { |fqcn| SCOPE_EXCLUDED.includes?(fqcn.split(".").last) })

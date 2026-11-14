@@ -75,6 +75,43 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "chains onto the last registering task, not onto a static import" do
+      import = ModuleSchema.new("import_tasks", "ansible.builtin")
+      scenarios = (1..200).flat_map do |seed|
+        Generator.new(seed, 0.0).generate_scenarios([import, copy_schema, debug_schema], 3, 1)
+      end
+      leading = scenarios.select { |tasks| tasks.first.module_name == "import_tasks" }
+
+      refute(leading.empty?, "expected at least one scenario to start with import_tasks")
+      leading.each do |tasks|
+        # The import cannot register, so neither it nor the task after it
+        # has an anchor to chain onto; the third task chains onto the second.
+        refute(tasks[0].when_condition)
+        assert_nil(tasks[1].when_condition)
+        assert(tasks[2].when_condition.to_s.starts_with?("kpg_task_1 is "))
+      end
+    end
+
+    it "never notifies from include_tasks/include_role, which reject notify" do
+      includes = [
+        ModuleSchema.new("include_tasks", "ansible.builtin"),
+        ModuleSchema.new("include_role", "ansible.builtin"),
+      ]
+      seen = 0
+      (1..50).each do |seed|
+        Generator.new(seed, 0.0).generate_scenarios(includes + [debug_schema], 3, 2).each do |tasks|
+          tasks.each do |task|
+            next unless Generator::NOTIFY_UNSUPPORTED.includes?(task.module_name)
+
+            seen += 1
+            assert_nil(task.notify)
+          end
+        end
+      end
+
+      assert(seen > 0, "expected include_* tasks across the batch")
+    end
+
     it "wires a fixture-source-path argument into a loop over the fixture sources" do
       scenarios = Generator.new(4, 0.0).generate_scenarios([copy_schema, debug_schema], 2, 30)
       looped = scenarios.flatten.select(&.loop_option)

@@ -235,13 +235,15 @@ module KrikriPlaybookGenerator
         body = {} of YAML::Any => YAML::Any
         body[YAML::Any.new("name")] = YAML::Any.new(named("#{task.module_name} ##{index}.#{task_index}"))
         body[YAML::Any.new(task.fqcn)] = task.free_form ? YAML::Any.new(task.free_form) : scenario_args(task)
-        body[YAML::Any.new("register")] = YAML::Any.new("kpg_task_#{task_index}")
+        body[YAML::Any.new("register")] = YAML::Any.new("kpg_task_#{task_index}") unless task.static_import?
         body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
         body[YAML::Any.new("when")] = YAML::Any.new(task.when_condition) if task.when_condition
         if task.loop_option && (items = task.loop_items)
           body[YAML::Any.new("loop")] = YAML::Any.new(items.map { |item| YAML::Any.new(item) })
         end
-        body[YAML::Any.new("notify")] = YAML::Any.new(task.notify) if task.notify
+        if task.notify_allowed? && (target = task.notify)
+          body[YAML::Any.new("notify")] = YAML::Any.new(target)
+        end
         YAML::Any.new(body)
       end
 
@@ -250,7 +252,7 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("hosts")] = YAML::Any.new("all")
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
-      if tasks.any?(&.notify)
+      if tasks.any? { |task| task.notify && task.notify_allowed? }
         handler = {} of YAML::Any => YAML::Any
         handler[YAML::Any.new("name")] = YAML::Any.new(HANDLER_NAME)
         handler_args = {} of YAML::Any => YAML::Any

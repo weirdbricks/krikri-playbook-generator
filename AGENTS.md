@@ -86,13 +86,19 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   silently. `generate_scenarios(schemas, per_playbook, count)` is the v2
   multi-task entry point: per scenario it samples `per_playbook` DISTINCT
   module schemas, builds one task each through the same baseline+chaos
-  path, then wires the chain — every task registers `kpg_task_<i>` (the
-  builder writes it), tasks after the first get a `when:` on the previous
-  register (`is succeeded` / `is not skipped`), a task whose baseline args
-  point at a fixture source file gets that argument templated as
-  `{{ item }}` with a `loop:` over the whole fixture source list, and tasks
-  roll a `notify:` on a shared play-level handler. Wiring is structural:
-  recorded in the sidecar as wiring, never as a chaos mutation.
+  path, then wires the chain — every task except a static import registers
+  `kpg_task_<i>` (the builder writes it), tasks after a registering one get
+  a `when:` on its register (`is succeeded` / `is not skipped`), a task
+  whose baseline args point at a fixture source file gets that argument
+  templated as `{{ item }}` with a `loop:` over the whole fixture source
+  list, and tasks roll a `notify:` on a shared play-level handler. Wiring
+  is structural: recorded in the sidecar as wiring, never as a chaos
+  mutation. Two action families constrain that wiring: `import_tasks` /
+  `import_role` are static (ansible splices their contents in at parse
+  time, so a `register:` there creates no variable and the next `when:`
+  would be undefined), and `include_tasks` / `include_role` reject
+  `notify:` outright. `GeneratedTask#static_import?` and
+  `#notify_allowed?` carry that.
 - `src/krikri_playbook_generator/fixtures.cr` — `Fixtures`. **Implemented**:
   fixture layout (source files + a Jinja template + an executable script
   under `/opt/kpg-fixtures`, writable dests under `/tmp/kpg-work`) and the
@@ -119,12 +125,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `gather_facts: false`, `register:` + `ignore_errors: true` so a batch
   keeps going past individual failures). v2 (`--tasks-per-playbook N`,
   `build_scenarios`) assembles one play of N tasks from N DIFFERENT
-  modules, every task registering `kpg_task_<i>`, tasks after the first
-  gated by `when:` on the previous register, a fixture-source argument
-  iterated via `loop:` + `{{ item }}`, and tasks `notify:`ing a shared
-  play-level `ansible.builtin.debug` handler (the handlers section only
-  appears when some task notifies) — the multi-task interaction fuzzing
-  the proposal deferred to v2. Each `<n>-<module>-happy|chaos.yml` (v2
+  modules, every task except a static import registering `kpg_task_<i>`,
+  tasks after a registering one gated by `when:` on its register, a
+  fixture-source argument iterated via `loop:` + `{{ item }}`, and tasks
+  that accept it `notify:`ing a shared play-level `ansible.builtin.debug`
+  handler (the handlers section only appears when some task notifies) —
+  the multi-task interaction fuzzing the proposal deferred to v2. Each
+  `<n>-<module>-happy|chaos.yml` (v2
   names `<n>-multi-<first module>-happy|chaos.yml`) gets a sibling
   `<n>-...meta.json` (module/collection/chaos?/mutations) since the
   playbook YAML alone doesn't say which slots were mutated or how; for v2
@@ -345,10 +352,11 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   to what `ansible-doc` can actually scan; that is the scope krikri-loop
   uses, so the rotation follows the engine's registry instead of a
   hand-kept list. Modules the harness can never exercise (AWS credentials,
-  macOS homebrew, krikri's internal `py_module`) are dropped by
-  `SCOPE_EXCLUDED`; the bare `virt_net` alias is mapped to
-  `community.libvirt.virt_net` by `SCOPE_ALIASES` so ansible-doc can find
-  it.
+  macOS homebrew, krikri's internal `py_module`, and `import_playbook`,
+  which is a play-level directive ansible does not accept inside a task
+  list) are dropped by `SCOPE_EXCLUDED`; the bare `virt_net` alias is
+  mapped to `community.libvirt.virt_net` by `SCOPE_ALIASES` so ansible-doc
+  can find it.
   Exit code 0 (a failed `ansible-doc --list` is a tool error, exit 1).
 
 Every stub is now implemented (`Options`, `Preflight`, `SchemaScanner`,

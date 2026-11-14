@@ -184,6 +184,39 @@ module KrikriPlaybookGenerator
         FileUtils.rm_rf(dir) if dir
       end
 
+      it "omits register from a static import and keeps later registers addressable" do
+        dir = File.tempname("kpg-spec")
+        imported = GeneratedTask.new("import_tasks", "ansible.builtin",
+          {"file" => YAML::Any.new(Fixtures::TASKS_FILE)})
+        second = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")})
+        third = GeneratedTask.new("stat", "ansible.builtin",
+          {"path" => YAML::Any.new("/tmp/kpg-work/out1.txt")}, when_condition: "kpg_task_1 is succeeded")
+        doc = YAML.parse(File.read(PlaybookBuilder.new(dir).build_scenarios([[imported, second, third]]).first)).as_a
+        tasks = doc.first["tasks"].as_a
+
+        assert_nil(tasks[0]["register"]?)
+        assert_equal("kpg_task_1", tasks[1]["register"].as_s)
+        assert_equal("kpg_task_2", tasks[2]["register"].as_s)
+        assert_equal("kpg_task_1 is succeeded", tasks[2]["when"].as_s)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
+
+      it "drops notify from include_* actions and their unused handler" do
+        dir = File.tempname("kpg-spec")
+        invalid = GeneratedTask.new("include_role", "ansible.builtin",
+          {"name" => YAML::Any.new(Fixtures::ROLE_PATH)},
+          notify: KrikriPlaybookGenerator::HANDLER_NAME)
+        plain = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")})
+        doc = YAML.parse(File.read(PlaybookBuilder.new(dir).build_scenarios([[invalid, plain]]).first)).as_a
+        tasks = doc.first["tasks"].as_a
+
+        assert_nil(tasks[0]["notify"]?)
+        assert_nil(doc.first["handlers"]?)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
+
       it "records the primary module, per-task metadata and wiring in the sidecar" do
         dir = File.tempname("kpg-spec")
         path = PlaybookBuilder.new(dir).build_scenarios([scenario]).first

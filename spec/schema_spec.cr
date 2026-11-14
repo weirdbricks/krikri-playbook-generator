@@ -81,6 +81,14 @@ module KrikriPlaybookGenerator
       refute_includes(names, "amazon.aws.iam_user_info")
     end
 
+    it "keeps play-level keywords out of the task scope but keeps task actions" do
+      listing = JSON.parse(%({"ansible.builtin.import_playbook": {}, "ansible.builtin.import_tasks": {}}))
+      names = SchemaScanner.names_from_listing(listing, %w[ansible.builtin.import_playbook])
+
+      refute_includes(names, "import_playbook")
+      assert_includes(names, "import_tasks")
+    end
+
     it "maps krikri's bare virt_net spelling to the collection FQCN ansible-doc can scan" do
       assert_equal("community.libvirt.virt_net", SchemaScanner::SCOPE_ALIASES["virt_net"])
     end

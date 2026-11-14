@@ -52,6 +52,19 @@ module KrikriPlaybookGenerator
     def chaos? : Bool
       !mutations.empty?
     end
+
+    # ansible resolves static imports at parse time and inserts their
+    # contents, so a `register:` on one never creates a variable and a
+    # later `when:` on that name fails as undefined.
+    def static_import? : Bool
+      Generator::STATIC_IMPORTS.includes?(module_name)
+    end
+
+    # include_tasks/include_role are TaskInclude/IncludeRole actions, not
+    # real tasks, and ansible rejects the whole playbook over a `notify:`.
+    def notify_allowed? : Bool
+      !Generator::NOTIFY_UNSUPPORTED.includes?(module_name)
+    end
   end
 
   # Given a module's schema, an RNG seed, and a chaos-percentage, builds
@@ -92,6 +105,12 @@ module KrikriPlaybookGenerator
     ALPHABET = ("a".."z").to_a
     MODES    = ["0644", "0755", "0600", "0750"]
 
+    # Actions that are keywords rather than modules and run at parse time;
+    # see GeneratedTask#static_import?.
+    STATIC_IMPORTS = Set{"import_tasks", "import_role"}
+    # Actions that accept no `notify:`; see GeneratedTask#notify_allowed?.
+    NOTIFY_UNSUPPORTED = Set{"include_tasks", "include_role"}
+
     def initialize(@seed : Int32, @chaos_percentage : Float64 = 0.0,
                    @chaos_kinds : Array(ChaosKind) = ChaosKind.values,
                    @overrides : Overrides = Overrides.load)
@@ -105,13 +124,13 @@ module KrikriPlaybookGenerator
     # v2 multi-task scenarios: `count` playbooks of `per_playbook` tasks
     # each, every task from a DIFFERENT module (sampled without
     # replacement from the scanned pool), then wired into an interaction
-    # chain - every task registers `kpg_task_<i>`, tasks after the first
-    # run under a `when:` on the previous task's register, one task whose
-    # args carry a fixture source path iterates that path over the
-    # fixture source list with `loop:`, and tasks may `notify:` a
-    # play-level handler. Wiring is structural (recorded in the sidecar
-    # as wiring, never as a chaos mutation); chaos is still applied per
-    # task exactly as in the single-task shape.
+    # chain - every task except a static import registers `kpg_task_<i>`,
+    # tasks after a registering one run under a `when:` on its register,
+    # one task whose args carry a fixture source path iterates that path
+    # over the fixture source list with `loop:`, and tasks that accept it
+    # may `notify:` a play-level handler. Wiring is structural (recorded
+    # in the sidecar as wiring, never as a chaos mutation); chaos is still
+    # applied per task exactly as in the single-task shape.
     def generate_scenarios(schemas : Array(ModuleSchema), per_playbook : Int32,
                            count : Int32) : Array(Array(GeneratedTask))
       raise ArgumentError.new("multi-task scenarios need per_playbook >= 2, got #{per_playbook}") if per_playbook < 2
@@ -126,13 +145,19 @@ module KrikriPlaybookGenerator
     end
 
     private def wire_scenario!(tasks : Array(GeneratedTask)) : Nil
+      previous : String? = nil
       tasks.each_with_index do |task, index|
-        if index > 0
-          previous = "kpg_task_#{index - 1}"
+        if task.static_import?
+          # Its contents run where the import sits, so a `when:` on the
+          # imported tasks may still name an earlier register; the import
+          # itself must not become the chain's anchor.
+          task.when_condition = "#{previous} is succeeded" if previous
+        elsif previous
           task.when_condition = ["#{previous} is succeeded", "#{previous} is not skipped"].sample(@rng)
         end
         apply_loop_wiring!(task)
-        task.notify = HANDLER_NAME if @rng.rand < 0.4
+        task.notify = HANDLER_NAME if task.notify_allowed? && @rng.rand < 0.4
+        previous = "kpg_task_#{index}" unless task.static_import?
       end
     end
 
@@ -140,8 +165,10 @@ module KrikriPlaybookGenerator
     # source files gets that argument templated as `{{ item }}` and a
     # `loop:` over the whole fixture source list - the loop interaction
     # (per-item templating of one slot) without inventing new values.
+    # Static imports reject `loop:` outright, and their arguments name a
+    # task file or role rather than a source file.
     private def apply_loop_wiring!(task : GeneratedTask) : Nil
-      return if task.free_form
+      return if task.free_form || task.static_import?
 
       hit = task.args.find do |_, value|
         raw = value.raw
