@@ -210,7 +210,7 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   **Implemented**: the local KVM backend for modules a plain container
   cannot host (db, docker/podman, zfs/snap/rabbitmq/libvirt/nsupdate,
   firewalld/SELinux). It bakes ONE golden per OS — Ubuntu 24.04 minimal
-  and Rocky 9 cloud images — keyed by the dependency table's package
+  and Rocky 10 cloud images — keyed by the dependency table's package
   union plus the profile prep (`fingerprint`), installs the pinned
   ansible-core and the collections the real engine needs, then boots two
   throwaway qcow2 overlays per playbook (one VM per engine, so no state
