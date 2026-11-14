@@ -175,7 +175,7 @@ module KrikriPlaybookGenerator
   private def self.print_run_summary(results : Array(Runner::PlaybookResult)) : Nil
     results.each do |result|
       verdict = result.error ? "ERROR" : (result.divergent? ? "DIVERGENT" : "IDENTICAL")
-      color = result.error ? Log::RED : (result.divergent? ? Log::RED : Log::GREEN)
+      color = result.error ? Log::RED : (result.divergent? ? Log::YELLOW : Log::GREEN)
       puts Log.paint(color, "[#{verdict}] #{result.playbook}")
     end
   end
