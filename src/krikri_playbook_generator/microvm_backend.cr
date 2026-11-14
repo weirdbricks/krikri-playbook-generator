@@ -198,7 +198,7 @@ module KrikriPlaybookGenerator
     # and a changed package list, prep or pinned core invalidates it.
     def self.fingerprint(os : String, packages : Array(String), collections : Array(String), prep : String) : String
       digest = Digest::SHA256.new
-      {os, ANSIBLE_CORE_PIN, packages.join("\n"), collections.join("\n"), prep}.each { |part| digest.update(part.to_s) }
+      {os, CLOUD_IMAGES[os]?, ANSIBLE_CORE_PIN, packages.join("\n"), collections.join("\n"), prep}.each { |part| digest.update(part.to_s) }
       digest.final.hexstring[0, 16]
     end
 
