@@ -81,6 +81,15 @@ module KrikriPlaybookGenerator
       refute_includes(names, "amazon.aws.iam_user_info")
     end
 
+    it "drops modules ansible-core no longer ships instead of asking for them" do
+      listing = JSON.parse(%({"ansible.builtin.copy": {}}))
+      names = SchemaScanner.names_from_listing(listing, %w[
+        ansible.builtin.facts ansible.builtin.yum
+      ])
+
+      assert_equal(["copy"], names)
+    end
+
     it "keeps play-level keywords out of the task scope but keeps task actions" do
       listing = JSON.parse(%({"ansible.builtin.import_playbook": {}, "ansible.builtin.import_tasks": {}}))
       names = SchemaScanner.names_from_listing(listing, %w[ansible.builtin.import_playbook])

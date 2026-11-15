@@ -139,6 +139,11 @@ module KrikriPlaybookGenerator
     # the rotation free of playbooks that can only ever be wasted.
     SCOPE_EXCLUDED = Set{
       "py_module", "homebrew",
+      # Removed from ansible-core 2.21 (only dnf/setup/gather_facts ship
+      # now), so ansible-doc cannot resolve them and a generated task
+      # could only ever fail on the real engine. krikri keeps the old
+      # spellings registered for legacy playbooks.
+      "facts", "yum",
       "ec2_ami_info", "ec2_instance", "ec2_key", "ec2_security_group",
       "ec2_vpc_net_info", "ec2_vpc_subnet_info", "ec2_metadata_facts",
       "iam_user_info",
