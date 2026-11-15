@@ -47,6 +47,13 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "keeps cron's runtime-required job in every happy path" do
+      schema = SchemaScanner.new(["cron"]).scan.first
+      Generator.new(7, 0.0).generate(schema, 30).each do |task|
+        assert(task.args.has_key?("job"), "cron happy path dropped job: #{task.args}")
+      end
+    end
+
     it "is deterministic for a given seed" do
       a = Generator.new(42, 5.0).generate(apt_schema, 10).map(&.args.to_s)
       b = Generator.new(42, 5.0).generate(apt_schema, 10).map(&.args.to_s)

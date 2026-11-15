@@ -367,6 +367,9 @@ modules:
     quiet: {kind: literal_pool, pool: ["true", "false"]}
 
   cron:
+    # job is not `required:` in cron's DOCUMENTATION because env mode omits
+    # it, but the module's do_install path fails every state=present task
+    # without it, so a happy path that drops it is wasted coverage.
     name: {kind: literal_pool, pool: ["kpg job", "kpg other job"]}
     job: {kind: literal_pool, pool: ["/bin/true", "echo kpg"]}
     user: {kind: literal_pool, pool: ["root"]}
@@ -383,7 +386,7 @@ modules:
     value: {exclude: true}
     disabled: {kind: literal_pool, pool: ["false", "true"]}
     backup: {kind: literal_pool, pool: ["false"]}
-    always: [user, cron_file]
+    always: [user, cron_file, job]
 
   known_hosts:
     name: {kind: literal_pool, pool: ["example.com"]}
