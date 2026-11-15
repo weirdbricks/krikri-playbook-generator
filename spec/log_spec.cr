@@ -30,6 +30,43 @@ module KrikriPlaybookGenerator
       assert_equal("text", Log.paint(Log::GREEN, "text")) unless STDERR.tty?
     end
 
+    it "honors KRIKRI_FORCE_COLOR so krikri-loop's piped child keeps its colors" do
+      with_env({"KRIKRI_FORCE_COLOR" => "1", "NO_COLOR" => nil}) do
+        assert(Log.color?)
+        assert_equal("\e[32mtext\e[0m", Log.paint(Log::GREEN, "text"))
+      end
+    end
+
+    it "NO_COLOR wins over KRIKRI_FORCE_COLOR" do
+      with_env({"KRIKRI_FORCE_COLOR" => "1", "NO_COLOR" => "1"}) do
+        refute(Log.color?)
+        assert_equal("text", Log.paint(Log::GREEN, "text"))
+      end
+    end
+
+    private def with_env(vars : Hash(String, String?), &) : Nil
+      saved = {} of String => String?
+      vars.each do |key, value|
+        saved[key] = ENV[key]?
+        if value
+          ENV[key] = value
+        else
+          ENV.delete(key)
+        end
+      end
+      begin
+        yield
+      ensure
+        saved.each do |key, value|
+          if value
+            ENV[key] = value
+          else
+            ENV.delete(key)
+          end
+        end
+      end
+    end
+
     private def formatted(component : String, message : String, severity : String? = nil) : String
       # Mirror Log.info exactly: timestamp + [component] + message
       severity_str = severity ? "#{severity}: " : ""

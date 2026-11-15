@@ -20,8 +20,11 @@ module KrikriPlaybookGenerator
     BLUE   = "\e[34m"
 
     # TTY-only color: piped/captured output stays plain and parseable.
+    # krikri-loop pipes its children, so it sets KRIKRI_FORCE_COLOR=1 to keep
+    # color on the console when its own stdout is a terminal.
     def self.color? : Bool
-      STDERR.tty?
+      return false unless ENV["NO_COLOR"]?.to_s.empty?
+      STDERR.tty? || ENV["KRIKRI_FORCE_COLOR"]? == "1"
     end
 
     def self.paint(code : String, text : String) : String
