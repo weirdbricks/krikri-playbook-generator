@@ -17,6 +17,7 @@ module KrikriPlaybookGenerator
     YELLOW = "\e[33m"
     RED    = "\e[31m"
     CYAN   = "\e[36m"
+    BLUE   = "\e[34m"
 
     # TTY-only color: piped/captured output stays plain and parseable.
     def self.color? : Bool
@@ -34,8 +35,8 @@ module KrikriPlaybookGenerator
       Time.local.to_s("%H:%M:%S")
     end
 
-    def self.info(component : String, message : String) : Nil
-      STDERR.puts "#{paint(DIM, timestamp)} #{paint(CYAN, "[#{component}]")} #{message}"
+    def self.info(component : String, message : String, color : String = CYAN) : Nil
+      STDERR.puts "#{paint(DIM, timestamp)} #{paint(color, "[#{component}]")} #{message}"
     end
 
     def self.phase(component : String, label : String, &)

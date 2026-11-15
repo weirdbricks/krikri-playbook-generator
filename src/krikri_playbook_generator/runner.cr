@@ -206,19 +206,25 @@ module KrikriPlaybookGenerator
                    @microvm_parallel : Int32 = 1)
     end
 
+    # "runner" is blue so the per-playbook verdict colors stay the
+    # brightest thing on the line.
+    private def log(message : String) : Nil
+      Log.info("runner", message, color: Log::BLUE)
+    end
+
     # One line per finished playbook, so a long batch shows where it is:
     #   12:34:56 [runner] playbook 5/60 complete: 000004-file-chaos.yml (DIVERGENT)
     private def progress(result : PlaybookResult) : PlaybookResult
       done = @completed.add(1) + 1
       verdict = if result.error
-                  "errored"
+                  Log.paint(Log::RED, "errored")
                 elsif result.divergent?
-                  "DIVERGENT"
+                  Log.paint(Log::YELLOW, "DIVERGENT")
                 else
-                  "ok"
+                  Log.paint(Log::GREEN, "ok")
                 end
-      Log.info("runner", "playbook #{done}/#{@playbook_paths.size} complete: " \
-                         "#{File.basename(result.playbook)} (#{verdict})")
+      log("playbook #{done}/#{@playbook_paths.size} complete: " \
+          "#{File.basename(result.playbook)} (#{verdict})")
       result
     end
 
@@ -237,8 +243,8 @@ module KrikriPlaybookGenerator
         raise PodmanProvisionError.new("--run-on-mixed was requested but `podman` isn't on PATH")
       end
 
-      Log.info("runner", "starting #{@playbook_paths.size} playbook(s) " \
-                         "(backend=#{backend_label}, results=#{@results_dir})")
+      log("starting #{@playbook_paths.size} playbook(s) " \
+          "(backend=#{backend_label}, results=#{@results_dir})")
       Dir.mkdir_p(@results_dir)
       results = Log.phase("runner", "executing #{@playbook_paths.size} playbook(s) (#{backend_label})") do
         if @run_on_atlantic
@@ -253,11 +259,13 @@ module KrikriPlaybookGenerator
           run_locally
         end
       end
-      Log.info("runner", "writing results.jsonl + versions.txt")
+      log("writing results.jsonl + versions.txt")
       write_results(results)
       write_versions(started)
       divergent = results.count(&.divergent?)
-      Log.info("runner", "batch complete: #{results.size} playbook(s), #{divergent} divergent, #{results.count(&.error)} errored")
+      log("batch complete: #{results.size} playbook(s), " \
+          "#{Log.paint(Log::YELLOW, divergent.to_s)} divergent, " \
+          "#{Log.paint(Log::RED, results.count(&.error).to_s)} errored")
       results
     end
 
@@ -278,7 +286,7 @@ module KrikriPlaybookGenerator
       microvm_paths = [] of String
       microvm_ready = MicrovmBackend.available?
       if !microvm_ready && @playbook_paths.any? { |path| MicrovmBackend.microvm_only?(load_meta(path).try(&.module_names) || [] of String) }
-        Log.info("runner", "warning: qemu-system-x86_64 or /dev/kvm is not available; service modules run on podman and will likely match-fail")
+        log("warning: qemu-system-x86_64 or /dev/kvm is not available; service modules run on podman and will likely match-fail")
       end
       @playbook_paths.each do |path|
         names = load_meta(path).try(&.module_names) || [] of String
@@ -288,7 +296,7 @@ module KrikriPlaybookGenerator
           podman_paths << path
         end
       end
-      Log.info("runner", "mixed: #{podman_paths.size} playbook(s) on podman, #{microvm_paths.size} on microvm")
+      log("mixed: #{podman_paths.size} playbook(s) on podman, #{microvm_paths.size} on microvm")
       results = [] of PlaybookResult
       results.concat(run_via_podman(podman_paths)) unless podman_paths.empty?
       results.concat(run_via_microvm(microvm_paths)) unless microvm_paths.empty?
@@ -313,8 +321,8 @@ module KrikriPlaybookGenerator
       end
       begin
         profiles.each_key { |os| backend.provision(os) }
-        Log.info("runner", "microvm: running #{paths.size} playbook(s) " \
-                           "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
+        log("microvm: running #{paths.size} playbook(s) " \
+            "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
         slots = Atomic(Int32).new(0)
         Runner.in_parallel(paths, @microvm_parallel) do |path|
           guarded(path) do
@@ -349,7 +357,7 @@ module KrikriPlaybookGenerator
       backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts,
         on_playbook_done: ->(path : String) {
           done = @completed.add(1) + 1
-          Log.info("runner", "playbook #{done}/#{@playbook_paths.size} complete: #{File.basename(path)}")
+          log("playbook #{done}/#{@playbook_paths.size} complete: #{File.basename(path)}")
         })
       backend.run_groups(groups).map do |entry|
         meta = load_meta(entry[:playbook])
@@ -390,8 +398,8 @@ module KrikriPlaybookGenerator
         end
         profiles.each_key { |profile| backend.provision(profile) }
         profile_counts = profiles.map { |profile, batch| [profile, batch.size] }
-        Log.info("runner", "podman: running #{profiles.values.sum(&.size)} playbook(s) " \
-                           "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
+        log("podman: running #{profiles.values.sum(&.size)} playbook(s) " \
+            "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
         profiles.flat_map do |profile, batch|
           Runner.in_parallel(batch, @podman_parallel) do |path|
             guarded(path) { progress(run_playbook_via_podman(backend, path, profile)) }
