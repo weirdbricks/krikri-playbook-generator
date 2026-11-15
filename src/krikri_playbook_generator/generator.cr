@@ -480,7 +480,7 @@ module KrikriPlaybookGenerator
 
     private def fill_required_together(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
       schema.required_together.each do |group|
-        next unless group.any? { |name| args.has_key?(name) }
+        next unless group.any? { |name| args.has_key?(name) || !defaulted_value(schema, name).nil? }
 
         add_all(schema, args, group)
       end
@@ -505,7 +505,9 @@ module KrikriPlaybookGenerator
 
         condition = entry_list[0].as_s?
         next unless condition
-        next unless args.has_key?(condition) && value_matches?(args[condition], entry_list[1])
+        value = args[condition]?
+        value = defaulted_value(schema, condition) if value.nil?
+        next unless value && value_matches?(value, entry_list[1])
 
         required_keys = entry_list[2].as_a?.try(&.compact_map(&.as_s?)) || [] of String
         require_any = entry_list[3]?.try(&.as_bool?) || false
@@ -516,6 +518,17 @@ module KrikriPlaybookGenerator
           break if require_any
         end
       end
+    end
+
+    # Ansible applies a non-nil default before it runs the required_*
+    # checks, so an option the task omits can still trigger one (iptables'
+    # `flush` defaults to false, and that alone makes `chain` required).
+    private def defaulted_value(schema : ModuleSchema, name : String) : YAML::Any?
+      default = schema.options[name]?.try(&.default)
+      return unless default
+      return if default.raw.nil?
+
+      json_to_yaml(default)
     end
 
     private def add_all(schema : ModuleSchema, args : Hash(String, YAML::Any), names : Array(String)) : Nil
@@ -542,14 +555,18 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # `as_bool?` returns false for a JSON false, which `if value = ...`
+    # reads as "no match", so a required_if entry demanding false could
+    # never fire - the matches must be tested on the raw type.
     private def value_matches?(yaml_value : YAML::Any, json_value : JSON::Any) : Bool
-      if json_value.as_s?
-        return yaml_value.raw.is_a?(String) && yaml_value.as_s == json_value.as_s
+      case raw = json_value.raw
+      when String
+        yaml_value.raw.is_a?(String) && yaml_value.as_s == raw
+      when Bool
+        yaml_value.raw.is_a?(Bool) && yaml_value.as_bool == raw
+      else
+        false
       end
-      if bool_value = json_value.as_bool?
-        return yaml_value.raw.is_a?(Bool) && yaml_value.as_bool == bool_value
-      end
-      false
     end
 
     private def happy_value(schema : ModuleSchema, option : OptionSchema?) : YAML::Any

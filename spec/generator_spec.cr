@@ -219,6 +219,59 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "satisfies required_if triggered by a default the task never passes" do
+      schema = ModuleSchema.new("defaulted_if", "ansible.builtin")
+      schema.options["flush"] = OptionSchema.new("flush", "bool", default: JSON.parse("false"))
+      schema.options["chain"] = OptionSchema.new("chain", "str")
+      schema.options["action"] = OptionSchema.new("action", "str")
+      schema.required_if = [JSON.parse(%q(["flush", false, ["chain"], false]))]
+
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            defaulted_if:
+              exclude: [flush]
+        YAML
+
+      Generator.new(31, 0.0, ChaosKind.values, overrides).generate(schema, 20).each do |task|
+        assert(task.args.has_key?("chain"), "flush's false default demands chain: #{task.args}")
+      end
+    end
+
+    it "keeps a defaulted condition from demanding keys when its default does not match" do
+      schema = ModuleSchema.new("defaulted_if_other", "ansible.builtin")
+      schema.options["flush"] = OptionSchema.new("flush", "bool", default: JSON.parse("true"))
+      schema.options["chain"] = OptionSchema.new("chain", "str")
+      schema.required_if = [JSON.parse(%q(["flush", false, ["chain"], false]))]
+
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            defaulted_if_other:
+              exclude: [flush, chain]
+        YAML
+
+      Generator.new(33, 0.0, ChaosKind.values, overrides).generate(schema, 20).each do |task|
+        refute(task.args.has_key?("chain"))
+      end
+    end
+
+    it "fills required_together triggered by a defaulted option" do
+      schema = ModuleSchema.new("defaulted_together", "ansible.builtin")
+      schema.options["a"] = OptionSchema.new("a", "str", default: JSON.parse(%q("x")))
+      schema.options["b"] = OptionSchema.new("b", "str")
+      schema.required_together = [%w[a b]]
+
+      Generator.new(37, 0.0).generate(schema, 10).each do |task|
+        assert(task.args.has_key?("b"), "defaulted a demands b: #{task.args}")
+      end
+    end
+
+    it "keeps iptables' chain in every happy path" do
+      schema = SchemaScanner.new(["iptables"]).scan.first
+      Generator.new(41, 0.0).generate(schema, 30).each do |task|
+        assert(task.args.has_key?("chain"), "iptables happy path dropped chain: #{task.args}")
+      end
+    end
+
     it "tags every mutation with a real ChaosKind at 100% chaos" do
       tasks = Generator.new(1, 100.0).generate(apt_schema, 5)
       tasks.each do |task|
