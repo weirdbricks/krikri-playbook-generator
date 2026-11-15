@@ -165,8 +165,8 @@ module rotation from it so the two lists cannot drift.
 ...or fused into one call with `--run-on-podman` (needs `podman`): builds
 the playbooks (still written to `--out` for later review either way),
 immediately runs them against both engines inside throwaway containers
-(a fresh pair per playbook), prints `[DIVERGENT]`/`[IDENTICAL]`/
-`[ERROR] <path>` per playbook as it goes, then the full report. **Exit
+(a fresh pair per playbook), prints `[DIVERGENT]`/`[ERROR] <path>` per
+failing playbook as it goes, then the full report. **Exit
 code is 2 iff divergences exist, 1 when the tool itself failed.**
 
     krikri-playbook-generator generate --modules apt,copy,user,cron --seed 42 \

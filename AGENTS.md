@@ -339,8 +339,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   whole pipeline into one call when `--run-on-podman` is passed: after
   building the playbooks (still written to `--out` for later review
   either way), it immediately runs them via `Runner` with
-  `run_on_podman: true`, prints one `[DIVERGENT]`/`[IDENTICAL]`/
-  `[ERROR] <path>` line per playbook, then the full report. Exit code is
+  `run_on_podman: true`, prints one `[DIVERGENT]`/`[ERROR] <path>`
+  line per failing playbook (an identical one already shows `(ok)` in
+  the runner's completion line, so it is not repeated), then the full
+  report. Exit code is
   2 iff divergences exist (for `generate --run-on-podman`, `run`,
   and `report`); a `--min-happy-success` gate violation exits 1, as do
   tool errors. Plain `run` still supports
