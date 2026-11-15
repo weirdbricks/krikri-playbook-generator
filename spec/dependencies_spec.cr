@@ -46,6 +46,11 @@ module KrikriPlaybookGenerator
       assert_empty(deps.unknown?(["community.general.sudoers"]))
     end
 
+    it "keeps the base package sections out of the module list" do
+      deps = Dependencies.new(cluster_yaml_for_spec)
+      assert_equal(%w[ansible.builtin.expect community.general.sudoers], deps.installed_modules)
+    end
+
     it "derives the collection to install from a module's FQCN" do
       assert_equal("community.general", Dependencies.collection_for("community.general.ini_file"))
       assert_equal("ansible.posix", Dependencies.collection_for("ansible.posix.synchronize"))

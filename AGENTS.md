@@ -228,8 +228,17 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   whole batch. A golden without its `.ok` marker is discarded and re-baked
   (a bake that died leaves the file behind). Missing optional packages
   warn instead of failing the bake, so one bad entry cannot cost the whole
-  profile; the golden is never shared with the role tester's backend
-  (different image set, and its bake lock is per process).
+  profile; a bake whose installs leave the root at 95% or more raises a
+  disk-full error instead of letting the missing pip3 surface as a cryptic
+  ansible-core install failure. The Ubuntu golden's disk is grown by
+  `GOLDEN_EXTRA_GB` (8G) before its first boot because Ubuntu's minimal
+  image root (2.4G) cannot hold the profile (every package from gcc on
+  failed with no room left); cloud-init's growpart resizes root, and the
+  per-playbook overlays inherit the grown size. Rocky's 10G cloud image
+  root needs no growth, and only an OS that grows keys its fingerprint on
+  the size, so it keeps an already-baked golden. The golden is never
+  shared with the role tester's backend (different image set, and its bake
+  lock is per process).
 - `src/krikri_playbook_generator/podman_backend.cr` — `PodmanBackend`.
   **Implemented (v0.0.8, rewritten for isolation)**: provisions ONE
   template pair from `docker.io/library/debian:trixie-slim`

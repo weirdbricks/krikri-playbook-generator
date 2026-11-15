@@ -50,6 +50,16 @@ module KrikriPlaybookGenerator
     BAKE_ADDR   = "127.90.0.1"
     MAX_SLOTS   = 200
 
+    # Ubuntu's minimal cloud image has a 2.4G root. The ubuntu profile below
+    # (docker, mariadb, postgresql, zfs, snapd, rabbitmq, libvirt, bind,
+    # nodejs) needs more than it: the bake used to fill the disk alphabetically,
+    # so every package from gcc on failed as KPG_PKG_FAIL (pip3 included) and
+    # the only visible error was "pip3: command not found". The golden's disk
+    # is grown before its first boot and cloud-init's growpart resizes root;
+    # the per-playbook overlays inherit the grown size. Rocky's cloud image
+    # root is already 10G, so it is left alone (and keeps its golden).
+    GOLDEN_EXTRA_GB = 8
+
     DEFAULT_DIR = File.expand_path("~/.local/share/krikri-playbook-generator/microvm", home: true)
 
     # Rocky 10, not 9: the goldens carry the same pinned ansible-core the
@@ -198,7 +208,13 @@ module KrikriPlaybookGenerator
     # and a changed package list, prep or pinned core invalidates it.
     def self.fingerprint(os : String, packages : Array(String), collections : Array(String), prep : String) : String
       digest = Digest::SHA256.new
-      {os, CLOUD_IMAGES[os]?, ANSIBLE_CORE_PIN, packages.join("\n"), collections.join("\n"), prep}.each { |part| digest.update(part.to_s) }
+      parts = [] of String
+      parts << os << CLOUD_IMAGES[os]?.to_s << ANSIBLE_CORE_PIN
+      # Only an OS that actually grows its disk keys on it, so the OSes that
+      # do not grow keep their already-baked goldens.
+      parts << golden_extra_gb(os).to_s if golden_extra_gb(os) > 0
+      parts << packages.join("\n") << collections.join("\n") << prep
+      parts.each { |part| digest.update(part) }
       digest.final.hexstring[0, 16]
     end
 
@@ -227,6 +243,16 @@ module KrikriPlaybookGenerator
     # passed as argv[0] is looked up as an executable and dies File::NotFound.
     def self.overlay_args(base : String, overlay : String) : Array(String)
       ["create", "-f", "qcow2", "-F", "qcow2", "-b", base, overlay]
+    end
+
+    # A golden is grown past the base image's size: the ubuntu profile does
+    # not fit Ubuntu's 2.4G minimal image root (see GOLDEN_EXTRA_GB).
+    def self.golden_extra_gb(os : String) : Int32
+      os == "ubuntu" ? GOLDEN_EXTRA_GB : 0
+    end
+
+    def self.resize_args(gold : String, os : String) : Array(String)
+      ["resize", gold, "+#{golden_extra_gb(os)}G"]
     end
 
     def self.boot_args(name : String, overlay : String, seed : String, ip : String, port : Int32,
@@ -409,6 +435,12 @@ module KrikriPlaybookGenerator
       unless created.rc == 0
         raise MicrovmProvisionError.new("qemu-img create #{gold} failed: #{created.stderr.lines.last(3).join(" | ")}")
       end
+      if MicrovmBackend.golden_extra_gb(profile.os) > 0
+        grown = Cmd.run("qemu-img", MicrovmBackend.resize_args(gold, profile.os), timeout: 60.0)
+        unless grown.rc == 0
+          raise MicrovmProvisionError.new("qemu-img resize #{gold} failed: #{grown.stderr.lines.last(3).join(" | ")}")
+        end
+      end
 
       seed = write_seed("bake-#{profile.os}", profile.os, "kpg-bake-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-bake-#{profile.os}", BAKE_ADDR, File.join(work_dir, "bake"))
@@ -458,14 +490,38 @@ module KrikriPlaybookGenerator
       end
       # A missing package is a harness gap for its module, not a reason to
       # lose every other module of the profile: warn and keep the golden.
-      failures.each { |line| Log.info("microvm", "warning: golden #{profile.os}: #{line}") }
+      # A full disk is different - it fails every install in alphabetical
+      # order and only shows up later as a cryptic pip3 failure - so it is
+      # named here instead.
+      unless failures.empty?
+        disk = run_script(vm, "df -P / | tail -1", 60.0).stdout.strip
+        failures.each { |line| Log.info("microvm", "warning: golden #{profile.os}: #{line}") }
+        Log.info("microvm", "warning: golden #{profile.os}: disk after installs: #{disk}")
+        if used_pct = disk.split[4]?.try(&.chomp('%').to_i?)
+          if used_pct >= 95
+            raise MicrovmProvisionError.new("golden #{profile.os} filled its disk (#{disk}); " \
+                                            "#{failures.size} package install(s) failed with no room left")
+          end
+        end
+      end
       install_ansible(vm, profile)
     end
 
+    # Ubuntu's `ansible` package (part of the deb base) brings a distro
+    # ansible-core whose RECORD file pip will not uninstall, on top of
+    # PEP 668's refusal to install into the system Python: the podman
+    # template's --break-system-packages --ignore-installed is what puts
+    # the pinned core over it.
+    def self.ansible_install_command(os : String) : String
+      if os == "ubuntu"
+        "pip3 install --break-system-packages --ignore-installed #{ANSIBLE_CORE_PIN}"
+      else
+        "pip3 install #{ANSIBLE_CORE_PIN}"
+      end
+    end
+
     private def install_ansible(vm : Vm, profile : Profile) : Nil
-      script = "pip3 install #{ANSIBLE_CORE_PIN} || " \
-               "pip3 install --break-system-packages #{ANSIBLE_CORE_PIN}"
-      result = run_script(vm, script, 1200.0)
+      result = run_script(vm, MicrovmBackend.ansible_install_command(profile.os), 1200.0)
       unless result.rc == 0
         tail = (result.stdout + result.stderr).lines.map(&.strip).reject(&.empty?).last(5).join(" | ")
         raise MicrovmProvisionError.new("installing #{ANSIBLE_CORE_PIN} on the #{profile.os} golden failed: #{tail}")

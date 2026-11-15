@@ -12,6 +12,12 @@ module KrikriPlaybookGenerator
 
     DEPENDENCIES_YAML = {{ read_file("#{__DIR__}/data/module_dependencies.yml") }}
 
+    # The base lists are sections of the data file, not modules: giving them
+    # to the microvm profile selection let rpm_modules count as an Ubuntu
+    # "module", so the Ubuntu golden tried to install python3-dnf and
+    # python3-dnf-plugin-versionlock (which do not exist there).
+    BASE_SECTIONS = %w[deb_modules rpm_modules]
+
     def self.load : Dependencies
       Dependencies.new(DEPENDENCIES_YAML)
     end
@@ -32,7 +38,7 @@ module KrikriPlaybookGenerator
     end
 
     def installed_modules : Array(String)
-      @modules.keys.sort!
+      @modules.keys.reject { |key| BASE_SECTIONS.includes?(key) }.sort!
     end
 
     # Union of the base lists and the given modules' extras, partitioned

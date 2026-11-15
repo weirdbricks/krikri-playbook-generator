@@ -30,6 +30,23 @@ module KrikriPlaybookGenerator
       refute_includes(args.join(" "), " 4G ")
     end
 
+    it "grows a golden past the base image's root, which ubuntu's minimal image cannot hold" do
+      assert_equal(["resize", "/work/gold.qcow2", "+#{MicrovmBackend::GOLDEN_EXTRA_GB}G"],
+        MicrovmBackend.resize_args("/work/gold.qcow2", "ubuntu"))
+      assert(MicrovmBackend::GOLDEN_EXTRA_GB > 0)
+      assert_equal(0, MicrovmBackend.golden_extra_gb("rocky"))
+      assert_equal(MicrovmBackend::GOLDEN_EXTRA_GB, MicrovmBackend.golden_extra_gb("ubuntu"))
+    end
+
+    it "puts the pinned core over Ubuntu's distro ansible without tripping PEP 668" do
+      ubuntu = MicrovmBackend.ansible_install_command("ubuntu")
+      assert_includes(ubuntu, "--break-system-packages")
+      assert_includes(ubuntu, "--ignore-installed")
+      assert_includes(ubuntu, "ansible-core==#{MicrovmBackend::ANSIBLE_CORE_VERSION}")
+      assert_equal("pip3 install ansible-core==#{MicrovmBackend::ANSIBLE_CORE_VERSION}",
+        MicrovmBackend.ansible_install_command("rocky"))
+    end
+
     it "boots with slirp hostfwd on the kpg address space and a separate port from the role tester" do
       args = MicrovmBackend.boot_args("kpg-real-1", "/w/disk.qcow2",
         "/w/seed.iso", "127.90.3.1", MicrovmBackend::SSH_PORT, "/w/console.log", "/w/qemu.pid")
