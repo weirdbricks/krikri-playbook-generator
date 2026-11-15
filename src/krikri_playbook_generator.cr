@@ -113,6 +113,8 @@ module KrikriPlaybookGenerator
   # register/when chains, loops and handlers. Needs at least two scanned
   # modules to be meaningful; a smaller pool falls back to the
   # single-task shape rather than repeating a module inside one play.
+  # Each playbook stays on one host profile (see Generator#generate_scenarios),
+  # so its task count can be below `per_playbook`.
   private def self.build_multi_task_playbooks(opts : Options, generator : Generator,
                                               schemas : Array(ModuleSchema)) : Array(String)
     per_playbook = Math.min(opts.tasks_per_playbook, schemas.size)
@@ -126,7 +128,8 @@ module KrikriPlaybookGenerator
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
-                         "(#{per_playbook} tasks each, chaos=#{opts.chaos_percentage}%, seed=#{opts.seed})")
+                         "(up to #{per_playbook} tasks each, one host profile per playbook, " \
+                         "chaos=#{opts.chaos_percentage}%, seed=#{opts.seed})")
     scenarios = generator.generate_scenarios(schemas, per_playbook, opts.count)
     Log.info("generate", "building #{scenarios.size} playbook(s) into #{opts.out_dir}")
     PlaybookBuilder.new(opts.out_dir, opts.seed).build_scenarios(scenarios)

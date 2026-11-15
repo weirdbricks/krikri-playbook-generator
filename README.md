@@ -43,7 +43,9 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    `testing/test-*.yml` fixtures. `--tasks-per-playbook N` (N >= 2)
    instead builds multi-task playbooks from distinct modules with
    `register:`/`when:` chains, `loop:` over the fixture sources and a
-   play-level handler (v2).
+   play-level handler (v2). One playbook's tasks always share a host
+   profile (Ubuntu vs Rocky), so a profile with fewer than N modules
+   yields a shorter playbook rather than a mix no single host can run.
 4. **runner** — two backends, neither the default. **Local** runs each
   playbook against both engines on this machine (`-i localhost, -c
   local`), `--check --diff` unless `--allow-mutation` is passed, so

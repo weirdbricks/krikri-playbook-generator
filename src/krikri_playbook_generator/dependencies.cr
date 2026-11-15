@@ -18,6 +18,22 @@ module KrikriPlaybookGenerator
     # python3-dnf-plugin-versionlock (which do not exist there).
     BASE_SECTIONS = %w[deb_modules rpm_modules]
 
+    # Modules that need rpm tooling or an SELinux-enabled kernel: no Debian
+    # or Ubuntu host can run them. The placement lives here because it picks
+    # the host image a module belongs to, the same decision the package
+    # lists express, and both the runner and the generator need it.
+    ROCKY_MODULES = Set{
+      "dnf", "dnf5", "yum", "yum_repository", "rpm_key", "dnf_versionlock", "yum_versionlock",
+      "selinux", "seboolean", "sefcontext", "seport", "firewalld", "firewalld_info",
+    }
+
+    # The host profile a playbook's tasks must share: one playbook runs on
+    # one golden/container image, and the two profiles cannot be installed
+    # side by side. `module_names` may hold short names or FQCNs.
+    def self.host_profile(module_names : Array(String)) : String
+      module_names.any? { |name| ROCKY_MODULES.includes?(name.split(".").last) } ? "rocky" : "ubuntu"
+    end
+
     def self.load : Dependencies
       Dependencies.new(DEPENDENCIES_YAML)
     end

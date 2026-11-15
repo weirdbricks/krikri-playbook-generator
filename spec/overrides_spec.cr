@@ -46,6 +46,25 @@ module KrikriPlaybookGenerator
       assert_empty(overrides.always("copy"))
     end
 
+    it "pins every mysql happy path to the local socket and root login" do
+      overrides = Overrides.load
+      %w[mysql_db mysql_user mysql_info mysql_variables mysql_query].each do |module_name|
+        always = overrides.always(module_name)
+        assert_includes(always, "login_unix_socket")
+        assert_includes(always, "login_user")
+        %w[login_port ca_cert client_cert client_key].each do |option|
+          assert(overrides.excluded?(module_name, option), "#{module_name} must exclude #{option}")
+        end
+      end
+    end
+
+    it "keeps the file-mode names entry off mysql_variables' mode choice" do
+      overrides = Overrides.load
+      mode = overrides.for_option("mysql_variables", "mode")
+      refute_nil(mode)
+      assert_equal(["global"], mode.as(Overrides::OptionOverride).pool)
+    end
+
     it "exposes a module-level free-form pool" do
       overrides = Overrides.load
       assert_includes(overrides.free_form("meta"), "noop")

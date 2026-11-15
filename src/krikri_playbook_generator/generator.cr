@@ -2,6 +2,7 @@ require "yaml"
 require "./schema"
 require "./fixtures"
 require "./overrides"
+require "./dependencies"
 require "random/pcg32"
 
 module KrikriPlaybookGenerator
@@ -121,8 +122,8 @@ module KrikriPlaybookGenerator
       Array(GeneratedTask).new(count) { build_task(schema) }
     end
 
-    # v2 multi-task scenarios: `count` playbooks of `per_playbook` tasks
-    # each, every task from a DIFFERENT module (sampled without
+    # v2 multi-task scenarios: `count` playbooks of up to `per_playbook`
+    # tasks each, every task from a DIFFERENT module (sampled without
     # replacement from the scanned pool), then wired into an interaction
     # chain - every task except a static import registers `kpg_task_<i>`,
     # tasks after a registering one run under a `when:` on its register,
@@ -131,14 +132,25 @@ module KrikriPlaybookGenerator
     # may `notify:` a play-level handler. Wiring is structural (recorded
     # in the sidecar as wiring, never as a chaos mutation); chaos is still
     # applied per task exactly as in the single-task shape.
+    #
+    # Every task in one scenario shares a host profile (Dependencies
+    # .host_profile): a playbook runs on one golden or container image, and
+    # the Ubuntu and Rocky profiles cannot be installed side by side, so a
+    # random draw that mixed, say, yum_repository with a mysql module sent
+    # the mysql task to the Rocky golden and every such playbook errored as
+    # a harness gap. A profile with fewer than per_playbook modules yields
+    # a shorter scenario rather than crossing profiles.
     def generate_scenarios(schemas : Array(ModuleSchema), per_playbook : Int32,
                            count : Int32) : Array(Array(GeneratedTask))
       raise ArgumentError.new("multi-task scenarios need per_playbook >= 2, got #{per_playbook}") if per_playbook < 2
       raise ArgumentError.new("multi-task scenarios need at least 2 scanned modules, got #{schemas.size}") if schemas.size < 2
 
-      per = Math.min(per_playbook, schemas.size)
+      pools = schemas.group_by { |schema| Dependencies.host_profile([schema.module_name]) }
       Array(Array(GeneratedTask)).new(count) do
-        tasks = schemas.sample(per, @rng).map { |schema| build_task(schema) }
+        first = schemas.sample(@rng)
+        pool = pools[Dependencies.host_profile([first.module_name])]
+        per = Math.min(per_playbook, pool.size)
+        tasks = ([first] + (pool - [first]).sample(per - 1, @rng)).map { |schema| build_task(schema) }
         wire_scenario!(tasks)
         tasks
       end

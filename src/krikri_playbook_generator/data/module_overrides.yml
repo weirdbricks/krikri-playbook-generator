@@ -497,9 +497,14 @@ modules:
     extensions: {exclude: true}
     always: [file]
 
-  # --- real-host (Atlantic) profiles: daemons and kernel modules live on
-  # the disposable VMs, so these pin the connection-ish options to the
-  # services the profile prep guarantees (see AtlanticBackend::PROFILES).
+  # --- real-host (Atlantic / microVM) profiles: daemons and kernel modules
+  # live on the disposable hosts, so these pin the connection-ish options to
+  # the services the profile prep guarantees (see AtlanticBackend::PROFILES)
+  # and keep TLS/path options out of the happy baseline: the fixtures hold no
+  # certificate, so a random ca_cert/client_cert/client_key path makes the
+  # task fail before the module logic runs. login_unix_socket and login_user
+  # are `always`: without them the client falls back to `~/.my.cnf` or a TCP
+  # port nothing listens on, which is the failure the coverage metric sees.
 
   mysql_db:
     login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
@@ -509,43 +514,96 @@ modules:
     login_password: {exclude: true}
     config_file: {exclude: true}
     connect_timeout: {exclude: true}
+    ca_cert: {exclude: true}
+    check_hostname: {exclude: true}
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
     collation: {exclude: true}
     encoding: {kind: literal_pool, pool: ["utf8mb4"]}
-    always: [name]
+    # dump/import need an on-disk target file the fixtures do not seed
+    state: {choices: [present, absent]}
+    always: [login_unix_socket, login_user, name]
 
   mysql_user:
     login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
     login_user: {kind: literal_pool, pool: ["root"]}
     login_host: {exclude: true}
+    login_port: {exclude: true}
     login_password: {exclude: true}
     config_file: {exclude: true}
+    ca_cert: {exclude: true}
+    check_hostname: {exclude: true}
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
     host: {kind: literal_pool, pool: ["localhost"]}
     password: {kind: literal_pool, pool: ["kpg-pass-1", "kpg-pass-2"]}
-    always: [name]
+    priv: {kind: literal_pool, pool: ["*.*:USAGE"]}
+    # ansible.mysql's argument spec lives in module_utils, which the static
+    # constraint extractor does not reach, so append_privs|subtract_privs
+    # exclusivity is unknown here; keep one out so the happy path is valid.
+    # The plugin options name server plugins and auth strings, not free
+    # values: a random word fails user creation.
+    subtract_privs: {exclude: true}
+    plugin: {exclude: true}
+    plugin_auth_string: {exclude: true}
+    plugin_hash_string: {exclude: true}
+    salt: {exclude: true}
+    always: [login_unix_socket, login_user, name]
 
   mysql_info:
     login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
     login_user: {kind: literal_pool, pool: ["root"]}
     login_host: {exclude: true}
+    login_port: {exclude: true}
     login_password: {exclude: true}
+    login_db: {exclude: true}
     config_file: {exclude: true}
+    ca_cert: {exclude: true}
+    check_hostname: {exclude: true}
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
     filter: {exclude: true}
+    always: [login_unix_socket, login_user]
 
   mysql_variables:
     login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
     login_user: {kind: literal_pool, pool: ["root"]}
     login_host: {exclude: true}
+    login_port: {exclude: true}
     login_password: {exclude: true}
     config_file: {exclude: true}
+    ca_cert: {exclude: true}
+    check_hostname: {exclude: true}
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
+    # `mode` here chooses global/persist/persist_only, not a file mode: the
+    # names: entry's octal pool is wrong for this module. Only `global` runs
+    # on MariaDB (the persist modes need a real MySQL 8.0+ server).
+    mode: {kind: literal_pool, pool: ["global"]}
+    variable: {kind: literal_pool, pool: ["max_connections"]}
+    value: {kind: literal_pool, pool: ["100"]}
+    always: [login_unix_socket, login_user, variable]
 
   mysql_query:
     login_unix_socket: {kind: literal_pool, pool: ["/run/mysqld/mysqld.sock"]}
     login_user: {kind: literal_pool, pool: ["root"]}
     login_host: {exclude: true}
+    login_port: {exclude: true}
     login_password: {exclude: true}
+    login_db: {exclude: true}
+    config_file: {exclude: true}
+    ca_cert: {exclude: true}
+    check_hostname: {exclude: true}
+    client_cert: {exclude: true}
+    client_key: {exclude: true}
+    # the baseline query is a literal, so format arguments make real
+    # ansible reject it ("not all arguments converted"); they need a query
+    # with placeholders, which the baseline does not generate
+    named_args: {exclude: true}
+    positional_args: {exclude: true}
     query: {kind: literal_pool, pool: ["SELECT 1 AS kpg_q", "SELECT CURRENT_USER()"]}
     single_row: {kind: literal_pool, pool: ["true", "false"]}
-    always: [query]
+    always: [login_unix_socket, login_user, query]
 
   postgresql_db:
     login_unix_socket: {kind: literal_pool, pool: ["/var/run/postgresql"]}

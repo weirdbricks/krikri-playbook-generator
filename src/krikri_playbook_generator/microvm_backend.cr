@@ -94,11 +94,6 @@ module KrikriPlaybookGenerator
       "firewalld", "firewalld_info", "selinux", "seboolean", "sefcontext", "seport",
     }
 
-    ROCKY_MODULES = Set{
-      "dnf", "dnf5", "yum", "yum_repository", "rpm_key", "dnf_versionlock", "yum_versionlock",
-      "selinux", "seboolean", "sefcontext", "seport", "firewalld", "firewalld_info",
-    }
-
     SERVICE_PACKAGES = {
       "ubuntu" => %w[
         mariadb-server python3-pymysql postgresql python3-psycopg2
@@ -173,7 +168,7 @@ module KrikriPlaybookGenerator
     # anything else the Ubuntu one. A multi-task playbook takes Rocky when
     # any of its tasks does, mirroring the podman path's per-playbook choice.
     def self.profile_for(module_names : Array(String)) : String
-      module_names.any? { |name| ROCKY_MODULES.includes?(name.split(".").last) } ? "rocky" : "ubuntu"
+      Dependencies.host_profile(module_names)
     end
 
     def self.microvm_only?(module_names : Array(String)) : Bool

@@ -70,6 +70,25 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "keeps every task in a scenario on one host profile" do
+      rocky = ModuleSchema.new("yum_repository", "ansible.builtin")
+      ubuntu = [apt_schema, copy_schema, debug_schema]
+      shapes = [] of Array(String)
+
+      (1..60).each do |seed|
+        Generator.new(seed, 0.0).generate_scenarios([rocky] + ubuntu, 3, 4).each do |tasks|
+          profiles = tasks.map { |task| Dependencies.host_profile([task.module_name]) }.uniq!
+          assert_equal(1, profiles.size, "scenario mixed host profiles: #{tasks.map(&.module_name)}")
+          shapes << tasks.map(&.module_name)
+        end
+      end
+
+      # a lone Rocky module still gets its own (shorter) scenario instead of
+      # being paired with an Ubuntu task it could never share a host with
+      assert(shapes.any? { |names| names == ["yum_repository"] })
+      assert(shapes.any? { |names| names.size == 3 && !names.includes?("yum_repository") })
+    end
+
     it "chains each task's when condition onto the previous task's register" do
       Generator.new(2, 0.0).generate_scenarios([apt_schema, copy_schema, debug_schema], 3, 10).each do |tasks|
         refute(tasks.first.when_condition)

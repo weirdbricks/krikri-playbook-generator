@@ -10,6 +10,14 @@ module KrikriPlaybookGenerator
     # beyond these, that IS the divergence being hunted.
     MASKS = [
       {
+        Regex.new("(Warning: Permanently added ')\\[[^\\]]+\\](?::\\d+)?(' \\([A-Z0-9]+\\) to the list of known hosts)"),
+        "\\1<HOST>\\2",
+        "each engine connects to its own host (one VM or container per engine), so the " \
+        "known_hosts warning can never print the same address on both sides; only the " \
+        "bracketed address and its port are masked, the warning text and key type must " \
+        "still match",
+      },
+      {
         Regex.new("^\\[WARNING\\][^\\n]*discovered Python interpreter[^\\n]*\\n?", Regex::Options::MULTILINE),
         "",
         "real ansible warns that the host uses the discovered Python interpreter; " \

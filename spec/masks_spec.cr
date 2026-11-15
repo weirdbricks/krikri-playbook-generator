@@ -11,6 +11,17 @@ module KrikriPlaybookGenerator
       assert(masked.includes?("ok: done"))
     end
 
+    it "masks the per-engine host address in the SSH known_hosts warning" do
+      a = %(Warning: Permanently added '[127.90.1.1]:2422' (ED25519) to the list of known hosts.\n)
+      b = %(Warning: Permanently added '[127.90.1.2]:2422' (ED25519) to the list of known hosts.\n)
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      assert(ByteDiff.mask(a).includes?("'<HOST>' (ED25519) to the list of known hosts"))
+
+      # the key type and the warning itself must still differ
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("ED25519", "RSA")))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("known hosts", "known host")))
+    end
+
     it "masks only the lone discovered_interpreter_python key in a fatal JSON dump" do
       with_key = %(fatal: [t]: FAILED! => {"ansible_facts": {"discovered_interpreter_python": "/usr/bin/python3.13"}, "changed": false, "msg": "x"}\n)
       without = %(fatal: [t]: FAILED! => {"changed": false, "msg": "x"}\n)

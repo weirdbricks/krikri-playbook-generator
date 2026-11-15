@@ -84,8 +84,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   Deterministic per seed (`Random::PCG32`);
   every mutation is recorded in `GeneratedTask#mutations`, never applied
   silently. `generate_scenarios(schemas, per_playbook, count)` is the v2
-  multi-task entry point: per scenario it samples `per_playbook` DISTINCT
-  module schemas, builds one task each through the same baseline+chaos
+  multi-task entry point: per scenario it samples up to `per_playbook`
+  DISTINCT module schemas that all share one host profile
+  (`Dependencies.host_profile`), builds one task each through the same
+  baseline+chaos
   path, then wires the chain — every task except a static import registers
   `kpg_task_<i>` (the builder writes it), tasks after a registering one get
   a `when:` on its register (`is succeeded` / `is not skipped`), a task
