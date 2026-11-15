@@ -156,7 +156,7 @@ module KrikriPlaybookGenerator
         krikri)
     end
 
-    it "runs each playbook on its own profile's template image, even after another profile was provisioned" do
+    it "runs each playbook on its own profile's template image, even after another profile was provisioned", tags: :slow do
       skip("podman not available on this machine") unless PodmanBackend.available?
 
       krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
@@ -186,7 +186,7 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
-    it "provisions two throwaway containers, runs a real playbook in each, and tears down cleanly" do
+    it "provisions two throwaway containers, runs a real playbook in each, and tears down cleanly", tags: :slow do
       skip("podman not available on this machine") unless PodmanBackend.available?
 
       krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
@@ -212,7 +212,7 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
-    it "serves the second provision from the template image cache instead of rebuilding" do
+    it "serves the second provision from the template image cache instead of rebuilding", tags: :slow do
       skip("podman not available on this machine") unless PodmanBackend.available?
 
       krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
@@ -242,7 +242,7 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
-    it "rebuilds only the krikri binary layer when a base template pair exists" do
+    it "rebuilds only the krikri binary layer when a base template pair exists", tags: :slow do
       skip("podman not available on this machine") unless PodmanBackend.available?
 
       # A nonce per build keeps the full fingerprint uncached, so the spec
