@@ -165,8 +165,18 @@ module KrikriPlaybookGenerator
 
       extra = supported_module_names(listing, supported.reject { |fqcn| SCOPE_EXCLUDED.includes?(fqcn.split(".").last) })
       missing = supported.reject { |fqcn| extra.includes?(fqcn) || SCOPE_EXCLUDED.includes?(fqcn.split(".").last) }
-      STDERR.puts "warning: #{missing.size} supported module(s) not installed: #{missing.join(", ")}" unless missing.empty?
+      if warning = uninstalled_warning(missing)
+        STDERR.puts(warning)
+      end
       names.concat(extra)
+    end
+
+    # The names are mostly legacy spellings of modules the scope already
+    # carries under their installed FQCN, and the line was long enough to
+    # drown out real warnings - only the count is actionable.
+    def self.uninstalled_warning(missing : Array(String)) : String?
+      return if missing.empty?
+      "warning: #{missing.size} supported module(s) not installed"
     end
 
     private def discover_module_names : Array(String)

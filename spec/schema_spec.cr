@@ -90,6 +90,12 @@ module KrikriPlaybookGenerator
       assert_equal(["copy"], names)
     end
 
+    it "reports only the count of uninstalled spellings, not every name" do
+      assert_equal("warning: 2 supported module(s) not installed",
+        SchemaScanner.uninstalled_warning(%w[ansible.builtin.facts ansible.builtin.yum]))
+      assert_nil(SchemaScanner.uninstalled_warning([] of String))
+    end
+
     it "keeps play-level keywords out of the task scope but keeps task actions" do
       listing = JSON.parse(%({"ansible.builtin.import_playbook": {}, "ansible.builtin.import_tasks": {}}))
       names = SchemaScanner.names_from_listing(listing, %w[ansible.builtin.import_playbook])
