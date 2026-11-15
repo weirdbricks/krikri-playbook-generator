@@ -46,6 +46,16 @@ module KrikriPlaybookGenerator
       assert_empty(deps.unknown?(["community.general.sudoers"]))
     end
 
+    it "finds a module by its short name, so a hand-written repro still gets its packages" do
+      deps = Dependencies.new(cluster_yaml_for_spec)
+      sets = deps.package_sets(["sudoers"])
+
+      assert_includes(sets.real_debian, "sudo")
+      assert_includes(sets.collections, "community.general:==13.4.0")
+      assert_empty(deps.unknown?(["sudoers"]))
+      assert_equal(["does_not_exist"], deps.unknown?(["does_not_exist"]))
+    end
+
     it "keeps the base package sections out of the module list" do
       deps = Dependencies.new(cluster_yaml_for_spec)
       assert_equal(%w[ansible.builtin.expect community.general.sudoers], deps.installed_modules)

@@ -101,11 +101,22 @@ module KrikriPlaybookGenerator
     end
 
     private def union_entries(module_fqcns : Array(String), key : String) : Array(String)
-      module_fqcns.flat_map { |fqcn| @modules[fqcn]?.try(&.[key]?) || [] of String }
+      module_fqcns.flat_map { |fqcn| entry_for(fqcn).try(&.[key]?) || [] of String }
+    end
+
+    # A hand-written playbook may name a module by its short name
+    # (`seboolean`), which the table knows only by FQCN; match the unique
+    # entry whose last segment is that name so its packages are still
+    # installed.
+    private def entry_for(name : String) : Hash(String, Array(String))?
+      return @modules[name]? if @modules.has_key?(name)
+      short = name.split(".").last
+      matches = @modules.select { |key, _| key.split(".").last == short }
+      matches.size == 1 ? matches.values.first : nil
     end
 
     def unknown?(module_fqcns : Array(String)) : Array(String)
-      module_fqcns.reject { |fqcn| @modules.has_key?(fqcn) }
+      module_fqcns.reject { |fqcn| !entry_for(fqcn).nil? }
     end
 
     private def parse_modules(parsed : YAML::Any) : Hash(String, Hash(String, Array(String)))

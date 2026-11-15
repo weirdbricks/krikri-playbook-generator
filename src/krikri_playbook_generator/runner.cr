@@ -1,4 +1,5 @@
 require "json"
+require "yaml"
 require "./cmd"
 require "./log"
 require "./podman_backend"
@@ -520,7 +521,78 @@ module KrikriPlaybookGenerator
 
       # fall back to the batch naming convention when no sidecar exists
       match = File.basename(path).match(/\A\d{6}-(.+)-(happy|chaos)\.yml\z/)
-      match.try { |filename_match| MetaInfo.primary(filename_match[1], filename_match[2] == "chaos", [] of {String, String}) }
+      if match
+        return MetaInfo.primary(match[1], match[2] == "chaos", [] of {String, String})
+      end
+
+      # A hand-saved repro (a kpg issue's playbook block, `repro.yml`) has
+      # neither a sidecar nor the batch name. Without its modules the template
+      # installs none of their packages, and every module with a system or
+      # Python dependency dies on the reference side as a "harness gap"
+      # (issue #1298: seboolean's libselinux binding was never installed, so
+      # its repro could never be verified).
+      modules = Runner.modules_from_playbook(read_playbook(path))
+      return if modules.empty?
+      MetaInfo.new(modules.first, false, [] of {String, String}, modules)
+    end
+
+    private def read_playbook(path : String) : String
+      File.read(path)
+    rescue File::Error
+      ""
+    end
+
+    PLAY_TASK_LISTS = %w[tasks pre_tasks post_tasks handlers]
+
+    # Words a task or play uses for wiring, never for a module.
+    TASK_KEYWORDS = %w[
+      name action args any_errors_fatal async become become_exe become_flags
+      become_method become_user changed_when check_mode collections connection
+      debugger delay delegate_facts delegate_to diff environment failed_when
+      gather_facts ignore_errors ignore_unreachable listen local_action loop
+      loop_control module_defaults no_log notify order poll port register
+      remote_user retries run_once tags throttle timeout until vars when
+    ]
+
+    # The modules a playbook names, in order of first appearance: every task's
+    # module, including the ones nested in block/rescue/always, across all of
+    # the play's task lists. Public for the specs.
+    def self.modules_from_playbook(text : String) : Array(String)
+      modules = [] of String
+      YAML.parse_all(text).each do |document|
+        plays = document.as_a? || [document]
+        plays.each { |play| collect_play_modules(play, modules) }
+      end
+      modules.uniq!
+    end
+
+    private def self.collect_play_modules(play : YAML::Any, modules : Array(String)) : Nil
+      fields = play.as_h?
+      return unless fields
+      PLAY_TASK_LISTS.each do |list|
+        next unless tasks = fields[list]?.try(&.as_a?)
+        tasks.each { |task| collect_task_modules(task, modules) }
+      end
+    end
+
+    private def self.collect_task_modules(task : YAML::Any, modules : Array(String)) : Nil
+      fields = task.as_h?
+      return unless fields
+      fields.each do |key, value|
+        name = key.as_s
+        case name
+        when "block", "rescue", "always"
+          value.as_a?.try(&.each { |entry| collect_task_modules(entry, modules) })
+        when "action", "local_action"
+          if action = value.as_s?
+            action.split(/\s+/, 2).first?.try { |module_name| modules << module_name }
+          end
+        else
+          # `with_items` and its siblings are loop wiring, like `loop`
+          next if TASK_KEYWORDS.includes?(name) || name.starts_with?("with_")
+          modules << name
+        end
+      end
     end
 
     private def parse_meta(text : String) : MetaInfo?

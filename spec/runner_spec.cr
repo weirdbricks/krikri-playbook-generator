@@ -262,4 +262,42 @@ module KrikriPlaybookGenerator
       assert(Runner.in_parallel([] of String, 2) { |path| ran(path) }.empty?)
     end
   end
+
+  describe Runner do
+    it "reads the modules off a hand-saved repro playbook, including blocks and handlers" do
+      text = <<-YAML
+        ---
+        - name: hand-saved repro
+          hosts: all
+          gather_facts: false
+          tasks:
+            - name: block wrapper
+              block:
+                - name: a nested task
+                  ansible.posix.seboolean:
+                    name: sshd_disable_trans
+                    state: true
+                  register: kpg_task_0
+                  ignore_errors: true
+                - name: a shell action
+                  action: ansible.builtin.shell echo hi
+            - name: firewalld
+              ansible.posix.firewalld_info:
+                active_zones: true
+          handlers:
+            - name: a handler
+              ansible.builtin.debug:
+                msg: ran
+        YAML
+
+      assert_equal(%w[
+        ansible.posix.seboolean ansible.builtin.shell
+        ansible.posix.firewalld_info ansible.builtin.debug
+      ], Runner.modules_from_playbook(text))
+    end
+
+    it "finds no modules in a playbook without tasks" do
+      assert_empty(Runner.modules_from_playbook("---\n- hosts: all\n  gather_facts: false\n"))
+    end
+  end
 end
