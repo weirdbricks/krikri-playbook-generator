@@ -26,18 +26,23 @@ module KrikriPlaybookGenerator
   # left, and `leak_check` verifies at the end that no kpg-* container
   # survived.
   #
-  # The committed template images are a content-addressed CACHE, not
-  # throwaways: each is tagged `<stable-name>:<fingerprint>`, where the
-  # fingerprint is a SHA-256 over everything the template's content depends
-  # on (profile, base image, package sets, expected ansible-core version,
-  # krikri binary + plugins digests, the fixture seed script). When both
-  # images for a profile's current fingerprint already exist, provisioning
-  # is skipped entirely and the pair is started from the cached images;
-  # only `--refresh-podman-templates` forces a rebuild (a build also
-  # caps the cache at the newest MAX_CACHED_TEMPLATES tags of each
-  # stable name). The version/binary assertions
-  # still ran inside whatever build produced that tag, because a fingerprint
-  # covers exactly the inputs those assertions check.
+  # The committed template images are a two-level content-addressed CACHE,
+  # not throwaways. The BASE pair (`kpg-base-*:<base fingerprint>`) carries
+  # everything the package layer depends on (profile, base image, package
+  # sets, expected ansible-core version, fixtures, inventory) and is built by
+  # an apt/dnf install, so it changes only when one of those lists does. The
+  # FULL pair (`kpg-img-*:<fingerprint>`) is the base plus the staged krikri
+  # binary and plugins. When both full images exist, provisioning is skipped
+  # and the pair is started from them; when only the base exists, the pair is
+  # started from it and just the binary layer is committed. That second case
+  # is the common one: every cycle's fix passes rebuild `krikri-playbook`, and
+  # keying the package install on its digest cost an apt install plus a
+  # ~600 MB commit per cycle (220-350 s measured) for a 27 MB binary change.
+  # Only `--refresh-podman-templates` forces a rebuild from the base image (a
+  # build also caps each stable name at the newest MAX_CACHED_TEMPLATES tags).
+  # The version/binary assertions still ran inside whatever build produced
+  # that tag, because a fingerprint covers exactly the inputs those
+  # assertions check.
   #
   # Unlike podman-diff, this installs a UNION dependency set (the base
   # lists plus Dependencies#supported's extras) once per profile rather
@@ -91,7 +96,15 @@ module KrikriPlaybookGenerator
     IMAGE_NAME_KRIKRI_DEBIAN = "kpg-img-krikri-debian"
     IMAGE_NAME_REAL_RPM      = "kpg-img-real-rpm"
     IMAGE_NAME_KRIKRI_RPM    = "kpg-img-krikri-rpm"
-    MAX_CACHED_TEMPLATES     = 10
+
+    # The binary-free package layer the full images are built on top of. Its
+    # fingerprint deliberately excludes the krikri binary and plugins, so a
+    # rebuilt engine reuses this pair instead of re-running apt/dnf.
+    IMAGE_NAME_BASE_REAL_DEBIAN   = "kpg-base-real-debian"
+    IMAGE_NAME_BASE_KRIKRI_DEBIAN = "kpg-base-krikri-debian"
+    IMAGE_NAME_BASE_REAL_RPM      = "kpg-base-real-rpm"
+    IMAGE_NAME_BASE_KRIKRI_RPM    = "kpg-base-krikri-rpm"
+    MAX_CACHED_TEMPLATES          = 10
 
     def self.available? : Bool
       !!Process.find_executable("podman")
@@ -151,6 +164,14 @@ module KrikriPlaybookGenerator
       end
     end
 
+    def self.base_image_names(profile : Profile, fingerprint : String) : {String, String}
+      if profile.debian?
+        {"#{IMAGE_NAME_BASE_REAL_DEBIAN}:#{fingerprint}", "#{IMAGE_NAME_BASE_KRIKRI_DEBIAN}:#{fingerprint}"}
+      else
+        {"#{IMAGE_NAME_BASE_REAL_RPM}:#{fingerprint}", "#{IMAGE_NAME_BASE_KRIKRI_RPM}:#{fingerprint}"}
+      end
+    end
+
     # Visible for specs: the identical bash script both engines exec.
     # Check mode appends --check only - never --diff, whose krikri hunk
     # formatting has a known gap that would flood the findings.
@@ -170,6 +191,7 @@ module KrikriPlaybookGenerator
       @run_index = 0
       @provisioned_profiles = [] of Profile
       @cache_hits = [] of Profile
+      @base_cache_hits = [] of Profile
       @stale_cleaned = false
     end
 
@@ -204,8 +226,48 @@ module KrikriPlaybookGenerator
         return
       end
 
-      @name_real = "kpg-tpl-real#{@suffix}"
-      @name_krikri = "kpg-tpl-krikri#{@suffix}"
+      base_fingerprint = base_fingerprint(profile)
+      base_real, base_krikri = PodmanBackend.base_image_names(profile, base_fingerprint)
+      @name_real = profile.debian? ? "kpg-tpl-real#{@suffix}" : "kpg-rpmtpl-real#{@suffix}"
+      @name_krikri = profile.debian? ? "kpg-tpl-krikri#{@suffix}" : "kpg-rpmtpl-krikri#{@suffix}"
+
+      base_hit = !@refresh_templates && image_exists?(base_real) && image_exists?(base_krikri)
+      if base_hit
+        # The package layer is the expensive half, and it is the half the
+        # krikri binary never touches: start from the cached base pair and
+        # commit only the staged binary on top of it.
+        Log.info("podman", "#{label} template base cache hit (#{base_fingerprint}) - " \
+                           "starting #{@name_real} + #{@name_krikri} from #{base_real}")
+        start_from_image(base_real, @name_real)
+        start_from_image(base_krikri, @name_krikri)
+        @base_cache_hits << profile
+      else
+        build_package_layer(profile, label)
+      end
+
+      Log.info("podman", "#{label} template: asserting ansible-core == #{EXPECTED_ANSIBLE_VERSION}")
+      assert_ansible_version!
+      unless base_hit
+        Log.info("podman", "#{label} template: committing base #{base_real} + #{base_krikri}")
+        commit_and_prune(base_real, base_krikri)
+      end
+
+      Log.info("podman", "#{label} template: staging krikri-playbook binary")
+      stage_krikri_binary
+      assert_krikri_binary!
+      Log.info("podman", "#{label} template: committing #{real_image} + #{krikri_image}")
+      commit_and_prune(real_image, krikri_image)
+      drop_templates
+      Log.info("podman", "#{label} template: ready (#{real_image})")
+      @images[profile] = {real_image, krikri_image}
+      @provisioned_profiles << profile
+    end
+
+    # The expensive half of the template: the union dependency set installed
+    # into a fresh pair from the base image, then fixtures and the inventory.
+    # Everything the krikri binary does not touch, so its result is worth
+    # committing on its own as the base pair.
+    private def build_package_layer(profile : Profile, label : String) : Nil
       sets = package_sets
       case profile
       when Profile::Debian
@@ -226,8 +288,6 @@ module KrikriPlaybookGenerator
                           "apt-get install -y -qq --no-install-recommends python3-pip >/dev/null && " \
                           "pip3 install --quiet --break-system-packages --ignore-installed #{ANSIBLE_CORE_PIN}", 900.0)
       when Profile::Rpm
-        @name_real = "kpg-rpmtpl-real#{@suffix}"
-        @name_krikri = "kpg-rpmtpl-krikri#{@suffix}"
         Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE_RPM})")
         start_container(@name_real, IMAGE_RPM)
         start_container(@name_krikri, IMAGE_RPM)
@@ -243,23 +303,16 @@ module KrikriPlaybookGenerator
         install_collections(@name_real, sets.collections)
       end
 
-      Log.info("podman", "#{label} template: staging krikri-playbook binary")
-      stage_krikri_binary
       Log.info("podman", "#{label} template: seeding fixtures (identical on both sides)")
       seed_fixtures
       Log.info("podman", "#{label} template: preparing /work + inventory")
       prepare_workdir
-      Log.info("podman", "#{label} template: asserting ansible-core == #{EXPECTED_ANSIBLE_VERSION} / krikri binary")
-      assert_ansible_version!
-      assert_krikri_binary!
-      Log.info("podman", "#{label} template: committing #{real_image} + #{krikri_image}")
+    end
+
+    private def commit_and_prune(real_image : String, krikri_image : String) : Nil
       commit_templates(real_image, krikri_image)
-      drop_templates
       prune_other_tags(real_image)
       prune_other_tags(krikri_image)
-      Log.info("podman", "#{label} template: ready (#{real_image})")
-      @images[profile] = {real_image, krikri_image}
-      @provisioned_profiles << profile
     end
 
     # Runs one playbook in a fresh container pair started from the
@@ -495,15 +548,42 @@ module KrikriPlaybookGenerator
       fingerprint(profile)
     end
 
+    # Visible for specs: the tag the package layer is cached under. It must
+    # stay equal across two builds whose krikri binary differs, or the base
+    # images can never be reused.
+    def base_fingerprint_for_test(profile : Profile = Profile::Debian) : String
+      base_fingerprint(profile)
+    end
+
     # Visible for specs: which profiles were satisfied from the image
     # cache rather than freshly provisioned.
     def cache_hit?(profile : Profile) : Bool
       @cache_hits.includes?(profile)
     end
 
+    # Visible for specs: which profiles were rebuilt from a cached base pair
+    # (package layer reused) rather than from the vanilla base image.
+    def base_cache_hit?(profile : Profile) : Bool
+      @base_cache_hits.includes?(profile)
+    end
+
     private def fingerprint(profile : Profile) : String
+      parts = base_fingerprint_parts(profile) + [content_digest(@krikri_bin), plugins_digest]
+      Digest::SHA256.hexdigest(parts.join("\n"))[0, 16]
+    end
+
+    # The key for the expensive half of the template: everything an apt/dnf
+    # install put in the image, and nothing the krikri binary does. The loop
+    # rebuilds `krikri-playbook` before most runs, so keying the install on
+    # the binary's digest re-downloaded and re-committed ~600 MB of packages
+    # for a 27 MB change; this lets that change start from the cached pair.
+    private def base_fingerprint(profile : Profile) : String
+      Digest::SHA256.hexdigest(base_fingerprint_parts(profile).join("\n"))[0, 16]
+    end
+
+    private def base_fingerprint_parts(profile : Profile) : Array(String)
       sets = package_sets
-      parts = [
+      [
         profile.to_s,
         profile.debian? ? IMAGE : IMAGE_RPM,
         EXPECTED_ANSIBLE_VERSION,
@@ -512,11 +592,8 @@ module KrikriPlaybookGenerator
         sets.real_rpm.join(","), sets.krikri_rpm.join(","),
         sets.python.join(","), sets.collections.join(","),
         INVENTORY,
-        content_digest(@krikri_bin),
-        plugins_digest,
         Digest::SHA256.hexdigest(Fixtures::SEED_SCRIPT),
       ]
-      Digest::SHA256.hexdigest(parts.join("\n"))[0, 16]
     end
 
     private def content_digest(path : String) : String

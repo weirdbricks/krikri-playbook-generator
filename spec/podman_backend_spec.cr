@@ -16,6 +16,16 @@ module KrikriPlaybookGenerator
       assert_equal("kpg-img-krikri-rpm:abc123", krikri)
     end
 
+    it "names the binary-free base images on their own repositories" do
+      real, krikri = PodmanBackend.base_image_names(PodmanBackend::Profile::Debian, "abc123")
+      assert_equal("kpg-base-real-debian:abc123", real)
+      assert_equal("kpg-base-krikri-debian:abc123", krikri)
+
+      real, krikri = PodmanBackend.base_image_names(PodmanBackend::Profile::Rpm, "abc123")
+      assert_equal("kpg-base-real-rpm:abc123", real)
+      assert_equal("kpg-base-krikri-rpm:abc123", krikri)
+    end
+
     it "fingerprints deterministically and changes whenever an input changes" do
       bin = File.tempname("kpg-spec-bin")
       File.write(bin, "fake krikri binary v1")
@@ -44,6 +54,40 @@ module KrikriPlaybookGenerator
       wider = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: deps_extra)
       refute_equal(original, wider.fingerprint_for_test,
         "a changed package set must change the fingerprint")
+    ensure
+      File.delete(bin) if bin
+    end
+
+    it "keeps the base fingerprint equal across krikri binaries so the package layer stays reusable" do
+      bin = File.tempname("kpg-spec-bin")
+      File.write(bin, "fake krikri binary v1")
+      deps = Dependencies.new(<<-YAML)
+        deb_modules:
+          both: [ansible, python3]
+        rpm_modules:
+          both: []
+        YAML
+      first = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: deps)
+      base = first.base_fingerprint_for_test
+      full = first.fingerprint_for_test
+      assert_equal(base, first.base_fingerprint_for_test,
+        "the base fingerprint must be deterministic for unchanged inputs")
+
+      File.write(bin, "fake krikri binary v2")
+      rebuilt = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: deps)
+      assert_equal(base, rebuilt.base_fingerprint_for_test,
+        "a rebuilt krikri binary must not invalidate the package layer")
+      refute_equal(full, rebuilt.fingerprint_for_test,
+        "the full fingerprint must still change with the binary")
+
+      wider = PodmanBackend.new(bin, module_fqcns: [] of String, dependencies: Dependencies.new(<<-YAML))
+        deb_modules:
+          both: [ansible, python3, sudo]
+        rpm_modules:
+          both: []
+        YAML
+      refute_equal(base, wider.base_fingerprint_for_test,
+        "a changed package set must invalidate the package layer")
     ensure
       File.delete(bin) if bin
     end
@@ -196,6 +240,40 @@ module KrikriPlaybookGenerator
       end
     ensure
       FileUtils.rm_rf(dir) if dir
+    end
+
+    it "rebuilds only the krikri binary layer when a base template pair exists" do
+      skip("podman not available on this machine") unless PodmanBackend.available?
+
+      # A nonce per build keeps the full fingerprint uncached, so the spec
+      # checks the base reuse rather than a leftover image from an earlier run.
+      bin_dir = File.tempname("kpg-spec-bin")
+      Dir.mkdir_p(File.join(bin_dir, "plugins"))
+      bin = File.join(bin_dir, "krikri-playbook")
+      File.write(File.join(bin_dir, "plugins", "spec_plugin.cr"), "spec plugin")
+      File.write(bin, "#!/bin/sh\necho 'krikri-playbook spec #{File.tempname}'\n")
+      File.chmod(bin, 0o755)
+
+      backend = PodmanBackend.new(bin)
+      backend.provision
+      backend.teardown
+      refute(backend.cache_hit?(PodmanBackend::Profile::Debian),
+        "a freshly written binary must not have a full template image")
+
+      File.write(bin, "#!/bin/sh\necho 'krikri-playbook spec #{File.tempname}'\n")
+      File.chmod(bin, 0o755)
+      rebuilt = PodmanBackend.new(bin)
+      rebuilt.provision
+      begin
+        refute(rebuilt.cache_hit?(PodmanBackend::Profile::Debian),
+          "the changed binary must miss the full image cache")
+        assert(rebuilt.base_cache_hit?(PodmanBackend::Profile::Debian),
+          "a changed krikri binary must reuse the committed base pair instead of re-installing packages")
+      ensure
+        rebuilt.teardown
+      end
+    ensure
+      FileUtils.rm_rf(bin_dir) if bin_dir
     end
 
     it "prunes only tags beyond the kept count, oldest first, never the image itself" do

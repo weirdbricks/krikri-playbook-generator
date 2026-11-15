@@ -58,12 +58,15 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
   container's ansible-core is exactly 2.19.11, failing loudly otherwise,
   commits it to images, and then starts a **fresh container pair per
   playbook** — so users, files and state created by one playbook never
-  leak into the next. The committed template images are kept as a
-  content-addressed cache (tag `<name>:<fingerprint>` over the package
-  lists, ansible-core pin, krikri binary/plugins digests and the fixture
-  seed script): a later run with the same inputs skips provisioning
-  entirely, and `--refresh-podman-templates` forces a rebuild and prunes
-  the stale tags. Both engines get the identical invocation (same
+  leak into the next. The committed template images are a two-level
+  content-addressed cache: `kpg-base-*:<base fingerprint>` is the package
+  layer (package lists, ansible-core pin, fixtures), and
+  `kpg-img-*:<fingerprint>` adds the krikri binary/plugins. A run with the
+  same inputs skips provisioning entirely; a run whose only change is a
+  rebuilt krikri binary starts from the base pair and commits just the
+  binary layer, instead of re-running apt and re-committing ~600 MB.
+  `--refresh-podman-templates` forces a rebuild from the base image and
+  prunes the stale tags. Both engines get the identical invocation (same
   absolute playbook path and cwd, `ANSIBLE_NOCOLOR=1`,
   caching/gathering env vars stripped, stdin `</dev/null`, per-engine
   `timeout` so a hang is its own result, rc 124). Raw stdout/stderr/rc

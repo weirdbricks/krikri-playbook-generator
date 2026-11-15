@@ -238,13 +238,17 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `krikri-playbook` binary and its `plugins/` dir into the other, seeds
   the identical `Fixtures` tree into both, asserts the container's
   ansible-core version equals `EXPECTED_ANSIBLE_VERSION` (2.19.11 —
-  fails loudly otherwise), then `podman commit`s both templates into
-  content-addressed cache images (tag
-  `kpg-img-{real,krikri}-{debian,rpm}:<fingerprint>`, a SHA-256 over the
-  package sets, the ansible-core pin, the krikri binary + plugins
-  digests, the inventory and the fixture seed script — a cache hit skips
-  provisioning entirely; `--refresh-podman-templates` rebuilds and prunes
-  the stale tags) and removes the templates. Every `run_playbook` call starts a
+  fails loudly otherwise), then `podman commit`s the templates into a
+  two-level content-addressed cache: `kpg-base-{real,krikri}-{debian,rpm}:<base
+  fingerprint>` holds the package layer (a SHA-256 over the package sets,
+  ansible-core pin, inventory and fixture seed script, deliberately not the
+  krikri binary), and `kpg-img-{real,krikri}-{debian,rpm}:<fingerprint>`
+  adds the binary + plugins digests. A full cache hit skips provisioning
+  entirely; when only the base pair exists (every loop cycle rebuilds
+  `krikri-playbook`) the pair starts from it and just the binary layer is
+  committed, so a 27 MB binary change no longer costs a 3-6 minute apt
+  install plus a ~600 MB commit. `--refresh-podman-templates` rebuilds from
+  the base image and prunes the stale tags. Every `run_playbook` call starts a
   FRESH pair from the committed images for the playbook's OWN profile
   (`kpg-real-<n>…`, `kpg-krikri-<n>…`; the per-profile image pairs are kept
   in a map, so a mixed Debian/rpm batch never runs apt modules on Rocky),
