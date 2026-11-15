@@ -58,6 +58,41 @@ module KrikriPlaybookGenerator
       refute_equal(2322, MicrovmBackend::SSH_PORT)
     end
 
+    # Two kpg processes (a fix-issues verification and the loop's own batch)
+    # used to boot their first pair on the same 127.90.1.x hostfwd port, and
+    # the second qemu died before running anything.
+    it "leases each VM pair a slot no other process can take" do
+      dir = File.join(Dir.tempdir, "kpg-slot-spec-#{Process.pid}-#{Random.rand(1_000_000)}")
+      begin
+        first = MicrovmBackend.new("/bin/true", dir: dir)
+        second = MicrovmBackend.new("/bin/true", dir: dir)
+        assert_equal(File.join(dir, "slots", "3.lock"), MicrovmBackend.slot_lock_path(dir, 3))
+
+        a = first.acquire_slot
+        b = second.acquire_slot
+        assert_equal(0, a.slot)
+        assert_equal(1, b.slot)
+
+        held = Cmd.run("flock", ["-n", MicrovmBackend.slot_lock_path(dir, 0), "true"], timeout: 30.0)
+        refute_equal(0, held.rc, "a second process must not be able to take the leased slot")
+
+        a.release
+        free = Cmd.run("flock", ["-n", MicrovmBackend.slot_lock_path(dir, 0), "true"], timeout: 30.0)
+        assert_equal(0, free.rc, "a released slot must be available to the next process")
+        assert_equal(0, second.acquire_slot.slot)
+
+        b.release
+
+        assert_equal(File.join(dir, "slots", "bake.lock"), MicrovmBackend.bake_lock_path(dir))
+        bake = first.acquire_bake_lock
+        busy = Cmd.run("flock", ["-n", MicrovmBackend.bake_lock_path(dir), "true"], timeout: 30.0)
+        refute_equal(0, busy.rc, "the bake and its verify boot share one fixed address, so one bake at a time")
+        bake.release
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
     it "connects on the published ssh port, not the guest's 22" do
       options = MicrovmBackend.ssh_options("/k/bench_key")
       assert_equal(MicrovmBackend::SSH_PORT.to_s, options[options.index!("-p") + 1])

@@ -224,7 +224,16 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   ansible-core and the collections the real engine needs, then boots two
   throwaway qcow2 overlays per playbook (one VM per engine, so no state
   can leak between the engine runs) on `127.90.<slot>.1/.2` with sshd
-  published on 2422 and stages the krikri binary over scp. `--run-on-mixed`
+  published on 2422 and stages the krikri binary over scp. A slot is
+  reserved across processes with an `flock(2)` on
+  `<microvm dir>/slots/<slot>.lock`, held for as long as the pair is up
+  (`MicrovmBackend#acquire_slot`): the number used to be a per-process
+  counter starting at 0, so two kpg processes (a fix-issues verification
+  and the loop's own batch) both booted their first pair on 127.90.1.1 and
+  the second qemu died on its hostfwd rule. A bake takes the same dir's
+  `bake.lock` for the same reason - its boot and verify use one fixed
+  address - and re-checks the golden's `.ok` marker once it holds it.
+  `--run-on-mixed`
   routes a batch here per playbook (`MicrovmBackend.microvm_only?`) and
   keeps everything else on podman; `--run-on-microvm` forces it for the
   whole batch. A golden without its `.ok` marker is discarded and re-baked

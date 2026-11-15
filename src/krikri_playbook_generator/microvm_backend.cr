@@ -50,6 +50,16 @@ module KrikriPlaybookGenerator
     BAKE_ADDR   = "127.90.0.1"
     MAX_SLOTS   = 200
 
+    # How long a playbook waits for a free VM slot before giving up. Slots are
+    # leased across processes (see `acquire_slot`), so two kpg processes - a
+    # fix-issues verification and the loop's own batch - queue up instead of
+    # booting their first pair on the same published port.
+    SLOT_WAIT_SECS = 900
+
+    # A bake (packages, prep, verify boot) can outlast SLOT_WAIT_SECS, so the
+    # process waiting to bake the same golden gets its own, longer budget.
+    BAKE_LOCK_WAIT_SECS = 3600
+
     # Ubuntu's minimal cloud image has a 2.4G root. The ubuntu profile below
     # (docker, mariadb, postgresql, zfs, snapd, rabbitmq, libvirt, bind,
     # nodejs) needs more than it: the bake used to fill the disk alphabetically,
@@ -173,6 +183,89 @@ module KrikriPlaybookGenerator
 
     def self.microvm_only?(module_names : Array(String)) : Bool
       module_names.any? { |name| MICROVM_ONLY.includes?(name.split(".").last) }
+    end
+
+    # An flock(2) reservation on a file under the microVM dir. The kernel
+    # drops it when the holder exits, so a crashed run cannot wedge it.
+    record LockLease, file : File do
+      def release : Nil
+        file.flock_unlock
+      rescue IO::Error
+      ensure
+        file.close rescue nil
+      end
+    end
+
+    # A reserved (127.90.<slot+1>.1/.2, 2422) pair. Held for as long as the
+    # pair's VMs are up.
+    record SlotLease, slot : Int32, lease : LockLease do
+      def release : Nil
+        lease.release
+      end
+    end
+
+    def self.slot_lock_path(dir : String, slot : Int32) : String
+      File.join(dir, "slots", "#{slot}.lock")
+    end
+
+    # The bake and its verify boot both use BAKE_ADDR, so only one process may
+    # bake at a time; without the lock two processes bake straight over the
+    # same golden file and the second boot loses the hostfwd port.
+    def self.bake_lock_path(dir : String) : String
+      File.join(dir, "slots", "bake.lock")
+    end
+
+    # The slot number used to be a per-process counter starting at 0, so every
+    # kpg process booted its first pair on 127.90.1.1 and qemu refused the
+    # second hostfwd (`Could not set up host forwarding rule 'tcp:...'`).
+    # cleanup_stale cannot help, by design: the VM already running belongs to a
+    # live pid. The slot's lock file is the reservation across processes, and a
+    # process that finds every slot taken waits for one.
+    def acquire_slot : SlotLease
+      Dir.mkdir_p(File.join(@dir, "slots"))
+      deadline = Time.instant + SLOT_WAIT_SECS.seconds
+      loop do
+        MAX_SLOTS.times do |slot|
+          if lease = try_lock(MicrovmBackend.slot_lock_path(@dir, slot))
+            return SlotLease.new(slot, lease)
+          end
+        end
+        if Time.instant > deadline
+          raise MicrovmProvisionError.new(
+            "no free microVM slot after #{SLOT_WAIT_SECS}s: all #{MAX_SLOTS} slot locks under " \
+            "#{File.join(@dir, "slots")} are held by other kpg processes")
+        end
+        sleep 2.seconds
+      end
+    end
+
+    def acquire_bake_lock : LockLease
+      Dir.mkdir_p(File.join(@dir, "slots"))
+      deadline = Time.instant + BAKE_LOCK_WAIT_SECS.seconds
+      loop do
+        if lease = try_lock(MicrovmBackend.bake_lock_path(@dir))
+          return lease
+        end
+        if Time.instant > deadline
+          raise MicrovmProvisionError.new(
+            "another kpg process is still baking the microVM goldens after #{BAKE_LOCK_WAIT_SECS}s")
+        end
+        sleep 5.seconds
+      end
+    end
+
+    # nil when another process holds the lock. flock(2) locks belong to the
+    # open file description, so two opens inside this process conflict too -
+    # the batch's own parallel playbooks cannot share a slot either.
+    private def try_lock(path : String) : LockLease?
+      file = File.open(path, "w")
+      begin
+        file.flock_exclusive(blocking: false)
+        LockLease.new(file)
+      rescue IO::Error
+        file.close rescue nil
+        nil
+      end
     end
 
     # The package list of a golden: the OS base, the service profile, and
@@ -318,18 +411,23 @@ module KrikriPlaybookGenerator
     rescue File::Error
     end
 
-    def run_playbook(playbook_path : String, os : String, slot : Int32) : {ansible: Cmd::Result, krikri: Cmd::Result}
+    def run_playbook(playbook_path : String, os : String) : {ansible: Cmd::Result, krikri: Cmd::Result}
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
 
-      pair = boot_pair(gold, os, slot)
+      lease = acquire_slot
       begin
-        pair.vms.each { |host| prep_vm(host, playbook_path) }
-        basename = File.basename(playbook_path)
-        ansible = exec_engine(pair.ansible, "ansible-playbook", basename)
-        krikri = exec_engine(pair.krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", basename)
-        {ansible: ansible, krikri: krikri}
+        pair = boot_pair(gold, os, lease)
+        begin
+          pair.vms.each { |host| prep_vm(host, playbook_path) }
+          basename = File.basename(playbook_path)
+          ansible = exec_engine(pair.ansible, "ansible-playbook", basename)
+          krikri = exec_engine(pair.krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", basename)
+          {ansible: ansible, krikri: krikri}
+        ensure
+          stop_pair(pair)
+        end
       ensure
-        stop_pair(pair)
+        lease.release
       end
     end
 
@@ -413,11 +511,18 @@ module KrikriPlaybookGenerator
 
     private def bake_if_needed(gold : String, profile : Profile) : Nil
       return if MicrovmBackend.baked?(gold)
-      if File.exists?(gold)
-        Log.info("microvm", "discarding unverified microvm golden #{File.basename(gold)}")
-        File.delete?(gold)
+      lease = acquire_bake_lock
+      begin
+        # the process that held the bake lock may have just finished it
+        return if MicrovmBackend.baked?(gold)
+        if File.exists?(gold)
+          Log.info("microvm", "discarding unverified microvm golden #{File.basename(gold)}")
+          File.delete?(gold)
+        end
+        bake(gold, profile)
+      ensure
+        lease.release
       end
-      bake(gold, profile)
     end
 
     # One boot installs everything the golden carries and prepares its
@@ -558,7 +663,8 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def boot_pair(gold : String, os : String, slot : Int32) : Pair
+    private def boot_pair(gold : String, os : String, lease : SlotLease) : Pair
+      slot = lease.slot
       octet = (slot % MAX_SLOTS) + 1
       ansible_ip = "#{ADDR_PREFIX}.#{octet}.1"
       krikri_ip = "#{ADDR_PREFIX}.#{octet}.2"

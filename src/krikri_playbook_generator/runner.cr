@@ -324,11 +324,10 @@ module KrikriPlaybookGenerator
         profiles.each_key { |os| backend.provision(os) }
         log("microvm: running #{paths.size} playbook(s) " \
             "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
-        slots = Atomic(Int32).new(0)
         Runner.in_parallel(paths, @microvm_parallel) do |path|
           guarded(path) do
             os = MicrovmBackend.profile_for(load_meta(path).try(&.module_names) || [] of String)
-            outcome = backend.run_playbook(path, os, slots.add(1))
+            outcome = backend.run_playbook(path, os)
             progress(PlaybookResult.new(path, to_engine_run("ansible", outcome[:ansible]),
               to_engine_run("krikri", outcome[:krikri]), load_meta(path)))
           end
