@@ -73,7 +73,9 @@ module KrikriPlaybookGenerator
     if opts.scope_from_krikri? && extra.empty?
       STDERR.puts "warning: #{opts.krikri_bin.inspect} reported no supported modules (no --list-modules support?); scope stays core-only"
     end
-    scope = SchemaScanner.default_module_names(Dependencies.load.supported + extra)
+    # `--json` is a machine payload (krikri-loop parses it and still echoes
+    # the command's stderr), so the missing-module count stays out of it.
+    scope = SchemaScanner.default_module_names(Dependencies.load.supported + extra, warn_missing: !json)
     puts scope.to_json if json
     scope.each { |name| puts name } unless json
     0

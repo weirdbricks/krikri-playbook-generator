@@ -96,6 +96,19 @@ module KrikriPlaybookGenerator
       assert_nil(SchemaScanner.uninstalled_warning([] of String))
     end
 
+    it "keeps the uninstalled count out of the JSON listing a caller parses" do
+      listing = JSON.parse(%({"ansible.builtin.copy": {}}))
+      _, warned = capture_io do
+        SchemaScanner.names_from_listing(listing, %w[ansible.builtin.apt], warn_missing: false)
+      end
+      assert_equal("", warned)
+
+      _, default_warned = capture_io do
+        SchemaScanner.names_from_listing(listing, %w[ansible.builtin.apt])
+      end
+      assert_equal("warning: 1 supported module(s) not installed\n", default_warned)
+    end
+
     it "keeps play-level keywords out of the task scope but keeps task actions" do
       listing = JSON.parse(%({"ansible.builtin.import_playbook": {}, "ansible.builtin.import_tasks": {}}))
       names = SchemaScanner.names_from_listing(listing, %w[ansible.builtin.import_playbook])

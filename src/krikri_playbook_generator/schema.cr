@@ -101,8 +101,9 @@ module KrikriPlaybookGenerator
     # core plus the promoted supported community FQCNs, straight from the
     # installed ansible-doc listing (one subprocess, same source `scan`
     # uses - the two cannot drift).
-    def self.default_module_names(supported : Array(String)? = nil) : Array(String)
-      names_from_listing(fetch_module_listing, supported || Dependencies.load.supported)
+    def self.default_module_names(supported : Array(String)? = nil,
+                                  warn_missing : Bool = true) : Array(String)
+      names_from_listing(fetch_module_listing, supported || Dependencies.load.supported, warn_missing)
     end
 
     # krikri's own supported-module set, read from the binary under test
@@ -159,21 +160,24 @@ module KrikriPlaybookGenerator
       JSON.parse(result.stdout)
     end
 
-    def self.names_from_listing(listing : JSON::Any, supported : Array(String)?) : Array(String)
+    def self.names_from_listing(listing : JSON::Any, supported : Array(String)?,
+                                warn_missing : Bool = true) : Array(String)
       names = core_module_names(listing).reject { |name| SCOPE_EXCLUDED.includes?(name) }
       return names if supported.nil? || supported.empty?
 
       extra = supported_module_names(listing, supported.reject { |fqcn| SCOPE_EXCLUDED.includes?(fqcn.split(".").last) })
       missing = supported.reject { |fqcn| extra.includes?(fqcn) || SCOPE_EXCLUDED.includes?(fqcn.split(".").last) }
-      if warning = uninstalled_warning(missing)
+      if warn_missing && (warning = uninstalled_warning(missing))
         STDERR.puts(warning)
       end
       names.concat(extra)
     end
 
     # The names are mostly legacy spellings of modules the scope already
-    # carries under their installed FQCN, and the line was long enough to
-    # drown out real warnings - only the count is actionable.
+    # carries under their installed FQCNs, and the line was long enough to
+    # drown out real warnings - only the count is actionable. The JSON
+    # listing asks for no warning at all: its stderr is echoed into a
+    # caller's console (krikri-loop's), where the count is noise.
     def self.uninstalled_warning(missing : Array(String)) : String?
       return if missing.empty?
       "warning: #{missing.size} supported module(s) not installed"
