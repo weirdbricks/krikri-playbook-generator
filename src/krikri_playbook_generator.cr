@@ -106,7 +106,9 @@ module KrikriPlaybookGenerator
       Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
       sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
       settings = tasks.map { |task| sampler.sample(task.chaos?) }
-      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings).build(tasks)
+      block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
+      shapes = tasks.map { block_sampler.sample }
+      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -129,12 +131,18 @@ module KrikriPlaybookGenerator
       Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
       sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
       settings = tasks.map { |task| sampler.sample(task.chaos?) }
-      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings).build(tasks)
+      block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
+      shapes = tasks.map { block_sampler.sample }
+      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
                          "(up to #{per_playbook} tasks each, one host profile per playbook, " \
                          "chaos=#{opts.chaos_percentage}%, seed=#{opts.seed})")
+    unless opts.blocks.empty?
+      Log.info("generate", "warning: --blocks applies to the single-task shape only; " \
+                           "multi-task playbooks keep their flat task list")
+    end
     scenarios = generator.generate_scenarios(schemas, per_playbook, opts.count)
     Log.info("generate", "building #{scenarios.size} playbook(s) into #{opts.out_dir}")
     sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)

@@ -1,6 +1,7 @@
 require "json"
 require "./generator"
 require "./play_keywords"
+require "./block_shapes"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -25,8 +26,17 @@ module KrikriPlaybookGenerator
 
     HANDLER_MESSAGE = "kpg multi-task handler ran"
 
+    # The forced-failure task a block shape adds: a real command that exits
+    # non-zero, so the failure path is deterministic and comes from the
+    # playbook's own structure rather than from a chaos mutation.
+    FAILURE_COMMAND = "/bin/false"
+    # The variable a skipped/undefined block-level `when:` reads; the
+    # Skipped shape defines it false, the Undefined shape never defines it.
+    BLOCK_GATE = "kpg_block_gate"
+
     def initialize(@out_dir : String, @seed : Int32? = nil,
-                   @play_settings : Array(PlaySetting?) = [] of PlaySetting?)
+                   @play_settings : Array(PlaySetting?) = [] of PlaySetting?,
+                   @block_shapes : Array(BlockShape) = [] of BlockShape)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -196,13 +206,9 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
-      if task.delegate_to.try(&.includes?("{{"))
-        play[YAML::Any.new("vars")] = YAML::Any.new(
-          {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
-      end
-      bodies = [YAML::Any.new(task_body)]
-      bodies.concat(delegate_probe_bodies(task))
-      play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
+      apply_play_vars(play, task, @block_shapes[index]? || BlockShape::None)
+      play[YAML::Any.new("tasks")] = YAML::Any.new(
+        block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None))
 
       yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
@@ -230,6 +236,7 @@ module KrikriPlaybookGenerator
           play_setting_json(json, @play_settings[index]?)
           json.field "delegate_to", task.delegate_to
           json.field "delegate_facts", task.delegate_facts? if task.delegate_to
+          json.field "block", (@block_shapes[index]? || BlockShape::None).label
         end
       end
     end
@@ -387,6 +394,62 @@ module KrikriPlaybookGenerator
           end
         end
       end
+    end
+
+    # The play's `vars:` needs the delegate play variable (templated
+    # delegation) and/or the block gate (the Skipped shape). Both are
+    # defined by the playbook itself so no row inherits them from outside.
+    private def apply_play_vars(play : Hash(YAML::Any, YAML::Any), task : GeneratedTask,
+                                shape : BlockShape) : Nil
+      vars = {} of YAML::Any => YAML::Any
+      if task.delegate_to.try(&.includes?("{{"))
+        vars[YAML::Any.new(Generator::DELEGATE_VARIABLE)] = YAML::Any.new(Generator::DELEGATE_HOST)
+      end
+      vars[YAML::Any.new(BLOCK_GATE)] = YAML::Any.new(false) if shape.skipped?
+      return if vars.empty?
+
+      play[YAML::Any.new("vars")] = YAML::Any.new(vars)
+    end
+
+    # The play's task list for one generated task under a block shape.
+    # `None` keeps the flat v1 shape (the task, then its delegation probes).
+    private def block_bodies(task_body : Hash(YAML::Any, YAML::Any), task : GeneratedTask,
+                             shape : BlockShape) : Array(YAML::Any)
+      probes = delegate_probe_bodies(task)
+      return [YAML::Any.new(task_body)] + probes if shape.none?
+
+      inner = [YAML::Any.new(task_body)] + probes
+      inner << forced_failure_body unless shape.always?
+      block = {} of YAML::Any => YAML::Any
+      block[YAML::Any.new("name")] = YAML::Any.new("Kpg block")
+      block[YAML::Any.new("block")] = YAML::Any.new(inner)
+      block[YAML::Any.new("rescue")] = YAML::Any.new([debug_body("Kpg rescue ran", "kpg-rescue")])
+      block[YAML::Any.new("always")] = YAML::Any.new([debug_body("Kpg always ran", "kpg-always")])
+      block[YAML::Any.new("when")] = YAML::Any.new(block_condition(shape)) unless shape.rescue? || shape.always?
+      [YAML::Any.new(block)]
+    end
+
+    private def block_condition(shape : BlockShape) : String
+      shape.undefined? ? BLOCK_GATE : "#{BLOCK_GATE} | bool"
+    end
+
+    private def forced_failure_body : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg forced failure")
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("cmd")] = YAML::Any.new(FAILURE_COMMAND)
+      body[YAML::Any.new("ansible.builtin.command")] = YAML::Any.new(args)
+      body[YAML::Any.new("changed_when")] = YAML::Any.new(false)
+      YAML::Any.new(body)
+    end
+
+    private def debug_body(name : String, message : String) : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new(name)
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("msg")] = YAML::Any.new(message)
+      body[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(args)
+      YAML::Any.new(body)
     end
 
     private def delegate_fields(body : Hash(YAML::Any, YAML::Any), task : GeneratedTask) : Nil

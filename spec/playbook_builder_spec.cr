@@ -260,6 +260,69 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "wraps a task in a block with a forced failure, rescue and always" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [BlockShape::Rescue])
+        .build([sample_task]).first
+
+      block = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.first
+      assert_equal("Kpg block", block["name"].as_s)
+      block["block"].as_a.each do |task|
+        next unless task["ansible.builtin.command"]?
+        assert_equal("/bin/false", task["ansible.builtin.command"]["cmd"].as_s)
+        assert_equal(false, task["changed_when"].as_bool)
+      end
+      assert(block["block"].as_a.any? { |task| task["ansible.builtin.command"]? }, "no forced failure")
+      assert_equal("kpg-rescue", block["rescue"].as_a.first["ansible.builtin.debug"]["msg"].as_s)
+      assert_equal("kpg-always", block["always"].as_a.first["ansible.builtin.debug"]["msg"].as_s)
+      assert_nil(block["when"]?)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("rescue", meta["block"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps the always shape on the success path (no forced failure)" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [BlockShape::Always])
+        .build([sample_task]).first
+
+      block = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.first
+      refute(block["block"].as_a.any? { |task| task["ansible.builtin.command"]? })
+      assert_equal("kpg-always", block["always"].as_a.first["ansible.builtin.debug"]["msg"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "gates a skipped block on a play variable and an undefined one on nothing" do
+      dir = File.tempname("kpg-spec")
+      skipped = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [BlockShape::Skipped])
+        .build([sample_task]).first
+      skipped_play = YAML.parse(File.read(skipped)).as_a.first
+      assert_equal("kpg_block_gate | bool", skipped_play["tasks"].as_a.first["when"].as_s)
+      assert_equal(false, skipped_play["vars"]["kpg_block_gate"].as_bool)
+
+      undefined = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [BlockShape::Undefined])
+        .build([sample_task]).first
+      undefined_play = YAML.parse(File.read(undefined)).as_a.first
+      assert_equal("kpg_block_gate", undefined_play["tasks"].as_a.first["when"].as_s)
+      assert_nil(undefined_play["vars"]?)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps the flat task list when the block axis is off" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [BlockShape::None])
+        .build([sample_task]).first
+
+      body = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.first
+      assert(body["ansible.builtin.apt"]?)
+      assert_nil(body["block"]?)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

@@ -2,6 +2,7 @@ require "option_parser"
 require "./run_mode"
 require "./run_context"
 require "./play_keywords"
+require "./block_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -58,6 +59,8 @@ module KrikriPlaybookGenerator
     property? play_keywords_given : Bool
     property delegation : DelegationMode
     property? delegation_given : Bool
+    property blocks : Array(String)
+    property? blocks_given : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
@@ -85,6 +88,7 @@ module KrikriPlaybookGenerator
                    @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
                    @play_keywords = PlayKeywords::KINDS, @play_keywords_given = false,
                    @delegation = DelegationMode::Both, @delegation_given = false,
+                   @blocks = BlockShapes::KINDS, @blocks_given = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -179,6 +183,10 @@ module KrikriPlaybookGenerator
         dsl.on("--delegation MODE", "delegate_to spelling for generated tasks: off, literal, templated (a play var) or both (default, drawn per task)") do |v|
           opts.delegation = parse_delegation(v)
           opts.delegation_given = true
+        end
+        dsl.on("--blocks LIST", "block shapes wrapping the generated task: rescue, always, skipped or undefined (comma-separated; `none` turns it off)") do |v|
+          opts.blocks = parse_blocks(v)
+          opts.blocks_given = true
         end
         dsl.on("--play-keywords LIST", "play-level keyword axis: one keyword per playbook, drawn from strategy, serial, throttle, any_errors_fatal, run_once, max_fail_percentage, gather_facts, connection and forks (env-only); `none` turns it off") do |v|
           opts.play_keywords = parse_play_keywords(v)
@@ -326,6 +334,7 @@ module KrikriPlaybookGenerator
       end
       check_play_keyword_target!(opts)
       check_delegation_target!(opts)
+      check_block_target!(opts)
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
@@ -349,6 +358,24 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--delegation is only valid with generate (the playbook carries delegate_to)")
+    end
+
+    # Blocks are playbook structure, so they only mean anything where
+    # playbooks are built (and only in the single-task shape, which the
+    # caller warns about).
+    private def self.check_block_target!(opts : Options) : Nil
+      return unless opts.blocks_given?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new("--blocks is only valid with generate (the playbook carries the block)")
+    end
+
+    private def self.parse_blocks(value : String) : Array(String)
+      shapes = BlockShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --blocks value #{value.inspect} (expected: #{BlockShapes::KINDS.join(", ")}, none)")
     end
 
     private def self.parse_delegation(value : String) : DelegationMode

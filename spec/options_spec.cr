@@ -476,6 +476,17 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("generate"))
     end
 
+    it "parses the --blocks axis and refuses unknown or non-generate use" do
+      assert_equal(%w[rescue], Options.parse(["generate", "--blocks", "rescue"]).blocks)
+      assert(Options.parse(["generate", "--blocks", "none"]).blocks.empty?)
+      assert_equal(BlockShapes::KINDS, Options.parse(["generate"]).blocks)
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--blocks", "sometimes"]) }
+      assert((err.message || "").includes?("sometimes"))
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--blocks", "rescue"]) }
+      assert((err.message || "").includes?("generate"))
+    end
+
     it "allows only one host count on Atlantic (one VM per profile)" do
       opts = Options.parse(["run", "--run-on-atlantic", "--hosts", "2"])
       assert_equal([2], opts.hosts)

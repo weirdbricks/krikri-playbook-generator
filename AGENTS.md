@@ -181,6 +181,19 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   playbooks (a fix verified on one form must not hide the other). The
   draw is deterministic per seed but uses its own RNG, so it never shifts
   the task-argument draws (and vice versa).
+- `src/krikri_playbook_generator/block_shapes.cr` — `BlockShape`,
+  `BlockShapes` and `BlockShapeSampler`. **Implemented**: the block axis
+  (`--blocks rescue,always,skipped,undefined`, `none` off). A shape wraps
+  the generated task in `block:` with `rescue:`/`always:` debug tasks and,
+  except for the `always` shape's success path, a deterministic forced
+  failure (`command: /bin/false`, `changed_when: false`) so the failure
+  path is part of the playbook rather than a chaos mutation. `skipped`
+  gates the block on `kpg_block_gate | bool` with the play defining it
+  false; `undefined` gates it on the same name with nothing defining it,
+  so the conditional-error path is compared. One shape is drawn per
+  single-task playbook (its own seeded RNG, so it never shifts the other
+  draws) and recorded as `block` in the sidecar. Multi-task playbooks keep
+  their flat list: wrapping one task would shift the register/when chain.
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -583,7 +596,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   and `jinja`. `--hosts LIST` (1/2/3, default 1) is the host-count
   matrix; `--play-keywords LIST` selects the play-level keyword axis
   (`none` disables it); `--delegation off|literal|templated|both` is the
-  delegate_to axis. Both are generate-only.
+  delegate_to axis; `--blocks LIST` wraps single-task playbooks in a
+  block shape. All three are generate-only.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -793,7 +807,8 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `x || default` or `x.as(T)` after a `refute_nil` check. One spec file per
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
-`play_keywords_spec.cr`, `run_context_spec.cr`, `playbook_builder_spec.cr`,
+`play_keywords_spec.cr`, `block_shapes_spec.cr`, `run_context_spec.cr`,
+`playbook_builder_spec.cr`,
 `fixtures_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
 `podman_backend_spec.cr`,
 `triage_spec.cr`, `versions_spec.cr` (fakes the command runner as a Proc). `schema_spec.cr` shells out to
@@ -860,6 +875,10 @@ role/HTTP fixtures plus `IDENTITY_SCRIPT`, `ownership_command`, the
 unusual-mode destinations/directories and `RESTORE_UNUSUAL_SCRIPT`'s
 idempotency. `play_keywords_spec.cr` covers the kind list, valid vs
 chaos value pools, determinism, env-only `forks` and the 50/50 env door;
+`block_shapes_spec.cr` covers the shape list, parsing and the seeded
+sampler, and `playbook_builder_spec.cr` covers each shape's YAML
+(forced failure, rescue/always bodies, the block gate and its play var,
+and the flat list when the axis is off);
 `run_context_spec.cr` covers `HostInventory`'s aliases, the
 `kpg_targets` group and delegate-only hosts. `options_spec.cr` covers the identity/umask defaults, parsing,
 normalization and target restrictions, the `--hosts` matrix/validation
