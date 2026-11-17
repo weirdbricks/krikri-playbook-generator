@@ -509,6 +509,39 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("generate"))
     end
 
+    it "parses the --limit symbols and maps them to ansible patterns" do
+      opts = Options.parse(["run", "--run-on-podman", "--limit", "one,group"])
+      assert_equal(%w[one group], Options.effective_limits(opts))
+      assert_equal("target", Options.limit_pattern("one"))
+      assert_equal(HostInventory::GROUP, Options.limit_pattern("group"))
+      assert_equal(HostInventory::UNREACHABLE_HOST, Options.limit_pattern("unreachable"))
+      assert_equal("#{HostInventory::GROUP}:!target2", Options.limit_pattern("negative"))
+      assert_nil(Options.limit_pattern("none"))
+      assert_nil(Options.limit_pattern("off"))
+      assert_equal(%w[off], Options.parse(["run", "--run-on-podman"]).limits)
+    end
+
+    it "refuses an unknown --limit value and a report command" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--limit", "many"]) }
+      assert((err.message || "").includes?("many"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["report", "--limit", "one"]) }
+      assert((err.message || "").includes?("--limit"))
+    end
+
+    it "allows only one limit on Atlantic" do
+      assert_equal(%w[one], Options.parse(["run", "--run-on-atlantic", "--limit", "one"]).limits)
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-atlantic", "--limit", "one,none"]) }
+      assert((err.message || "").includes?("--limit"))
+    end
+
+    it "parses --gather-facts as a generate-only flag" do
+      assert(Options.parse(["generate", "--gather-facts"]).gather_facts?)
+      refute(Options.parse(["generate"]).gather_facts?)
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--gather-facts"]) }
+      assert((err.message || "").includes?("--gather-facts"))
+    end
+
     it "allows only one host count on Atlantic (one VM per profile)" do
       opts = Options.parse(["run", "--run-on-atlantic", "--hosts", "2"])
       assert_equal([2], opts.hosts)

@@ -40,7 +40,8 @@ module KrikriPlaybookGenerator
                    @play_settings : Array(PlaySetting?) = [] of PlaySetting?,
                    @block_shapes : Array(BlockShape) = [] of BlockShape,
                    @handler_shapes : Array(HandlerShape) = [] of HandlerShape,
-                   @retry_shapes : Array(RetryShape) = [] of RetryShape)
+                   @retry_shapes : Array(RetryShape) = [] of RetryShape,
+                   @gather_facts : Bool = false)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -208,8 +209,9 @@ module KrikriPlaybookGenerator
       play = {} of YAML::Any => YAML::Any
       play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: #{task.module_name} ##{index}"))
       play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
-      play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
+      play[YAML::Any.new("gather_facts")] = YAML::Any.new(@gather_facts)
       apply_play_setting(play, @play_settings[index]?)
+      play[YAML::Any.new("gather_facts")] = YAML::Any.new(true) if @gather_facts
       shape = @handler_shapes[index]? || HandlerShape::Off
       apply_play_vars(play, task, @block_shapes[index]? || BlockShape::None)
       bodies = block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None)

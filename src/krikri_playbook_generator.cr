@@ -25,7 +25,8 @@ module KrikriPlaybookGenerator
         microvm_parallel: opts.microvm_parallel,
         user_profiles: Options.effective_user_profiles(opts),
         umasks: Options.effective_umasks(opts),
-        hosts: Options.effective_hosts(opts)).run
+        hosts: Options.effective_hosts(opts),
+        limits: Options.effective_limits(opts)).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -112,7 +113,8 @@ module KrikriPlaybookGenerator
       handlers = tasks.map { handler_sampler.sample }
       retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
       retries = tasks.map { retry_sampler.sample }
-      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries).build(tasks)
+      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
+        opts.gather_facts?).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -141,7 +143,8 @@ module KrikriPlaybookGenerator
       handlers = tasks.map { handler_sampler.sample }
       retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
       retries = tasks.map { retry_sampler.sample }
-      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries).build(tasks)
+      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
+        opts.gather_facts?).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -161,7 +164,7 @@ module KrikriPlaybookGenerator
     retries = scenarios.map { retry_sampler.sample }
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings,
       block_shapes: [] of BlockShape, handler_shapes: handlers,
-      retry_shapes: retries).build_scenarios(scenarios)
+      retry_shapes: retries, gather_facts: opts.gather_facts?).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32
@@ -187,7 +190,8 @@ module KrikriPlaybookGenerator
       microvm_parallel: opts.microvm_parallel,
       user_profiles: Options.effective_user_profiles(opts),
       umasks: Options.effective_umasks(opts),
-      hosts: Options.effective_hosts(opts)).run
+      hosts: Options.effective_hosts(opts),
+      limits: Options.effective_limits(opts)).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)
@@ -303,7 +307,7 @@ module KrikriPlaybookGenerator
         puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
       puts "  example: #{finding.playbooks.first}"
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env)}"
+      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit)}"
     end
   end
 
@@ -316,7 +320,7 @@ module KrikriPlaybookGenerator
       example = finding.example
       puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
         puts "  leftover staging files:"
@@ -342,7 +346,7 @@ module KrikriPlaybookGenerator
       puts "#{finding.module_name} #{finding_context(example, label)}: " \
            "#{finding.count} playbook(s) mutated the host in check mode"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit)}"
       lines = example.check_mode_diff.lines
       lines.first(10).each { |line| puts "  #{line}" }
       puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10

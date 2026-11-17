@@ -344,7 +344,14 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `--umask`, `--hosts`): each row gets its own fresh host/pair and records
   `user`, `umask` and `hosts` in results.jsonl, and the context is part of
   the progress/summary labels; local rows are always the invoking account
-  and Atlantic rows are always root. The host-count axis
+  and Atlantic rows are always root. The `--limit` axis (`off`/`none`/
+  `one`/`group`/`unreachable`/`negative`, default off) runs each row with
+  its ansible pattern on both engines; for any row of that axis the
+  inventory's play group also contains `kpg_unreachable` (loopback with a
+  closed port, so contact is refused instantly), which is how an
+  out-of-limit host being contacted becomes observable, including during
+  implicit fact gathering (`--gather-facts`). Rows record `limit` in
+  results.jsonl and Triage groups and repro-pins it. The host-count axis
   (`HostInventory`, 1/2/3) writes an inventory whose `kpg_targets` group
   holds that many LOCAL aliases (`target`, `target2`, `target3`); the
   remaining aliases stay in the inventory as delegate-only hosts, so a
@@ -375,6 +382,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `--no-diff`, identically on both engines) and Atlantic.net
   (`--run-on-atlantic`, one disposable VM per module profile, always
   real - it refuses `--check` - and `--diff` like the other backends).
+  Every backend strips the same engine environment
+  (`KrikriPlaybookGenerator::ENGINE_ENV_STRIP`: no ANSIBLE_GATHERING, no
+  fact-cache plugin/connection, ANSIBLE_NOCOLOR=1) — local runs included,
+  because an inherited `ANSIBLE_GATHERING=smart` plus a populated cache
+  silently skips implicit gathering on the real engine and would turn a
+  machine-local cache into a finding.
   A playbook's env-var play keyword (ANSIBLE_STRATEGY/ANSIBLE_FORKS) is
   read from its sidecar `play.env` and exported identically for both
   engines by every backend (podman/microVM/Atlantic command construction,
@@ -523,7 +536,7 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   (v0.0.8, rewritten)**: reads `results.jsonl` only (module/chaos/
   mutations are now embedded in each line by `Runner`, so sidecars aren't
   needed) and produces three sections. `report` groups divergent
-  playbooks by `{module, mode, run, hosts, signature}` — the stable root-cause hash
+  playbooks by `{module, mode, run, hosts, limit, signature}` — the stable root-cause hash
   `ByteDiff#signature` computes from the masked diff, keyed on the
   ansible side's first `-` line (krikri's first `+` line only when there
   is no `-` line at all, prefixed `ansible:`/`krikri:` so the two kinds
@@ -804,6 +817,11 @@ Documented deliberately, not silently:
   Modules that genuinely need root (`user`, package installs) fail on the
   reference engine under the nonroot profile and show up as wasted
   coverage, not as divergences.
+- The `--limit` axis proves out-of-limit contact through one pseudo-host
+  with a refused loopback port; it does not model a slow network, DNS or
+  authentication failure, and the per-host state oracle cannot attribute
+  anything to that host (it never runs). The SSH transport profile is the
+  issue that properly widens this.
 - The host-count axis uses LOCAL aliases of one container/VM. It compares
   per-host task execution, recap host lists and `included:` grouping, but
   it cannot see transport, per-host state or real concurrency: all aliases
@@ -894,7 +912,7 @@ signature stability) and the snapshot script's roots/exclusions,
 `#temps` section and staging prefixes. `runner_spec.cr` covers the
 leftover policy (the surviving file, the task the log blames, the
 matched-delta fallback), `last_failed_task` itself, the umask matrix
-rows + their `user`/`umask` results fields, a real two-host row (both
+rows + their `user`/`umask`/`limit` results fields, a real two-host row (both
 engine outputs name `target2`, the recap has the host, the row records
 `hosts: 2`) and an env-var play keyword reaching the engine (bogus
 `ANSIBLE_STRATEGY` fails on real ansible, proving the export happened)
@@ -911,10 +929,12 @@ notifier task, the v2 application, and no handlers when off)
 (forced failure, rescue/always bodies, the block gate and its play var,
 and the flat list when the axis is off);
 `run_context_spec.cr` covers `HostInventory`'s aliases, the
-`kpg_targets` group and delegate-only hosts. `options_spec.cr` covers the identity/umask defaults, parsing,
+`kpg_targets` group, delegate-only hosts and the unreachable host added
+only for limit rows. `options_spec.cr` covers the identity/umask defaults, parsing,
 normalization and target restrictions, the `--hosts` matrix/validation
-(and Atlantic's single value) and `--play-keywords` (`none`, unknown
-values, generate-only); `triage_spec.cr` groups by
+(and Atlantic's single value), `--limit`'s symbols/patterns (and
+Atlantic's single value), `--gather-facts`, and `--play-keywords`
+(`none`, unknown values, generate-only); `triage_spec.cr` groups by
 identity, umask and host count and pins them in the repro, and prefixes
 an env-var keyword there. `podman_backend_spec.cr`
 runs a real playbook as the provisioned nonroot account under umask 077

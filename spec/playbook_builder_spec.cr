@@ -473,6 +473,18 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "forces gather_facts true when the flag is set, even over a play keyword" do
+      dir = File.tempname("kpg-spec")
+      settings = [PlaySetting.new("gather_facts", "false")] of PlaySetting?
+      path = PlaybookBuilder.new(dir, nil, settings, [] of BlockShape, [] of HandlerShape,
+        [] of RetryShape, gather_facts: true).build([sample_task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_equal(true, play["gather_facts"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

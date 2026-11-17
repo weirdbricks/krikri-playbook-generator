@@ -65,7 +65,7 @@ module KrikriPlaybookGenerator
     IMAGE                    = "docker.io/library/debian:trixie-slim"
     EXPECTED_ANSIBLE_VERSION = "2.21.6"
     INVENTORY                = "target ansible_connection=local\n"
-    ENGINE_ENV_STRIP         = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
+    ENGINE_ENV_STRIP         = KrikriPlaybookGenerator::ENGINE_ENV_STRIP
     OWNER_LABEL              = "krikri-owner-pid"
 
     # The rpm-family modules (dnf, dnf5, yum...) need rpm tooling and python
@@ -187,9 +187,11 @@ module KrikriPlaybookGenerator
     def self.engine_script(engine_cmd : String, playbook_basename : String, engine_timeout : Int32,
                            check : Bool, diff : Bool = true, umask : String = DEFAULT_UMASK,
                            owner : String = "root", group : String = "root",
-                           env : Hash(String, String) = {} of String => String) : String
+                           env : Hash(String, String) = {} of String => String,
+                           limit : String? = nil) : String
+      limit_flag = limit.try { |pattern| " --limit #{Process.quote(pattern)}" } || ""
       "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} #{KrikriPlaybookGenerator.env_prefix(env)}timeout #{engine_timeout} " \
-      "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""} " \
+      "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""}#{limit_flag} " \
       "-e kpg_owner=#{owner} -e kpg_group=#{group} " \
       "-i inventory.ini /work/#{playbook_basename} </dev/null"
     end
@@ -353,7 +355,9 @@ module KrikriPlaybookGenerator
                      check : Bool? = nil, second_run : Bool = false,
                      diff : Bool? = nil, user : UserProfile = UserProfile::Root,
                      umask : String = DEFAULT_UMASK, hosts : Int32 = 1,
-                     env : Hash(String, String) = {} of String => String) : Array(HostState::Comparison)
+                     env : Hash(String, String) = {} of String => String,
+                     limit : String? = nil,
+                     include_unreachable : Bool = false) : Array(HostState::Comparison)
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       # Per-profile images: a mixed batch provisions both templates, and a
@@ -387,17 +391,17 @@ module KrikriPlaybookGenerator
         # The host-count axis rebuilds the inventory per pair: both engines
         # must see the same N local aliases, and the committed template's
         # one-host inventory cannot express a per-row count.
-        inventory = HostInventory.render(hosts)
+        inventory = HostInventory.render(hosts, include_unreachable)
         write_inventory(real, inventory)
         write_inventory(krikri, inventory)
 
         runs = [] of HostState::Comparison
         runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-          user, umask, env)
+          user, umask, env, limit)
         if second_run && HostState.succeeded?(runs.first[:ansible]) &&
            HostState.succeeded?(runs.first[:krikri])
           runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-            user, umask, env)
+            user, umask, env, limit)
         end
         runs
       ensure
@@ -411,17 +415,19 @@ module KrikriPlaybookGenerator
     private def comparison(real : String, krikri : String, playbook_path : String,
                            krikri_engine : String, check : Bool, diff : Bool,
                            user : UserProfile, umask : String,
-                           env : Hash(String, String) = {} of String => String) : HostState::Comparison
-      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env),
-       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env)}
+                           env : Hash(String, String) = {} of String => String,
+                           limit : String? = nil) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env, limit),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env, limit)}
     end
 
     private def observe(name : String, engine_cmd : String, playbook_path : String,
                         check : Bool, diff : Bool, user : UserProfile,
                         umask : String,
-                        env : Hash(String, String) = {} of String => String) : HostState::Observation
+                        env : Hash(String, String) = {} of String => String,
+                        limit : String? = nil) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env)
+      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env, limit)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -738,10 +744,11 @@ module KrikriPlaybookGenerator
                             check : Bool = @check_mode, diff : Bool = @diff,
                             user : UserProfile = UserProfile::Root,
                             umask : String = DEFAULT_UMASK,
-                            env : Hash(String, String) = {} of String => String) : Cmd::Result
+                            env : Hash(String, String) = {} of String => String,
+                            limit : String? = nil) : Cmd::Result
       owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
       script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout,
-        check, diff, umask, owner, owner, env)
+        check, diff, umask, owner, owner, env, limit)
       args = ["exec", "-w", "/work"]
       if user.nonroot?
         args += ["--user", "#{Fixtures::UNPRIVILEGED_USER}:#{Fixtures::UNPRIVILEGED_USER}",

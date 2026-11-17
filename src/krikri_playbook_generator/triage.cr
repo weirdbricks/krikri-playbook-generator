@@ -30,7 +30,7 @@ module KrikriPlaybookGenerator
   class Triage
     record MutationEntry, option : String, kind : String
     record ResultLine, playbook : String, module_name : String, mode : String, run : Int32,
-      user : String, umask : String, hosts : Int32, env : Hash(String, String),
+      user : String, umask : String, hosts : Int32, limit : String, env : Hash(String, String),
       chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
       ansible_error : String?, mutations : Array(MutationEntry), error : String?,
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
@@ -102,23 +102,23 @@ module KrikriPlaybookGenerator
     end
 
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def state_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.state_divergent
@@ -127,28 +127,28 @@ module KrikriPlaybookGenerator
         # the "one root cause never appears twice" rule.
         next if line.check_mode_mutated
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.state_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.state_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def check_mode_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.check_mode_divergent?
         next if line.errored? || line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.check_mode_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.check_mode_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
@@ -242,6 +242,7 @@ module KrikriPlaybookGenerator
             json.field "user", example.user
             json.field "umask", example.umask
             json.field "hosts", example.hosts
+            json.field "limit", example.limit
             json.field "env", example.env.empty? ? nil : example.env
             json.field "chaos", example.chaos
             json.field "mutations" do
@@ -404,7 +405,8 @@ module KrikriPlaybookGenerator
                            mode : String? = nil, run : Int32 = 1, diff : Bool = true,
                            user : String = "root", umask : String = DEFAULT_UMASK,
                            hosts : Int32 = 1,
-                           env : Hash(String, String) = {} of String => String) : String
+                           env : Hash(String, String) = {} of String => String,
+                           limit : String = "off") : String
       backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
       command = "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
       command += " --modes #{mode}" if mode && mode.in?(%w[check real])
@@ -416,6 +418,9 @@ module KrikriPlaybookGenerator
       # A multi-host row only reproduces on an inventory with that many
       # hosts; a one-host row is the default and stays unpinned.
       command += " --hosts #{hosts}" if hosts > 1
+      # A limit row contacts (or deliberately avoids) a different host set;
+      # pinning the symbol keeps that shape, including `--limit none`.
+      command += " --limit #{limit}" unless limit == "off"
       command += " --no-second-run" if run <= 1
       command += " --no-diff" unless diff
       # An env-var play keyword lives only in the sidecar, so the repro has
@@ -478,6 +483,7 @@ module KrikriPlaybookGenerator
         parsed["user"]?.try(&.as_s?) || UserProfile::Root.label,
         parsed["umask"]?.try(&.as_s?) || DEFAULT_UMASK,
         parse_hosts(parsed),
+        parsed["limit"]?.try(&.as_s?) || "off",
         parse_env(parsed),
         parsed["chaos"]?.try(&.as_bool?) || false,
         divergent,

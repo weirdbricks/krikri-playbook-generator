@@ -57,21 +57,40 @@ module KrikriPlaybookGenerator
   module HostInventory
     MAX_HOSTS = 3
     GROUP     = "kpg_targets"
+    # A host that can never be reached: loopback with a closed port, so a
+    # connection attempt is refused immediately instead of hanging. It is
+    # added to the play group only for a --limit row, which is the axis
+    # whose whole point is that ansible must NOT contact out-of-limit
+    # hosts (including during implicit fact gathering).
+    UNREACHABLE_HOST  = "kpg_unreachable"
+    UNREACHABLE_ENTRY = "#{UNREACHABLE_HOST} ansible_connection=ssh ansible_host=127.0.0.1 " \
+                        "ansible_port=1 ansible_user=root"
 
     def self.aliases(count : Int32) : Array(String)
       (1..count).map { |index| index == 1 ? "target" : "target#{index}" }
     end
 
-    def self.render(count : Int32) : String
+    def self.render(count : Int32, include_unreachable : Bool = false) : String
       targets = aliases(count)
       leftovers = aliases(MAX_HOSTS) - targets
       String.build do |io|
         leftovers.each { |name| io << "#{name} ansible_connection=local\n" }
         io << "\n[#{GROUP}]\n"
         targets.each { |name| io << "#{name} ansible_connection=local\n" }
+        io << "#{UNREACHABLE_ENTRY}\n" if include_unreachable
       end
     end
   end
+
+  # The engine environment every backend invokes: gathering and its fact
+  # cache are stripped (an inherited ANSIBLE_GATHERING=smart plus a
+  # populated cache silently skips implicit fact gathering on the real
+  # engine, which would make the gathering axis compare "ansible did not
+  # run it" against an engine that has no cache), and ANSIBLE_NOCOLOR
+  # keeps the compared bytes free of terminal styling. Local runs use this
+  # too, not just the isolated ones: an inherited cache is exactly the kind
+  # of environment leak this tool must not turn into a finding.
+  ENGINE_ENV_STRIP = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
 
   # Shell assignments for a row's engine environment, empty when the
   # playbook's keyword is a play key instead of an env variant. Values come

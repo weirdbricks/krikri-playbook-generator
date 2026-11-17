@@ -43,7 +43,7 @@ module KrikriPlaybookGenerator
     # Same rule as the podman and Atlantic backends: byte parity is only
     # meaningful against the core krikri targets.
     INVENTORY        = "target ansible_connection=local\n"
-    ENGINE_ENV_STRIP = "env -u ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1"
+    ENGINE_ENV_STRIP = KrikriPlaybookGenerator::ENGINE_ENV_STRIP
 
     # Separate address space from the role tester's 127.77 podman/microvm
     # slots, so a kpg batch and a role round can run at the same time.
@@ -393,10 +393,12 @@ module KrikriPlaybookGenerator
                             check_mode : Bool, diff : Bool = true,
                             umask : String = DEFAULT_UMASK,
                             owner : String = "root", group : String = "root",
-                            env : Hash(String, String) = {} of String => String) : String
+                            env : Hash(String, String) = {} of String => String,
+                            limit : String? = nil) : String
       flags = "#{check_mode ? " --check" : ""}#{diff ? " --diff" : ""}"
+      limit_flag = limit.try { |pattern| " --limit #{Process.quote(pattern)}" } || ""
       "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} #{KrikriPlaybookGenerator.env_prefix(env)}timeout #{timeout} " \
-      "#{binary}#{flags} -e kpg_owner=#{owner} -e kpg_group=#{group} " \
+      "#{binary}#{flags}#{limit_flag} -e kpg_owner=#{owner} -e kpg_group=#{group} " \
       "-i inventory.ini /work/#{basename} </dev/null"
     end
 
@@ -437,7 +439,9 @@ module KrikriPlaybookGenerator
                      check : Bool? = nil, second_run : Bool = false,
                      diff : Bool? = nil, user : UserProfile = UserProfile::Root,
                      umask : String = DEFAULT_UMASK, hosts : Int32 = 1,
-                     env : Hash(String, String) = {} of String => String) : Array(HostState::Comparison)
+                     env : Hash(String, String) = {} of String => String,
+                     limit : String? = nil,
+                     include_unreachable : Bool = false) : Array(HostState::Comparison)
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
       effective_check = check.nil? ? @check_mode : check
       effective_diff = diff.nil? ? @diff : diff
@@ -446,14 +450,14 @@ module KrikriPlaybookGenerator
       begin
         pair = boot_pair(gold, os, lease)
         begin
-          pair.vms.each { |host| prep_vm(host, playbook_path, user, hosts) }
+          pair.vms.each { |host| prep_vm(host, playbook_path, user, hosts, include_unreachable) }
           basename = File.basename(playbook_path)
           krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
           runs = [] of HostState::Comparison
-          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env)
+          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env, limit)
           if second_run && HostState.succeeded?(runs.first[:ansible]) &&
              HostState.succeeded?(runs.first[:krikri])
-            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env)
+            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env, limit)
           end
           runs
         ensure
@@ -467,17 +471,19 @@ module KrikriPlaybookGenerator
     private def comparison(pair : Pair, basename : String, krikri_engine : String,
                            check : Bool, diff : Bool, user : UserProfile,
                            umask : String,
-                           env : Hash(String, String) = {} of String => String) : HostState::Comparison
-      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff, user, umask, env),
-       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff, user, umask, env)}
+                           env : Hash(String, String) = {} of String => String,
+                           limit : String? = nil) : HostState::Comparison
+      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff, user, umask, env, limit),
+       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff, user, umask, env, limit)}
     end
 
     private def observe(vm : Vm, binary : String, basename : String,
                         check : Bool, diff : Bool, user : UserProfile,
                         umask : String,
-                        env : Hash(String, String) = {} of String => String) : HostState::Observation
+                        env : Hash(String, String) = {} of String => String,
+                        limit : String? = nil) : HostState::Observation
       before = snapshot_state(vm)
-      result = exec_engine(vm, binary, basename, check, diff, user, umask, env)
+      result = exec_engine(vm, binary, basename, check, diff, user, umask, env, limit)
       HostState::Observation.new(result, before, snapshot_state(vm))
     end
 
@@ -863,7 +869,7 @@ module KrikriPlaybookGenerator
     end
 
     private def prep_vm(vm : Vm, playbook_path : String, user : UserProfile,
-                        hosts : Int32 = 1) : Nil
+                        hosts : Int32 = 1, include_unreachable : Bool = false) : Nil
       seed_fixtures(vm)
       # Re-own the writable fixture root for this row's identity before the
       # first snapshot, so both engines start from identical state.
@@ -877,7 +883,7 @@ module KrikriPlaybookGenerator
                              playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise MicrovmProvisionError.new("playbook upload to #{vm.ip} failed: #{copy.stderr}") unless copy.rc == 0
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
-                                 HostInventory.render(hosts) + "KPG_INVENTORY_EOF\n", 60.0)
+                                 HostInventory.render(hosts, include_unreachable) + "KPG_INVENTORY_EOF\n", 60.0)
       unless inventory.rc == 0
         raise MicrovmProvisionError.new("writing inventory on #{vm.ip} failed: #{inventory.stderr}")
       end
@@ -922,9 +928,10 @@ module KrikriPlaybookGenerator
                             check : Bool = @check_mode, diff : Bool = @diff,
                             user : UserProfile = UserProfile::Root,
                             umask : String = DEFAULT_UMASK,
-                            env : Hash(String, String) = {} of String => String) : Cmd::Result
+                            env : Hash(String, String) = {} of String => String,
+                            limit : String? = nil) : Cmd::Result
       owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
-      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff, umask, owner, owner, env)
+      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff, umask, owner, owner, env, limit)
       command = MicrovmBackend.as_unprivileged(command) if user.nonroot?
       result = Cmd.run("timeout", [(@engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
         timeout: @engine_timeout + 150.0)

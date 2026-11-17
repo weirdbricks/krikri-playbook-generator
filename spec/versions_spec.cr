@@ -65,11 +65,12 @@ module KrikriPlaybookGenerator
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
         "#{dir}/bin/ansible-playbook", false, [RunMode::Check], false, true, 1.5.seconds,
         fake_runner({} of String => Cmd::Result), user_profiles: ["root"], umasks: ["022"],
-        hosts: [1, 2])
+        hosts: [1, 2], limits: ["one"])
 
       assert(text.lines.includes?("user-profiles: root"))
       assert(text.lines.includes?("umasks: 022"))
       assert(text.lines.includes?("hosts: 1,2"))
+      assert(text.lines.includes?("limits: one"))
     ensure
       FileUtils.rm_rf(dir) if dir
     end

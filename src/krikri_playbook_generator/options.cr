@@ -67,6 +67,9 @@ module KrikriPlaybookGenerator
     property? handlers_given : Bool
     property retries : Array(String)
     property? retries_given : Bool
+    property limits : Array(String)
+    property? limits_given : Bool
+    property? gather_facts : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
@@ -97,6 +100,7 @@ module KrikriPlaybookGenerator
                    @blocks = BlockShapes::KINDS, @blocks_given = false,
                    @handlers = HandlerShapes::KINDS, @handlers_given = false,
                    @retries = RetryShapes::KINDS, @retries_given = false,
+                   @limits = ["off"], @limits_given = false, @gather_facts = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -192,6 +196,11 @@ module KrikriPlaybookGenerator
           opts.delegation = parse_delegation(v)
           opts.delegation_given = true
         end
+        dsl.on("--limit LIST", "host-scope rows: none, one, group, unreachable, negative (comma-separated; every row contacts every host in scope)") do |v|
+          opts.limits = parse_limits(v)
+          opts.limits_given = true
+        end
+        dsl.on("--gather-facts", "generate plays with gather_facts: true, so implicit fact gathering is exercised (pair with --limit)") { opts.gather_facts = true }
         dsl.on("--retries LIST", "retry shapes: retried, exhausted, delegated or delegated-fact (comma-separated; `none` turns it off)") do |v|
           opts.retries = parse_retries(v)
           opts.retries_given = true
@@ -265,6 +274,24 @@ module KrikriPlaybookGenerator
     # backend rebuilds the inventory per row.
     def self.effective_hosts(opts : Options) : Array(Int32)
       opts.hosts
+    end
+
+    # The `--limit` symbols `--limit` accepts; each maps to an ansible
+    # pattern (or to nil for no limit at all).
+    LIMIT_CHOICES = %w[off none one group unreachable negative]
+
+    def self.limit_pattern(symbol : String) : String?
+      case symbol
+      when "off", "none" then nil
+      when "one"         then HostInventory.aliases(1).first
+      when "group"       then HostInventory::GROUP
+      when "unreachable" then HostInventory::UNREACHABLE_HOST
+      when "negative"    then "#{HostInventory::GROUP}:!#{HostInventory.aliases(2).last}"
+      end
+    end
+
+    def self.effective_limits(opts : Options) : Array(String)
+      opts.limits
     end
 
     private def self.default_modes(opts : Options) : Array(RunMode)
@@ -353,6 +380,7 @@ module KrikriPlaybookGenerator
       check_block_target!(opts)
       check_handler_target!(opts)
       check_retry_target!(opts)
+      check_limit_target!(opts)
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
@@ -402,6 +430,31 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--retries is only valid with generate (the playbook carries retries/until)")
+    end
+
+    # `--limit` is a run matrix (generate with a backend, or run); the
+    # gather-facts flag is generation-time only.
+    private def self.check_limit_target!(opts : Options) : Nil
+      if opts.limits_given? && !opts.command.run? && !opts.command.generate?
+        raise InvalidOptionsError.new("--limit is only valid with run or generate")
+      end
+      # Atlantic builds one inventory per profile for the whole batch, so a
+      # multi-value limit axis would silently collapse.
+      if opts.run_on_atlantic? && opts.limits.size > 1
+        raise InvalidOptionsError.new("--limit takes one value on --run-on-atlantic")
+      end
+      if opts.gather_facts? && !opts.command.generate?
+        raise InvalidOptionsError.new("--gather-facts is only valid with generate (the playbook carries gather_facts)")
+      end
+    end
+
+    private def self.parse_limits(value : String) : Array(String)
+      limits = value.split(',').map(&.strip)
+      unknown = limits.reject { |entry| LIMIT_CHOICES.includes?(entry) }
+      return limits.uniq if unknown.empty?
+
+      raise InvalidOptionsError.new(
+        "unknown --limit value #{unknown.first.inspect} (expected: #{LIMIT_CHOICES.join(", ")})")
     end
 
     private def self.parse_retries(value : String) : Array(String)
