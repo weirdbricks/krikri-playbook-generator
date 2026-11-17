@@ -696,6 +696,30 @@ module KrikriPlaybookGenerator
         tail = (galaxy.stdout + galaxy.stderr).lines.map(&.strip).reject(&.empty?).last(5).join(" | ")
         raise MicrovmProvisionError.new("installing collections on the #{profile.os} golden failed: #{tail}")
       end
+      assert_collection_versions(vm, profile)
+    end
+
+    # Same reasoning as PodmanBackend's assert: an argument spec comes from
+    # the installed collection version, so the golden must carry the pinned
+    # ones or the reference engine compares against a different schema than
+    # krikri targets.
+    private def assert_collection_versions(vm : Vm, profile : Profile) : Nil
+      requirements = profile.collections
+      return unless requirements.any? { |requirement| Dependencies.split_collection(requirement)[1] }
+
+      listing = run_script(vm, "ansible-galaxy collection list --format json", 180.0)
+      unless listing.rc == 0
+        tail = (listing.stdout + listing.stderr).lines.map(&.strip).reject(&.empty?).last(5).join(" | ")
+        raise MicrovmProvisionError.new("ansible-galaxy collection list failed on the #{profile.os} golden: #{tail}")
+      end
+
+      installed = Dependencies.installed_collection_versions(listing.stdout)
+      mismatches = Dependencies.collection_version_mismatches(requirements, installed)
+      return if mismatches.empty?
+
+      raise MicrovmProvisionError.new(
+        "#{profile.os} golden collections do not match module_dependencies.yml: #{mismatches.join("; ")} - " \
+        "argspec checks would compare the engine against a collection set krikri does not target")
     end
 
     private def run_prep(vm : Vm, profile : Profile) : Nil

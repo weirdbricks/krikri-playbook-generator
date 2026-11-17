@@ -302,6 +302,7 @@ module KrikriPlaybookGenerator
       unless sets.collections.empty?
         Log.info("podman", "#{label} template: galaxy installing #{sets.collections.join(" ")} (real side)")
         install_collections(@name_real, sets.collections)
+        assert_collection_versions!(sets.collections)
       end
 
       Log.info("podman", "#{label} template: seeding fixtures (identical on both sides)")
@@ -513,6 +514,30 @@ module KrikriPlaybookGenerator
           "byte-parity comparisons against a different engine version are meaningless; " \
           "install the expected version or update EXPECTED_ANSIBLE_VERSION deliberately")
       end
+    end
+
+    # A collection's argument spec ships with the installed version, so a
+    # floating install silently changes what real ansible considers valid
+    # and turns every argspec difference into a false divergence. The pins
+    # live in module_dependencies.yml; a mismatch fails provisioning the
+    # same way a wrong ansible-core does, including the distro-collection
+    # case (a second installed copy with another version).
+    private def assert_collection_versions!(requirements : Array(String)) : Nil
+      return unless requirements.any? { |requirement| Dependencies.split_collection(requirement)[1] }
+
+      result = Cmd.run("podman", ["exec", @name_real, "ansible-galaxy", "collection", "list", "--format", "json"], timeout: 180.0)
+      unless Cmd.success?(result)
+        raise PodmanProvisionError.new("ansible-galaxy collection list failed in container: #{result.stderr}")
+      end
+
+      installed = Dependencies.installed_collection_versions(result.stdout)
+      mismatches = Dependencies.collection_version_mismatches(requirements, installed)
+      return if mismatches.empty?
+
+      raise PodmanProvisionError.new(
+        "container collections do not match module_dependencies.yml: #{mismatches.join("; ")} - " \
+        "argspec checks would compare the engine against a collection set krikri does not target; " \
+        "fix the pin there (or bump it deliberately)")
     end
 
     # The krikri container shares the template pair's OS, and the binary was

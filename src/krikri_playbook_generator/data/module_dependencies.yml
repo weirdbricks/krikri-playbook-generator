@@ -19,12 +19,34 @@
 # module's Python library; krikri often shells to a binary or speaks a
 # protocol natively and needs the package only, or vice versa.
 #
+# `collection_pins:` is the single place that decides WHICH collection
+# version the reference engine gets. A collection's argument spec lives in
+# the installed version, so an unpinned install silently compares krikri
+# against a spec it does not target and every argspec difference arrives
+# as a false divergence. Every requirement whose collection appears here
+# is normalized to `name:==version` before provisioning, both backends
+# assert the installed version after the galaxy install, and the string
+# feeds the golden/template fingerprint so a bump rebakes once. A
+# collection that is not listed stays unpinned (and unasserted), so keep
+# it deliberate: bump a pin only when krikri's plugins target the new spec.
+#
 # Keep entries minimal and verifiable: a package that doesn't exist in
 # Debian trixie fails provisioning loudly rather than silently, which is
 # the desired signal to remove it. Service modules needing a daemon or
 # network (mariadb, docker, postgresql) are deliberately NOT listed here;
 # they belong to a session-profile or Atlantic path, not the generic
 # podman template.
+
+collection_pins:
+  ansible.mysql: "5.2.0"
+  ansible.posix: "2.1.0"
+  community.crypto: "3.1.1"
+  community.docker: "5.2.1"
+  community.general: "12.5.0"
+  community.mysql: "5.0.2"
+  community.postgresql: "4.2.0"
+  community.rabbitmq: "1.6.0"
+  containers.podman: "1.17.0"
 
 supported: []
 

@@ -65,10 +65,13 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
   template container pair per profile (Debian/Rocky) from the UNION
   dependency set in `data/module_dependencies.yml` (base lists plus the
   in-scope modules' extras, partitioned real vs krikri), asserting the
-  container's ansible-core is exactly 2.19.11, failing loudly otherwise,
-  commits it to images, and then starts a **fresh container pair per
-  playbook** — so users, files and state created by one playbook never
-  leak into the next. The committed template images are a two-level
+  container's ansible-core is exactly 2.21.6 and that every pinned
+  collection resolves to the version in `collection_pins:` (a collection's
+  argument spec ships with its version, so a floating install would
+  compare krikri against a schema it does not target), failing loudly
+  otherwise, commits it to images, and then starts a **fresh container
+  pair per playbook** — so users, files and state created by one playbook
+  never leak into the next. The committed template images are a two-level
   content-addressed cache: `kpg-base-*:<base fingerprint>` is the package
   layer (package lists, ansible-core pin, fixtures), and
   `kpg-img-*:<fingerprint>` adds the krikri binary/plugins. A run with the
@@ -306,7 +309,8 @@ which slot and which kind. `PlaybookBuilder` turns those into real
 playbook YAML plus a `.meta.json` sidecar per playbook. `Runner` runs
 each playbook against both real engines — locally (check mode by default)
 or, with `--run-on-podman`, in a fresh pair of throwaway podman containers
-per playbook via `PodmanBackend` (ansible-core 2.19.11 asserted) — and
+per playbook via `PodmanBackend` (ansible-core 2.21.6 and the pinned
+collection versions asserted) — and
 writes `results.jsonl` with masked/unmasked diffs, rc, timeout flags, the
 recap comparison and a stable diff signature. `Triage` turns that into
 the full report: signature-grouped divergences with repro commands, the

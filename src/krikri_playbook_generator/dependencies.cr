@@ -38,12 +38,17 @@ module KrikriPlaybookGenerator
       Dependencies.new(DEPENDENCIES_YAML)
     end
 
+    # The data file's `collection_pins:` section, not a module entry.
+    COLLECTION_PINS_KEY = "collection_pins"
+
     @supported : Array(String)
     @modules : Hash(String, Hash(String, Array(String)))
+    @collection_pins : Hash(String, String)
 
     def initialize(yaml : String)
       parsed = YAML.parse(yaml)
       @supported = parsed["supported"]?.try(&.as_a?).try(&.compact_map(&.as_s?)) || [] of String
+      @collection_pins = parse_collection_pins(parsed[COLLECTION_PINS_KEY]?)
       @modules = parse_modules(parsed)
     end
 
@@ -55,6 +60,11 @@ module KrikriPlaybookGenerator
 
     def installed_modules : Array(String)
       @modules.keys.reject { |key| BASE_SECTIONS.includes?(key) }.sort!
+    end
+
+    # collection name -> the version the reference engine must install.
+    def collection_pins : Hash(String, String)
+      @collection_pins.dup
     end
 
     # Union of the base lists and the given modules' extras, partitioned
@@ -78,7 +88,77 @@ module KrikriPlaybookGenerator
       PackageSets.new(
         real_debian.uniq!, krikri_debian.uniq!,
         real_rpm.uniq!, krikri_rpm.uniq!,
-        python.uniq!, collections.uniq!)
+        python.uniq!, pin_collections(collections))
+    end
+
+    # Every collection requirement is spelled `name:==pin` when the data
+    # file pins it, so a hand-written `collections:` entry and the
+    # FQCN-derived name for the same collection collapse to one pinned
+    # requirement instead of installing both the pin and a floating
+    # latest. A bump therefore lands in the fingerprint (and a rebake).
+    private def pin_collections(requirements : Array(String)) : Array(String)
+      pinned = requirements.map do |requirement|
+        name, version = Dependencies.split_collection(requirement)
+        next requirement if version
+
+        pin = @collection_pins[name]?
+        pin ? "#{name}:==#{pin}" : name
+      end
+      pinned.uniq!
+    end
+
+    # `community.general:==12.5.0` -> {"community.general", "==12.5.0"};
+    # an unpinned `community.general` yields a nil version.
+    def self.split_collection(requirement : String) : {String, String?}
+      name, separator, version = requirement.partition(':')
+      {name, separator.empty? ? nil : version}
+    end
+
+    # Parses `ansible-galaxy collection list --format json` (install path ->
+    # collection -> {"version": ...}) into name -> the installed versions in
+    # search-path order. ansible prints those paths in the order it searches
+    # them and Crystal's JSON parser keeps object order, so the first entry
+    # is the copy both engines actually load; the rest are lower-priority
+    # copies (e.g. Debian's distro collections) that only matter if they
+    # come first.
+    def self.installed_collection_versions(json : String) : Hash(String, Array(String))
+      result = {} of String => Array(String)
+      parsed = JSON.parse(json).as_h?
+      parsed.try &.each_value do |collections|
+        collections.as_h?.try do |entries|
+          entries.each do |name, info|
+            version = info.as_h?.try(&.["version"]?).try(&.as_s?)
+            next unless version
+
+            (result[name]? || (result[name] = [] of String)) << version
+          end
+        end
+      end
+      result
+    end
+
+    # One line per pinned requirement the resolved install does not satisfy.
+    # Only the first copy counts: `~/.ansible/collections` outranks the
+    # distro tree for both engines, so a pinned install there wins even when
+    # Debian's ansible package ships an older copy. A collection whose first
+    # copy is not the pin (or that is missing) would hand real ansible a
+    # different argument spec than krikri targets.
+    def self.collection_version_mismatches(requirements : Array(String),
+                                           installed : Hash(String, Array(String))) : Array(String)
+      requirements.compact_map do |requirement|
+        name, version = split_collection(requirement)
+        next unless version
+
+        versions = installed[name]? || [] of String
+        next if versions.first? == strip_operator(version)
+
+        "expected #{name} #{strip_operator(version)}, resolved " +
+          (versions.empty? ? "no installed copy" : versions.join(" then "))
+      end
+    end
+
+    private def self.strip_operator(version : String) : String
+      version.sub(/^[=<>!~]+/, "")
     end
 
     private def union_base(key : String) : {Array(String), Array(String)}
@@ -124,9 +204,20 @@ module KrikriPlaybookGenerator
       return result unless parsed.as_h?
 
       parsed.as_h.each do |key, value|
-        next if key.to_s == "supported"
+        next if key.to_s == "supported" || key.to_s == COLLECTION_PINS_KEY
 
         result[key.to_s] = parse_entry(value)
+      end
+      result
+    end
+
+    private def parse_collection_pins(value : YAML::Any?) : Hash(String, String)
+      result = {} of String => String
+      value.try(&.as_h?).try do |pins|
+        pins.each do |name, pin|
+          version = pin.as_s?
+          result[name.to_s] = version if version
+        end
       end
       result
     end

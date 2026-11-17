@@ -289,7 +289,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   firewalld/SELinux). It bakes ONE golden per OS — Ubuntu 24.04 minimal
   and Rocky 10 cloud images — keyed by the dependency table's package
   union plus the profile prep (`fingerprint`), installs the pinned
-  ansible-core and the collections the real engine needs, then boots two
+  ansible-core and the collections the real engine needs (`collection_pins:`
+  in `module_dependencies.yml` decides their versions, and the bake asserts
+  the resolved copy matches, the same way the ansible-core version is
+  asserted), then boots two
   throwaway qcow2 overlays per playbook (one VM per engine, so no state
   can leak between the engine runs) on `127.90.<slot>.1/.2` with sshd
   published on 2422 and stages the krikri binary over scp. A slot is
@@ -330,8 +333,11 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `ansible-core` + a runtime-lib set in one, `podman cp`'s the
   `krikri-playbook` binary and its `plugins/` dir into the other, seeds
   the identical `Fixtures` tree into both, asserts the container's
-  ansible-core version equals `EXPECTED_ANSIBLE_VERSION` (2.19.11 —
-  fails loudly otherwise), then `podman commit`s the templates into a
+  ansible-core version equals `EXPECTED_ANSIBLE_VERSION` (2.21.6) and that
+  every pinned collection resolves to its `collection_pins:` version (the
+  first copy in search order, since `~/.ansible/collections` outranks
+  Debian's distro tree — fails loudly otherwise, as an argument spec ships
+  with the collection version), then `podman commit`s the templates into a
   two-level content-addressed cache: `kpg-base-{real,krikri}-{debian,rpm}:<base
   fingerprint>` holds the package layer (a SHA-256 over the package sets,
   ansible-core pin, inventory and fixture seed script, deliberately not the
@@ -494,6 +500,13 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   through `Cmd.run` (`src/krikri_playbook_generator/cmd.cr`), not a bare
   `Process.run` — and every podman/ansible/krikri invocation gets a
   `timeout` (either `Cmd.run`'s timeout param or an inner GNU `timeout`).
+- **Collection pin discipline**: `data/module_dependencies.yml`'s
+  `collection_pins:` is the one place a collection version is chosen; both
+  the podman and microVM paths normalize requirements to
+  `name:==version`, put the string in the image/golden fingerprint, and
+  assert the resolved copy after the galaxy install. A collection that is
+  not pinned stays floating and unasserted — promote it there only when
+  krikri's plugins target that exact spec, never to silence a divergence.
 - **Mask list discipline**: `ByteDiff::MASKS` is the single, explicit
   mask list and must stay minimal — only the discovered-Python WARNING
   line and inherently non-deterministic fields (timestamps, temp dir
@@ -567,6 +580,11 @@ Documented deliberately, not silently:
   microVM backend (`--run-on-microvm`/`--run-on-mixed`) now hosts exactly
   those service modules for free, so Atlantic is only needed for
   infrastructure this machine cannot virtualize.
+- Atlantic.net has no collection provisioning at all (only the pinned
+  ansible-core), so its batches cover core modules and nothing that needs
+  a collection; the pin/assert discipline described above lives in the
+  podman and microVM backends. Widening Atlantic means installing the
+  playbook's collections there with the same pins first.
 - `PodmanBackend` installs a UNION dependency set (base lists plus
   `Dependencies#supported`'s extras) rather than podman-diff's dozens
   of per-module installs gated on a hand-picked case list — a randomly

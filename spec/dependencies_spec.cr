@@ -82,10 +82,73 @@ module KrikriPlaybookGenerator
         "core modules must not add a collection install")
     end
 
+    it "normalizes every collection requirement to the data file's pin" do
+      deps = Dependencies.new(pinned_yaml_for_spec)
+
+      assert_equal("community.general:==12.5.0", deps.package_sets(["community.general.sudoers"]).collections.first)
+      # A hand-written pin and the FQCN-derived name collapse to one.
+      assert_equal(["community.general:==12.5.0"], deps.package_sets(["community.general.ini_file"]).collections)
+      # Collections the file does not pin stay floating rather than guessed at.
+      assert_equal(["unpinned.collection"], deps.package_sets(["unpinned.collection.mod"]).collections)
+    end
+
+    it "reads installed collection versions from ansible-galaxy's JSON listing" do
+      listing = <<-JSON
+        {"/root/.ansible/collections/ansible_collections": {"community.general": {"version": "12.5.0"}},
+         "/usr/share/ansible/collections/ansible_collections": {"community.general": {"version": "11.2.1"},
+                                                               "ansible.posix": {"version": "2.1.0"}}}
+        JSON
+      installed = Dependencies.installed_collection_versions(listing)
+      assert_equal(["12.5.0", "11.2.1"], installed["community.general"])
+      assert_equal(["2.1.0"], installed["ansible.posix"])
+    end
+
+    it "accepts a pinned copy ahead of the distro one and reports a shadowed, missing or drifted pin" do
+      requirements = ["community.general:==12.5.0", "community.docker:==5.2.1",
+                      "ansible.posix:==2.1.0", "community.mysql:==5.0.2"]
+      installed = {
+        # the pinned copy comes first in search order, Debian's older one behind it
+        "community.general" => ["12.5.0", "11.2.1"],
+        # the distro copy would win, which is exactly the failure mode
+        "community.docker" => ["4.7.0", "5.2.1"],
+        "ansible.posix"    => ["2.1.0"],
+      }
+
+      mismatches = Dependencies.collection_version_mismatches(requirements, installed)
+      assert_equal(2, mismatches.size)
+      assert(mismatches[0].includes?("community.docker"))
+      assert(mismatches[0].includes?("4.7.0 then 5.2.1"))
+      assert(mismatches[1].includes?("community.mysql"))
+      assert(mismatches[1].includes?("no installed copy"))
+    end
+
     it "supported_module_names filters the ansible-doc listing to installed ones" do
       listing = JSON.parse(%({"community.general.sudoers": {}, "ansible.builtin.copy": {}, "ansible.builtin.apt": {}}))
       names = SchemaScanner.supported_module_names(listing, ["community.general.sudoers", "community.general.missing"])
       assert_equal(["community.general.sudoers"], names)
+    end
+
+    PINNED_YAML_HELPER = <<-YAML
+      collection_pins:
+        community.general: "12.5.0"
+
+      community.general.sudoers:
+        real:
+          debian_packages: [sudo]
+          collections: [community.general:==12.5.0]
+
+      community.general.ini_file:
+        real:
+          debian_packages: []
+          collections: [community.general]
+
+      unpinned.collection.mod:
+        real:
+          debian_packages: []
+      YAML
+
+    def pinned_yaml_for_spec : String
+      PINNED_YAML_HELPER
     end
 
     CLUSTER_YAML_HELPER = <<-YAML
