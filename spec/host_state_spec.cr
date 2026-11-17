@@ -104,6 +104,55 @@ module KrikriPlaybookGenerator
       assert_includes(script, "\\( -path /etc/hostname")
     end
 
+    it "finds nothing to report when a check-mode run left the host alone" do
+      snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
+      assert_equal([] of String, HostState.check_mode_changes(snapshot, snapshot))
+      assert_nil(HostState.check_mode_changes(nil, snapshot))
+      assert_nil(HostState.check_mode_changes(snapshot, nil))
+    end
+
+    it "reports what a check-mode run changed, including two engines agreeing" do
+      before_snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
+      after = HostState::Snapshot.parse(baseline
+        .sub("f\t0\t0\t644\t100\t/etc/passwd", "f\t0\t0\t600\t100\t/etc/passwd")
+        .sub("bash\t5.2", "bash\t5.2\ncurl\t8.0")
+        .sub("cron.service", "cron.service\nsshd.service")).as(HostState::Snapshot)
+
+      changes = HostState.check_mode_changes(before_snapshot, after)
+      refute_nil(changes)
+      assert_includes(changes.as(Array(String)), "package\tadded\tcurl\t8.0")
+      assert_includes(changes.as(Array(String)), "unit\tadded\tsshd.service")
+      assert_includes(changes.as(Array(String)),
+        "file\tchanged\tf\t0\t0\t644\t100\t/etc/passwd\tf\t0\t0\t600\t100\t/etc/passwd")
+    end
+
+    it "ignores the engines' documented control-side keepers in check mode" do
+      before_snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
+      after = HostState::Snapshot.parse(baseline
+        .sub("cron.service", "cron.service\nsshd.service")
+        .sub("#hashes\n", "#hashes\nh3  /root/.ansible/tmp/staged\n")).as(HostState::Snapshot)
+
+      changes = HostState.check_mode_changes(before_snapshot, after)
+      refute_nil(changes)
+      assert_equal(["unit\tadded\tsshd.service"], changes)
+      assert(HostState.check_mode_ignored?("hash\tadded\th3  /root/.ansible/tmp/staged"))
+      refute(HostState.check_mode_ignored?("file\tadded\tf\t0\t0\t644\t7\t/root/.ansiblex"))
+    end
+
+    it "signs a check-mode mutation by the engine that made it" do
+      krikri = "krikri:\n+ krikri: file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      signature = HostState.check_mode_signature(krikri)
+      refute_nil(signature)
+      assert(signature.as(String).starts_with?("check-mode:"))
+      other = HostState.check_mode_signature(
+        "krikri:\n+ krikri: file\tadded\tf\t0\t0\t600\t9\t/tmp/kpg-work/other\n")
+      assert_equal(signature, other)
+      ansible = HostState.check_mode_signature(
+        "ansible:\n+ ansible: file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n")
+      refute_equal(signature, ansible)
+      assert_nil(HostState.check_mode_signature(""))
+    end
+
     it "only calls a run successful when it neither failed nor timed out" do
       ok = HostState::Observation.new(Cmd::Result.new(0, "ok", ""))
       assert(HostState.succeeded?(ok))

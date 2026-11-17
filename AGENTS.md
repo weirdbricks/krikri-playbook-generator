@@ -193,6 +193,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `/etc/machine-id`) are per-host files each container/VM regenerates for
   itself; excluding them is the documented blind spot, same discipline as
   `ByteDiff::MASKS` (a module that edits one is invisible to this oracle).
+  `check_mode_changes` applies the `--check` contract on top of the same
+  snapshots: each ENGINE's own delta must be empty, so two engines that
+  agree on a mutation are still both reported, and the only tolerated
+  residue is `CHECK_MODE_IGNORED_PATHS` (`~/.ansible`, already pruned).
+  `check_mode_signature` keys those findings by the engine that broke the
+  promise.
 - `src/krikri_playbook_generator/runner.cr` — `Runner`. **Implemented
   (v0.0.8, rewritten for byte parity)**: the comparison is now
   byte-for-byte — raw stdout, stderr and rc from both engines under the
@@ -220,6 +226,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   construction. A delta mismatch is `state_divergent` with its own
   `state_signature` (`state:`-prefixed) and `state_diff`; per engine
   results.jsonl keeps `state_after`, `state_digest` and `state_changes`.
+  A check-mode row also records `check_mode_mutated` and
+  `check_mode_diff` (each engine's unexpected check-mode delta, engine
+  labelled) and counts as divergent on its own: `--check` must not change
+  the host even when both engines change it the same way.
   Local and Atlantic runs capture no state (locally the two engines share
   one live host, so a delta cannot be attributed to one engine).
   Every playbook is compared once per MODE (`RunMode::Check` and
@@ -402,18 +412,26 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   finding) and one root cause never appears twice. State-only findings
   list their `state_diff` lines. The CLI prints them as their own
   `== State divergences ... ==` section and they still exit 2.
+  `check_mode_report` groups rows whose `--check` run changed its host,
+  by their `check-mode:`-prefixed signature (engine included, paths
+  generalized); a row that also diverges on output or is already a
+  state-only finding is counted there once, never twice, and the CLI
+  prints a `== Check-mode mutations ... ==` section that still exits 2.
   Malformed lines and legacy lines missing `module` are skipped, a
   missing `results.jsonl` raises. `ResultLine` also keeps each line's
   masked diff (from results.jsonl's `diff.masked`) and error text, plus
   the state fields (`state_divergent`, recomputed `state_signature`,
-  `state_diff`); a legacy line without `masked_identical` is treated as
-  output-divergent.
+  `state_diff`) and the check-mode fields (`check_mode_mutated`,
+  `check_mode_diff`, recomputed `check_mode_signature`); a legacy line
+  without `masked_identical` is treated as output-divergent.
   `report_json` renders the whole report as ONE JSON object (`report
-  --json`): results_dir, total/errored/divergent/state_divergent counts,
-  findings and `state_findings` in the
+  --json`): results_dir, total/errored/divergent/state_divergent/
+  check_mode_divergent counts, findings, `state_findings` and
+  `check_mode_findings` in the
   same grouping/order as `report` (each with playbooks and an example
-  carrying mode/run/chaos/mutations/masked_diff/state_diff/ansible_error
-  and a `kind` of `output` or `state`), a `batch` object (modes,
+  carrying mode/run/chaos/mutations/masked_diff/state_diff/
+  check_mode_diff/ansible_error and a `kind` of `output`, `state` or
+  `check-mode`), a `batch` object (modes,
   duration, second-run flag read back from versions.txt), errors,
   not_applicable, happy_coverage, rates. The human report starts with the
   same `== Batch ==` line, and `Triage.repro_command` pins the finding's
@@ -460,6 +478,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   report: divergences grouped by module + diff signature (with count,
   mutations, example playbook and repro command), the state-only
   divergences (state signature, example and the changed state lines),
+  the check-mode mutations (engine-labelled signature, example, repro and
+  the mutated paths),
   the generator-quality
   section (batch happy-path success rate, per-module failures on real
   ansible with first error line, expected-failure and not-applicable
@@ -607,7 +627,14 @@ Documented deliberately, not silently:
   `$HOME` is not something a cheap `--check` batch should do); Atlantic
   reuses a per-profile VM across playbooks, so its state is not
   per-playbook attributable either. Widening it means giving those
-  backends per-engine isolation first.
+  backends per-engine isolation first. The same limits apply to the
+  check-mode read-only assertion, which is built on those snapshots and
+  therefore also only runs on podman and microVM.
+- A check-mode mutation is judged per engine against the `--check`
+  contract, not against the other engine. A reference-ansible mutation
+  (a module that ignores check mode) is therefore reported exactly like
+  a krikri one, with the engine named in the finding's signature, rather
+  than silently excused as "both did it".
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is now BUILT (`--tasks-per-playbook N`) — but still one play per
   playbook (no multi-PLAY playbooks, no role plays), and the batch-level
@@ -671,12 +698,15 @@ the `not_applicable` exclusions precisely and
 fast — the real pipeline is what the `generate`→`run`→`report` chain
 itself exercises live (verified manually; no spec drives the full CLI
 chain end to end yet). `triage_spec.cr` also covers the state-only
-findings, the "counted once" rule and legacy lines without
+findings, the check-mode findings (separate section, "counted once" rule,
+engine-labelled signature grouping and the JSON kind), the "counted once"
+rule and legacy lines without
 `masked_identical`. `host_state_spec.cr` builds hand-written snapshot
 fixtures and covers parsing/canonicalization (including a truncated
 capture), the change list (mode, owner-visible fields, leftover file,
 hash/content, package, unit, port and reboot), delta-vs-delta diffing,
-signature stability and the snapshot script's roots/exclusions.
+the check-mode policy (per-engine delta, control-state keeper filtering,
+signature stability) and the snapshot script's roots/exclusions.
 `masks_spec.cr` unit-tests the mask list, the
 LCS diff and signature stability. `generator_spec.cr` also covers the
 Jinja kind (the templated value must be equivalent to the baseline

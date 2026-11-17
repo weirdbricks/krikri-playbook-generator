@@ -103,6 +103,9 @@ module KrikriPlaybookGenerator
       getter run : Int32
       @state_diff : String?
       @state_divergent : Bool
+      # Per-engine check-mode deltas (only populated for a check-mode row).
+      getter check_mode_ansible : Array(String)?
+      getter check_mode_krikri : Array(String)?
 
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil,
                      @mode = RunMode::Real, @run = 1)
@@ -110,6 +113,13 @@ module KrikriPlaybookGenerator
         diff = compute_state_diff
         @state_diff = diff
         @state_divergent = !diff.nil?
+        if @mode.check?
+          @check_mode_ansible = HostState.check_mode_changes(@ansible.state_before, @ansible.state_after)
+          @check_mode_krikri = HostState.check_mode_changes(@krikri.state_before, @krikri.state_after)
+        else
+          @check_mode_ansible = nil
+          @check_mode_krikri = nil
+        end
       end
 
       UNRESOLVED      = /couldn't resolve module\/action '[^']+'/
@@ -149,7 +159,7 @@ module KrikriPlaybookGenerator
       def divergent? : Bool
         return false if @error
 
-        !masked_identical? || @state_divergent
+        !masked_identical? || @state_divergent || check_mode_mutation?
       end
 
       # What each engine changed on its own host, from the snapshots taken
@@ -178,6 +188,41 @@ module KrikriPlaybookGenerator
 
       def state_signature : String?
         state_diff.try { |diff| HostState.signature(diff) }
+      end
+
+      # A `--check` run that changed its host. Judged per engine: two
+      # engines that agree on a mutation are still both wrong in check
+      # mode, and the delta-vs-delta comparison above cannot see that.
+      def check_mode_mutation? : Bool
+        return false if @error
+
+        @check_mode_ansible.try { |changes| !changes.empty? } ||
+          @check_mode_krikri.try { |changes| !changes.empty? } || false
+      end
+
+      # The engines' unexpected check-mode deltas as a `-`/`+` diff, so the
+      # triage signature can tell "ansible broke check mode" from "krikri
+      # did" and generalize the paths like every other finding.
+      def check_mode_diff : String?
+        return unless check_mode_mutation?
+
+        String.build do |str|
+          append_check_mode_changes(str, "ansible", @check_mode_ansible)
+          append_check_mode_changes(str, "krikri", @check_mode_krikri)
+        end
+      end
+
+      def check_mode_signature : String?
+        check_mode_diff.try { |diff| HostState.check_mode_signature(diff) }
+      end
+
+      private def append_check_mode_changes(str : String::Builder, engine : String,
+                                            changes : Array(String)?) : Nil
+        return unless list = changes
+        return if list.empty?
+
+        str << engine << ":\n"
+        list.each { |line| str << "+ #{engine}: " << line << '\n' }
       end
 
       private def state_changes(run : EngineRun) : Array(String)?
@@ -788,6 +833,8 @@ module KrikriPlaybookGenerator
           json.field "state_divergent", result.state_divergent?
           json.field "state_signature", result.state_signature
           json.field "state_diff", result.state_diff
+          json.field "check_mode_mutated", result.check_mode_mutation?
+          json.field "check_mode_diff", result.check_mode_diff
           json.field "diff" do
             json.object do
               json.field "masked", result.masked_diff

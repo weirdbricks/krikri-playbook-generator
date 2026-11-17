@@ -196,6 +196,49 @@ module KrikriPlaybookGenerator
 
       refute(result.state_divergent?)
       refute(result.divergent?)
+      refute(result.check_mode_mutation?)
+    end
+
+    it "reports a check-mode run that changed its host, even when both engines agree" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        stateful_run(files, files, leftover: true),
+        stateful_run(files, files, leftover: true), nil, mode: RunMode::Check)
+
+      refute(result.state_divergent?)
+      assert(result.masked_identical?)
+      assert(result.check_mode_mutation?)
+      assert(result.divergent?)
+      diff = result.check_mode_diff
+      refute_nil(diff)
+      assert(diff.as(String).includes?("ansible:"))
+      assert(diff.as(String).includes?("krikri:"))
+      assert(diff.as(String).includes?("/tmp/kpg-work/leftover"))
+      signature = result.check_mode_signature
+      refute_nil(signature)
+      assert(signature.as(String).starts_with?("check-mode:"))
+    end
+
+    it "does not judge check mode in a real-mode row" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        stateful_run(files, files, leftover: true),
+        stateful_run(files, files, leftover: true), nil)
+
+      refute(result.check_mode_mutation?)
+      assert_nil(result.check_mode_diff)
+      refute(result.divergent?)
+    end
+
+    it "sees no check-mode mutation when only the engine's control state changed" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      before_files = files + "f\t0\t0\t755\t4096\t/root/.ansible\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        stateful_run(files, before_files, leftover: false),
+        stateful_run(files, before_files, leftover: false), nil, mode: RunMode::Check)
+
+      refute(result.check_mode_mutation?)
+      refute(result.divergent?)
     end
   end
 

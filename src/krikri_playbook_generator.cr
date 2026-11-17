@@ -29,8 +29,10 @@ module KrikriPlaybookGenerator
       triage = Triage.new(opts.results_dir)
       findings = triage.report
       state_findings = triage.state_report
-      print_report(triage, json: opts.json?, findings: findings, state_findings: state_findings)
-      report_exit_code(triage, findings, state_findings, opts.min_happy_success)
+      check_mode_findings = triage.check_mode_report
+      print_report(triage, json: opts.json?, findings: findings, state_findings: state_findings,
+        check_mode_findings: check_mode_findings)
+      report_exit_code(triage, findings, state_findings, check_mode_findings, opts.min_happy_success)
     in Command::Modules
       print_module_scope(json: opts.json?, opts: opts)
     end
@@ -182,20 +184,23 @@ module KrikriPlaybookGenerator
   end
 
   private def self.print_report(triage : Triage, json : Bool, findings : Array(Triage::Finding)? = nil,
-                                state_findings : Array(Triage::Finding)? = nil) : Nil
+                                state_findings : Array(Triage::Finding)? = nil,
+                                check_mode_findings : Array(Triage::Finding)? = nil) : Nil
     if json
       puts triage.report_json
     else
-      print_full_report(triage, findings, state_findings)
+      print_full_report(triage, findings, state_findings, check_mode_findings)
     end
   end
 
   private def self.print_full_report(triage : Triage, findings : Array(Triage::Finding)? = nil,
-                                     state_findings : Array(Triage::Finding)? = nil) : Nil
+                                     state_findings : Array(Triage::Finding)? = nil,
+                                     check_mode_findings : Array(Triage::Finding)? = nil) : Nil
     print_batch_info(triage)
     diff = triage.batch_info[:diff]
     print_divergences(findings || triage.report, diff)
     print_state_divergences(state_findings || triage.state_report, diff)
+    print_check_mode_mutations(check_mode_findings || triage.check_mode_report, diff)
     print_quality(triage.quality, triage.expected_failures, triage.happy_coverage, triage.not_applicable_modules)
     print_rates(triage.rates)
   end
@@ -217,11 +222,14 @@ module KrikriPlaybookGenerator
     true
   end
 
-  # Divergences (output or state-only) exit 2; a batch whose own happy-path
-  # coverage is too poor exits 1, keeping the two failures distinguishable.
+  # Divergences (output, state-only or a check-mode mutation) exit 2; a
+  # batch whose own happy-path coverage is too poor exits 1, keeping the
+  # two failures distinguishable.
   private def self.report_exit_code(triage : Triage, findings : Array(Triage::Finding),
-                                    state_findings : Array(Triage::Finding), minimum : Float64?) : Int32
-    return DIVERGENT_EXIT if !findings.empty? || !state_findings.empty?
+                                    state_findings : Array(Triage::Finding),
+                                    check_mode_findings : Array(Triage::Finding),
+                                    minimum : Float64?) : Int32
+    return DIVERGENT_EXIT if !findings.empty? || !state_findings.empty? || !check_mode_findings.empty?
 
     happy_gate_failed?(triage, minimum) ? 1 : 0
   end
@@ -274,6 +282,23 @@ module KrikriPlaybookGenerator
     changed = diff.lines.select { |line| line.starts_with?('-') || line.starts_with?('+') }
     changed.first(10).each { |line| puts "  #{line}" }
     puts "  ... #{changed.size - 10} more changed line(s)" if changed.size > 10
+  end
+
+  private def self.print_check_mode_mutations(findings : Array(Triage::Finding), diff : Bool = true) : Nil
+    return if findings.empty?
+
+    puts "== Check-mode mutations (--check changed the host) =="
+    findings.each do |finding|
+      label = finding.signature ? "check-mode signature #{finding.signature}" : "no signature"
+      example = finding.example
+      puts "#{finding.module_name} (#{example.mode}, run #{example.run}, #{label}): " \
+           "#{finding.count} playbook(s) mutated the host in check mode"
+      puts "  example: #{example.playbook}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff)}"
+      lines = example.check_mode_diff.lines
+      lines.first(10).each { |line| puts "  #{line}" }
+      puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10
+    end
   end
 
   private def self.print_quality(quality : Array(Triage::Quality), expected_failures : Array(String),

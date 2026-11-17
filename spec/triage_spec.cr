@@ -13,26 +13,29 @@ module KrikriPlaybookGenerator
                      ansible_failed : Bool = false, ansible_error : String? = nil,
                      error : String? = nil, masked_diff : String = "",
                      masked_identical : Bool? = nil, state_divergent : Bool = false,
-                     state_diff : String = "") : String
+                     state_diff : String = "", check_mode_mutated : Bool = false,
+                     check_mode_diff : String = "") : String
       playbook = File.join(dir, "#{name}.yml")
       File.write(playbook, "---\n")
 
       result = {
-        "playbook"         => playbook,
-        "module"           => module_name,
-        "mode"             => mode,
-        "run"              => run,
-        "chaos"            => chaos,
-        "divergent"        => divergent,
-        "masked_identical" => masked_identical.nil? ? !divergent : masked_identical,
-        "state_divergent"  => state_divergent,
-        "state_diff"       => state_diff.empty? ? nil : state_diff,
-        "signature"        => signature,
-        "ansible_failed"   => ansible_failed,
-        "ansible_error"    => ansible_error,
-        "mutations"        => mutations.map { |(option, kind)| {"option" => option, "kind" => kind} },
-        "error"            => error,
-        "diff"             => {"masked" => masked_diff, "raw" => ""},
+        "playbook"           => playbook,
+        "module"             => module_name,
+        "mode"               => mode,
+        "run"                => run,
+        "chaos"              => chaos,
+        "divergent"          => divergent,
+        "masked_identical"   => masked_identical.nil? ? !divergent : masked_identical,
+        "state_divergent"    => state_divergent,
+        "state_diff"         => state_diff.empty? ? nil : state_diff,
+        "check_mode_mutated" => check_mode_mutated,
+        "check_mode_diff"    => check_mode_diff.empty? ? nil : check_mode_diff,
+        "signature"          => signature,
+        "ansible_failed"     => ansible_failed,
+        "ansible_error"      => ansible_error,
+        "mutations"          => mutations.map { |(option, kind)| {"option" => option, "kind" => kind} },
+        "error"              => error,
+        "diff"               => {"masked" => masked_diff, "raw" => ""},
       }
       File.open(File.join(dir, "results.jsonl"), "a") { |file| file.puts(result.to_json) }
       playbook
@@ -462,6 +465,84 @@ module KrikriPlaybookGenerator
       assert_equal(1, findings.size)
       assert_equal("state", findings.first["kind"].as_s)
       assert_equal(state_diff, findings.first["example"]["state_diff"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "reports a check-mode mutation separately from output and state findings" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      diff = "ansible:\n+ file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n" \
+             "krikri:\n+ file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        mode: "check", check_mode_mutated: true, check_mode_diff: diff)
+
+      triage = Triage.new(dir)
+      assert_empty(triage.report)
+      assert_empty(triage.state_report)
+      findings = triage.check_mode_report
+      assert_equal(1, findings.size)
+      signature = findings.first.signature
+      refute_nil(signature)
+      assert(signature.as(String).starts_with?("check-mode:"))
+      assert_equal(diff, findings.first.example.check_mode_diff)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "counts a check-mode mutation once when the output diverges too" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, masked_identical: false,
+        mode: "check", signature: "abc123", check_mode_mutated: true,
+        check_mode_diff: "krikri:\n+ file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n",
+        masked_diff: "stdout:\n--- a\n+++ b\n")
+
+      triage = Triage.new(dir)
+      assert_equal(1, triage.report.size)
+      assert_empty(triage.check_mode_report)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "prefers a check-mode finding over a state-only one for the same mutation" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        mode: "check", state_divergent: true,
+        state_diff: "-file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n",
+        check_mode_mutated: true,
+        check_mode_diff: "krikri:\n+ file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n")
+
+      triage = Triage.new(dir)
+      assert_empty(triage.state_report)
+      assert_equal(1, triage.check_mode_report.size)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "groups check-mode mutations by signature and renders them in the JSON report" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      first = "ansible:\n+ file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      second = "ansible:\n+ file\tadded\tf\t0\t0\t644\t9\t/tmp/kpg-work/other\n"
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        mode: "check", check_mode_mutated: true, check_mode_diff: first)
+      write_result(dir, "b", "copy", divergent: true, masked_identical: true,
+        mode: "check", check_mode_mutated: true, check_mode_diff: second)
+
+      triage = Triage.new(dir)
+      findings = triage.check_mode_report
+      assert_equal(1, findings.size)
+      assert_equal(2, findings.first.count)
+
+      report = JSON.parse(triage.report_json)
+      assert_equal(2, report["check_mode_divergent"].as_i)
+      assert_equal(0, report["state_findings"].as_a.size)
+      rendered = report["check_mode_findings"].as_a
+      assert_equal(1, rendered.size)
+      assert_equal("check-mode", rendered.first["kind"].as_s)
+      assert_equal(first, rendered.first["example"]["check_mode_diff"].as_s)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

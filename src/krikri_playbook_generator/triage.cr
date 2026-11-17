@@ -32,7 +32,8 @@ module KrikriPlaybookGenerator
       chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
       ansible_error : String?, mutations : Array(MutationEntry), error : String?,
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
-      state_signature : String?, state_diff : String do
+      state_signature : String?, state_diff : String, check_mode_mutated : Bool,
+      check_mode_diff : String, check_mode_signature : String? do
       def errored? : Bool
         !error.nil?
       end
@@ -41,6 +42,13 @@ module KrikriPlaybookGenerator
       # comparison), not just on host state.
       def output_divergent? : Bool
         divergent && !masked_identical
+      end
+
+      # A `--check` run left the host changed: its own finding kind, since
+      # a delta-vs-delta comparison cannot see two engines agreeing on the
+      # same mutation.
+      def check_mode_divergent? : Bool
+        divergent && check_mode_mutated
       end
     end
     record Finding, module_name : String, signature : String?, playbooks : Array(String),
@@ -83,6 +91,13 @@ module KrikriPlaybookGenerator
       state_findings_from(result_lines)
     end
 
+    # Check-mode findings: the engines printed the same thing (or at least
+    # nothing that differs), yet a `--check` run changed its host. Kept
+    # apart from both sections above so a playbook is still counted once.
+    def check_mode_report : Array(Finding)
+      check_mode_findings_from(result_lines)
+    end
+
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
       groups = {} of {String, String, Int32, String?} => Array(ResultLine)
 
@@ -105,8 +120,28 @@ module KrikriPlaybookGenerator
       lines.each do |line|
         next unless line.state_divergent
         next if line.output_divergent? || line.errored?
+        # A check-mode mutation is its own finding; keeping it out here is
+        # the "one root cause never appears twice" rule.
+        next if line.check_mode_mutated
 
         key = {line.module_name, line.mode, line.run, line.state_signature}
+        (groups[key] ||= [] of ResultLine) << line
+      end
+
+      groups.map do |(module_name, _mode, _run, signature), entries|
+        playbooks = entries.map(&.playbook).uniq!
+        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
+      end.sort_by! { |finding| -finding.count }
+    end
+
+    def check_mode_findings_from(lines : Array(ResultLine)) : Array(Finding)
+      groups = {} of {String, String, Int32, String?} => Array(ResultLine)
+
+      lines.each do |line|
+        next unless line.check_mode_divergent?
+        next if line.errored? || line.output_divergent?
+
+        key = {line.module_name, line.mode, line.run, line.check_mode_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
@@ -129,6 +164,7 @@ module KrikriPlaybookGenerator
           json.field "errored", lines.count(&.errored?)
           json.field "divergent", lines.count(&.divergent)
           json.field "state_divergent", lines.count(&.state_divergent)
+          json.field "check_mode_divergent", lines.count(&.check_mode_mutated)
           info = batch_info
           json.field "batch" do
             json.object do
@@ -146,6 +182,11 @@ module KrikriPlaybookGenerator
           json.field "state_findings" do
             json.array do
               state_findings_from(lines).each { |finding| finding_json(json, finding) }
+            end
+          end
+          json.field "check_mode_findings" do
+            json.array do
+              check_mode_findings_from(lines).each { |finding| finding_json(json, finding) }
             end
           end
           json.field "errors" do
@@ -179,7 +220,7 @@ module KrikriPlaybookGenerator
     private def finding_json(json : JSON::Builder, finding : Finding) : Nil
       json.object do
         json.field "module", finding.module_name
-        json.field "kind", finding.signature.try(&.starts_with?("state:")) ? "state" : "output"
+        json.field "kind", finding_kind(finding.signature)
         if signature = finding.signature
           json.field "signature", signature
         else
@@ -208,6 +249,7 @@ module KrikriPlaybookGenerator
             end
             json.field "masked_diff", example.masked_diff
             json.field "state_diff", example.state_diff.empty? ? nil : example.state_diff
+            json.field "check_mode_diff", example.check_mode_diff.empty? ? nil : example.check_mode_diff
             if error = example.ansible_error
               json.field "ansible_error", error
             else
@@ -216,6 +258,13 @@ module KrikriPlaybookGenerator
           end
         end
       end
+    end
+
+    private def finding_kind(signature : String?) : String
+      return "state" if signature.try(&.starts_with?("state:"))
+      return "check-mode" if signature.try(&.starts_with?("check-mode:"))
+
+      "output"
     end
 
     private def error_json(json : JSON::Builder, line : ResultLine) : Nil
@@ -396,6 +445,8 @@ module KrikriPlaybookGenerator
       masked_diff = parse_masked_diff(parsed)
       divergent = parsed["divergent"]?.try(&.as_bool?) || false
       masked_identical, state_divergent, state_signature, state_diff = parse_state_fields(parsed, divergent)
+      check_mode_mutated = parsed["check_mode_mutated"]?.try(&.as_bool?) || false
+      check_mode_diff = parsed["check_mode_diff"]?.try(&.as_s?) || ""
 
       ResultLine.new(
         playbook, module_name,
@@ -412,7 +463,10 @@ module KrikriPlaybookGenerator
         masked_identical,
         state_divergent,
         state_signature,
-        state_diff
+        state_diff,
+        check_mode_mutated,
+        check_mode_diff,
+        HostState.check_mode_signature(check_mode_diff)
       )
     end
 

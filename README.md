@@ -174,6 +174,18 @@ both output and state is counted once, as an output finding). Local and
 Atlantic runs have no per-engine isolated host, so they do not compare
 state.
 
+## Check mode is read-only
+
+`--check` promises to change nothing, so each **engine's own** before/after
+delta is also judged against that promise on an isolated backend. Two
+engines agreeing on the same mutation still both break check mode, which
+the delta-vs-delta comparison cannot see. Anything left behind in a check
+run is a `check-mode-mutation` finding (`check_mode_mutated` and
+`check_mode_diff` in results.jsonl) with its own report section; the only
+tolerated residue is engine control-side state (`~/.ansible`, already
+pruned from the snapshot). A playbook that also differs on printed output
+is counted once, as an output finding.
+
 See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for the full proposal,
 open questions, and rationale for a separate repo.
 

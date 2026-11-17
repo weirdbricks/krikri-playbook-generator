@@ -32,6 +32,19 @@ module KrikriPlaybookGenerator
 
     EXCLUDE_PREDICATE = EXCLUDED_PATHS.map { |path| "-path #{path}" }.join(" -o ")
 
+    # A `--check` run promises to change nothing, so each engine's own
+    # before/after delta is judged against that promise instead of against
+    # the other engine's delta: two engines agreeing on the same mutation
+    # still both broke check mode, which the delta-vs-delta comparison
+    # cannot see.
+    #
+    # The only tolerated residue is engine control-side state: real ansible
+    # creates `~/.ansible` (its collections and staging root) lazily and
+    # keeps it after the run. It is already pruned from the snapshot by
+    # EXCLUDED_PATHS; keeping it here too means a change to that list cannot
+    # silently turn a legitimate keeper into a check-mode finding.
+    CHECK_MODE_IGNORED_PATHS = %w[/root/.ansible]
+
     # Runs on the host after (and before) an engine run. Every line is
     # deterministic so two snapshots of the same untouched host are
     # byte-identical: GNU find's -printf, LC_ALL=C sorts, no timestamps.
@@ -192,6 +205,28 @@ module KrikriPlaybookGenerator
     # Unified diff of the two engines' change lists ("" when identical).
     def self.diff(ansible_changes : Array(String), krikri_changes : Array(String)) : String
       ByteDiff.unified(change_text(ansible_changes), change_text(krikri_changes))
+    end
+
+    # One engine's check-mode delta minus the documented control-side
+    # keepers. nil when a snapshot was not captured: "cannot tell" must
+    # never turn into "changed nothing".
+    def self.check_mode_changes(before : Snapshot?, after : Snapshot?) : Array(String)?
+      return unless before && after
+
+      changes(before, after).reject { |line| check_mode_ignored?(line) }
+    end
+
+    def self.check_mode_ignored?(line : String) : Bool
+      CHECK_MODE_IGNORED_PATHS.any? do |path|
+        line.matches?(/(?:^|[\t ])#{Regex.escape(path)}(?=[\t \/]|$)/)
+      end
+    end
+
+    # A check-mode mutation's root cause: which engine broke the promise
+    # and what it changed, with digits and paths generalized the same way
+    # as every other signature.
+    def self.check_mode_signature(diff : String) : String?
+      ByteDiff.signature(diff).try { |signature| "check-mode:#{signature}" }
     end
 
     def self.change_text(changes : Array(String)) : String
