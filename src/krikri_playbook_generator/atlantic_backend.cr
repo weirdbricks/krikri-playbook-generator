@@ -4,6 +4,7 @@ require "http/client"
 require "json"
 require "openssl/hmac"
 require "./cmd"
+require "./dependencies"
 require "./fixtures"
 
 module KrikriPlaybookGenerator
@@ -55,6 +56,17 @@ module KrikriPlaybookGenerator
 
     INVENTORY        = "target ansible_connection=local\n"
     ENGINE_ENV_STRIP = KrikriPlaybookGenerator::ENGINE_ENV_STRIP
+
+    # Every pinned collection, as the requirements `ansible-galaxy install`
+    # accepts. Atlantic provisions per profile, not per playbook, so the
+    # image cannot know which collections a batch will use; installing the
+    # small pinned set on every VM keeps a community module's argspec in
+    # lockstep with krikri's, the same discipline as the podman/microVM
+    # backends. An unpinned collection stays unpinned (and unasserted).
+    def self.collection_requirements : Array(String)
+      pins = Dependencies.load.collection_pins
+      pins.keys.sort!.map { |name| "#{name}:==#{pins[name]}" }
+    end
 
     # Which supported modules need a real host, and which VM profile
     # serves them. Anything not listed here belongs to the local/podman
@@ -506,6 +518,7 @@ module KrikriPlaybookGenerator
       seed_fixtures(vm)
       write_inventory(vm)
       assert_ansible_version!(vm)
+      install_collections(vm)
     end
 
     private def common_prep : String
@@ -582,6 +595,37 @@ module KrikriPlaybookGenerator
           "VM ansible-core is #{version.inspect}, expected #{EXPECTED_ANSIBLE_VERSION} - " \
           "byte-parity comparisons against a different engine version are meaningless")
       end
+    end
+
+    private def install_collections(vm : Vm) : Nil
+      requirements = AtlanticBackend.collection_requirements
+      return if requirements.empty?
+
+      run_script(vm, "ansible-galaxy collection install #{requirements.join(" ")}", 1200.0)
+      assert_collection_versions!(vm, requirements)
+    rescue error : AtlanticProvisionError
+      raise AtlanticProvisionError.new("installing collections on #{vm.ip} failed: #{error.message}")
+    end
+
+    # An argument spec comes with the installed collection version, so the
+    # VM must carry the pins `module_dependencies.yml` names or the
+    # reference engine compares against a different schema than krikri
+    # targets.
+    private def assert_collection_versions!(vm : Vm, requirements : Array(String)) : Nil
+      return unless requirements.any? { |requirement| Dependencies.split_collection(requirement)[1] }
+
+      listing = exec_remote(vm, "ansible-galaxy collection list --format json")
+      unless listing.rc == 0
+        raise AtlanticProvisionError.new("ansible-galaxy collection list failed on #{vm.ip}: #{listing.stderr[0, 300]}")
+      end
+
+      installed = Dependencies.installed_collection_versions(listing.stdout)
+      mismatches = Dependencies.collection_version_mismatches(requirements, installed)
+      return if mismatches.empty?
+
+      raise AtlanticProvisionError.new(
+        "VM collections do not match module_dependencies.yml: #{mismatches.join("; ")} - " \
+        "argspec checks would compare the engine against a collection set krikri does not target")
     end
 
     private def exec!(vm : Vm, script : String, timeout : Float64 = 120.0) : Nil

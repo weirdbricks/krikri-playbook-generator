@@ -104,6 +104,21 @@ module KrikriPlaybookGenerator
       assert_includes(script, "\\( -path /etc/hostname")
     end
 
+    it "covers both identity homes and excludes each home's control-side state" do
+      assert_equal(["/root", "/home/kpg"], HostState::HOME_ROOTS)
+      excluded = %w[.ansible .cache .ssh/known_hosts kpg-venv .sudo_as_admin_successful]
+      HostState::HOME_ROOTS.each do |home|
+        assert_includes(HostState::ROOTS, home)
+        assert_includes(HostState::TEMP_ROOTS, home)
+        assert_includes(HostState::SNAPSHOT_SCRIPT, home)
+        excluded.each do |suffix|
+          path = File.join(home, suffix)
+          assert_includes(HostState::EXCLUDED_PATHS, path)
+          assert_includes(HostState::CHECK_MODE_IGNORED_PATHS, path)
+        end
+      end
+    end
+
     it "scans the staging-file prefixes in their own temp section" do
       script = HostState::SNAPSHOT_SCRIPT
       assert_equal(HostState::ROOTS + %w[/tmp], HostState::TEMP_ROOTS)

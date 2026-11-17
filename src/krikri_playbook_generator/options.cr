@@ -8,6 +8,7 @@ require "./retry_shapes"
 require "./include_shapes"
 require "./plugin_shapes"
 require "./library_shapes"
+require "./play_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -74,6 +75,8 @@ module KrikriPlaybookGenerator
     property? limits_given : Bool
     property includes : Array(String)
     property? includes_given : Bool
+    property play_shapes : Array(String)
+    property? play_shapes_given : Bool
     property lookups : Array(String)
     property? lookups_given : Bool
     property expressions : Array(String)
@@ -124,6 +127,7 @@ module KrikriPlaybookGenerator
                    @retries = RetryShapes::KINDS, @retries_given = false,
                    @limits = ["off"], @limits_given = false, @gather_facts = false,
                    @includes = IncludeShapes::KINDS, @includes_given = false,
+                   @play_shapes = [] of String, @play_shapes_given = false,
                    @lookups = LookupShapes::KINDS, @lookups_given = false,
                    @expressions = ExpressionShapes::KINDS, @expressions_given = false,
                    @plugin_discovery = ["relative"], @plugin_discovery_given = false,
@@ -250,6 +254,10 @@ module KrikriPlaybookGenerator
         dsl.on("--includes LIST", "include/import forms: relative, role-vars, role-inner, loop-tasks, loop-role, import-playbook, import-role (comma-separated; `none` turns it off)") do |v|
           opts.includes = parse_includes(v)
           opts.includes_given = true
+        end
+        dsl.on("--play-shapes LIST", "play layouts: split (tasks across two plays, first flushed) or role (a play-level roles: entry; comma-separated; `none` turns it off)") do |v|
+          opts.play_shapes = parse_play_shapes(v)
+          opts.play_shapes_given = true
         end
         dsl.on("--lookups LIST", "lookup-plugin shapes: #{LookupShapes::KINDS.join(", ")} (comma-separated; `none` turns it off)") do |v|
           opts.lookups = parse_lookups(v)
@@ -497,6 +505,7 @@ module KrikriPlaybookGenerator
       check_handler_target!(opts)
       check_retry_target!(opts)
       check_include_target!(opts)
+      check_play_shape_target!(opts)
       check_plugin_target!(opts)
       check_library_probe_target!(opts)
       check_limit_target!(opts)
@@ -573,6 +582,20 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--includes is only valid with generate (the playbook carries the include forms)")
+    end
+
+    # A play layout is written into the playbook, so generate-only. `split`
+    # needs at least two tasks: a one-task scenario has nothing to split,
+    # and silently generating one play would make the flag a no-op.
+    private def self.check_play_shape_target!(opts : Options) : Nil
+      return unless opts.play_shapes_given?
+
+      unless opts.command.generate?
+        raise InvalidOptionsError.new("--play-shapes is only valid with generate (the playbook carries the layout)")
+      end
+      return unless opts.play_shapes.includes?("split") && opts.tasks_per_playbook < 2
+
+      raise InvalidOptionsError.new("--play-shapes split needs --tasks-per-playbook >= 2 (one task cannot span two plays)")
     end
 
     # Lookup and expression probes, and the plugin discovery paths they
@@ -680,6 +703,14 @@ module KrikriPlaybookGenerator
 
       raise InvalidOptionsError.new(
         "unknown --blocks value #{value.inspect} (expected: #{BlockShapes::KINDS.join(", ")}, none)")
+    end
+
+    private def self.parse_play_shapes(value : String) : Array(String)
+      shapes = PlayShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --play-shapes value #{value.inspect} (expected: #{PlayShapes::KINDS.join(", ")}, none)")
     end
 
     private def self.parse_delegation(value : String) : DelegationMode

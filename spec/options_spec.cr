@@ -283,6 +283,17 @@ module KrikriPlaybookGenerator
       assert_includes(Options.parse(["generate"]).chaos_kinds, "jinja")
     end
 
+    it "parses --play-shapes and gates split on the multi-task shape" do
+      opts = Options.parse(["generate", "--play-shapes", "split,role", "--tasks-per-playbook", "2"])
+      assert_equal(%w[split role], opts.play_shapes)
+      assert(opts.play_shapes_given?)
+      assert_equal([] of String, Options.parse(["generate", "--play-shapes", "none"]).play_shapes)
+
+      assert_raises(InvalidOptionsError) { Options.parse(["generate", "--play-shapes", "split"]) }
+      assert_raises(InvalidOptionsError) { Options.parse(["run", "--play-shapes", "role"]) }
+      assert_raises(InvalidOptionsError) { Options.parse(["generate", "--play-shapes", "bogus"]) }
+    end
+
     it "parses --min-happy-success on report" do
       opts = Options.parse(["report", "--min-happy-success", "90"])
       assert_equal(90.0, opts.min_happy_success || 0.0)

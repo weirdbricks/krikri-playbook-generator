@@ -51,7 +51,7 @@ refuzz MODULE COUNT="10" OUT="playbooks/refuzz" RESULTS="~/scratch/kpg-refuzz" R
       --delegation both --blocks rescue,always --handlers failing,ignoring,chained \
       --retries retried,exhausted,delegated --includes relative,role-inner,loop-tasks \
       --plugin-discovery relative,env,config --strategy-plugins \
-      --gather-facts --out {{OUT}} --results-dir {{RESULTS}} {{RUN_ARGS}}
+      --play-shapes role --gather-facts --out {{OUT}} --results-dir {{RESULTS}} {{RUN_ARGS}}
     {{BIN}} report {{RESULTS}}
 
 # Print the triage report for a results directory.

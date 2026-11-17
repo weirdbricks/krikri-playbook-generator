@@ -364,7 +364,15 @@ checklist before closing the issue.
   profile selection and Triage keep working unchanged), aggregates all
   tasks' mutations with `t<i>:` prefixes, and adds a `modules` array with
   each task's own module/chaos/mutations/choice_sources/wiring — `Triage`
-  reads this back.
+  reads this back. The opt-in `--play-shapes split,role` axis (sampled per
+  playbook, `play_shapes.cr`) can split a v2 scenario across two plays
+  with `meta: flush_handlers` at the boundary (a notifier guarantees the
+  flush has a handler to run, and global `kpg_task_<i>` names keep the
+  register chain addressable) and/or prepend a play whose `roles:` entry
+  names `Fixtures::ROLE_PATH` with a role param and a play var (role param
+  beats the default, play var loses to `vars/main.yml`; role-relative
+  includes run too). The sidecar records
+  `play_shapes` and `plays`.
   The playbook YAML is rendered by `PlaybookBuilder` itself instead of
   Crystal's `YAML::Any#to_yaml`, which puts a sequence item at the same
   column as its key (`tasks:` followed by `- name:`), something ansible-lint
@@ -395,7 +403,8 @@ checklist before closing the issue.
 - `src/krikri_playbook_generator/host_state.cr` — `HostState`. **Implemented**:
   the state half of the oracle. `SNAPSHOT_SCRIPT` (GNU find/`sha256sum`,
   LC_ALL=C sorts, no timestamps) lists `/etc`, `/tmp/kpg-work`,
-  `/var/spool/cron` and `/root` with type/uid/gid/mode/size plus a sha256
+  `/var/spool/cron` and both identity homes (`/root`, `/home/kpg`) with
+  type/uid/gid/mode/size plus a sha256
   for files under 1 MiB, the boot id, dpkg/rpm package versions, enabled
   systemd units and listening sockets from `/proc/net/*`; containers and
   VMs both run it as root, so no extra tooling is needed. `Snapshot.parse`
@@ -409,10 +418,12 @@ checklist before closing the issue.
   `/etc/machine-id`) are per-host files each container/VM regenerates for
   itself; excluding them is the documented blind spot, same discipline as
   `ByteDiff::MASKS` (a module that edits one is invisible to this oracle).
-  `/root/.cache` and `/root/.ssh/known_hosts` are excluded for the same
-  reason: the SSH transport profile makes each engine write its own
-  controller-side plugin cache and host-key entry, and real ansible's ssh
-  path does not create the same files. Krikri's SSH ControlMaster socket
+  Each home's `.ansible`, `.cache`, `.ssh/known_hosts`, `kpg-venv` and
+  `.sudo_as_admin_successful` are excluded for the same reason: the SSH
+  transport profile makes each engine write its own controller-side plugin
+  cache and host-key entry, real ansible's ssh path does not create the
+  same files, and the pip happy path's venv is a non-deterministic work
+  artifact. Krikri's SSH ControlMaster socket
   directory (`/tmp/.krikri-playbook-ssh`) is also skipped by the temps
   scan (`TRANSPORT_TEMP_PATHS`), so transport bookkeeping never becomes a
   check-mode mutation or a leftover-temp finding.
@@ -448,7 +459,7 @@ checklist before closing the issue.
   `ignore_errors`). Podman and microVM runs also compare HOST STATE via
   `HostState` (`host_state.cr`): each engine's host is snapshotted before
   and after its run (file tree under `/etc`, `/tmp/kpg-work`,
-  `/var/spool/cron` and `/root` with type/uid/gid/mode/size and a
+  `/var/spool/cron`, `/root` and `/home/kpg` with type/uid/gid/mode/size and a
   sha256 for files under 1 MiB, boot id, package list, enabled units,
   listening ports), and the two before/after DELTAS are diffed — only
   deltas, because the real and krikri images' absolute state differs by
@@ -802,6 +813,7 @@ checklist before closing the issue.
   delegate_to axis; `--blocks LIST` wraps single-task playbooks in a
   block shape; `--handlers LIST` picks the handler shape; `--retries LIST`
   picks the retry shape; `--includes LIST` picks the include/import form;
+  `--play-shapes LIST` (`split`, `role`) changes the play layout;
   `--lookups LIST` picks the lookup-plugin shape and `--expressions LIST`
   the filter/expression shape, `--plugin-discovery LIST` where those
   plugin files are found and `--strategy-plugins` adds the custom strategy
@@ -969,11 +981,11 @@ Documented deliberately, not silently:
   microVM backend (`--run-on-microvm`/`--run-on-mixed`) now hosts exactly
   those service modules for free, so Atlantic is only needed for
   infrastructure this machine cannot virtualize.
-- Atlantic.net has no collection provisioning at all (only the pinned
-  ansible-core), so its batches cover core modules and nothing that needs
-  a collection; the pin/assert discipline described above lives in the
-  podman and microVM backends. Widening Atlantic means installing the
-  playbook's collections there with the same pins first.
+- Atlantic.net installs the pinned `collection_pins:` set on every VM
+  (per-profile provisioning cannot know a playbook's module set) and
+  asserts the resolved versions like the podman/microVM backends. A
+  collection outside that pin list is still unpinned and unasserted, so
+  adding one to a batch means adding its pin first.
 - The reference-version matrix (`--reference-core-version`) is implemented
   on the podman backend only: it is the backend with cached per-version
   templates. Local (one host interpreter), microVM (one golden per OS) and
@@ -1032,12 +1044,12 @@ Documented deliberately, not silently:
   name the wrong one.
 - The identity axis only exists on the podman and microVM backends: the
   shared local host runs as the invoking account (recorded as `local`)
-  and Atlantic's VMs are only provisioned as root. The non-root HOME
-  (`/home/kpg`) is outside the snapshot roots, so staging leftovers there
-  are invisible to the state oracle; the writable work root is covered.
-  Modules that genuinely need root (`user`, package installs) fail on the
-  reference engine under the nonroot profile and show up as wasted
-  coverage, not as divergences.
+  and Atlantic's VMs are only provisioned as root. Both identity homes are
+  scanned, so a staging leftover or mode change under `/home/kpg` is a
+  state finding like one under `/root`; the per-home control-side paths
+  are the documented exclusions. Modules that genuinely need root
+  (`user`, package installs) fail on the reference engine under the
+  nonroot profile and show up as wasted coverage, not as divergences.
 - The `--limit` axis proves out-of-limit contact through one pseudo-host
   with a refused loopback port; it does not model a slow network, DNS or
   authentication failure, and the per-host state oracle cannot attribute
@@ -1054,12 +1066,13 @@ Documented deliberately, not silently:
   only, since ansible exposes no env var for serial/throttle/
   any_errors_fatal/run_once/max_fail_percentage/gather_facts/connection.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
-  is now BUILT (`--tasks-per-playbook N`) — but still one play per
-  playbook (no multi-PLAY playbooks, no role plays), and the batch-level
-  metadata (results.jsonl `module`, triage grouping, podman/Atlantic
-  profile keys beyond the any-rpm rule) stays keyed on the FIRST task's
-  module. `async_status` is only testable at all because `Fixtures` seeds
-  a finished job under `$HOME/.ansible_async`.
+  is BUILT (`--tasks-per-playbook N`), and `--play-shapes split,role`
+  adds two-play playbooks (flush boundary, register chain across plays)
+  and a play-level `roles:` entry. A single playbook still stays on one
+  host profile, and the batch-level metadata (results.jsonl `module`,
+  triage grouping, podman/Atlantic profile keys beyond the any-rpm rule)
+  stays keyed on the FIRST task's module. `async_status` is only testable
+  at all because `Fixtures` seeds a finished job under `$HOME/.ansible_async`.
 
 ## Tests
 
@@ -1074,8 +1087,8 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
 `play_keywords_spec.cr`, `block_shapes_spec.cr`, `handler_shapes_spec.cr`,
-`retry_shapes_spec.cr`, `include_shapes_spec.cr`, `run_context_spec.cr`,
-`playbook_builder_spec.cr`,
+`retry_shapes_spec.cr`, `include_shapes_spec.cr`, `play_shapes_spec.cr`,
+`run_context_spec.cr`, `playbook_builder_spec.cr`,
 `fixtures_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
 `podman_backend_spec.cr`,
 `triage_spec.cr`, `versions_spec.cr` (fakes the command runner as a Proc). `schema_spec.cr` shells out to

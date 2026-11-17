@@ -15,7 +15,10 @@ module KrikriPlaybookGenerator
   # images' own difference as a finding.
   module HostState
     SECTIONS = %w[boot files hashes temps packages units ports]
-    ROOTS    = %w[/etc /tmp/kpg-work /var/spool/cron /root]
+    # Both accounts the identity axis can run under: the state half of the
+    # oracle must see what a non-root run wrote, not only root's home.
+    HOME_ROOTS = %w[/root /home/kpg]
+    ROOTS      = %w[/etc /tmp/kpg-work /var/spool/cron] + HOME_ROOTS
 
     # Heads a failing task leaves behind if its cleanup never ran: krikri's
     # own staging files (`${dest}/.krikri-playbook-copy-<hex>.tmp`,
@@ -43,23 +46,27 @@ module KrikriPlaybookGenerator
     # Files every host (container or VM) regenerates for itself: hostname,
     # resolver, machine id. The two engines' hosts are distinct machines, so
     # these can never agree; snapshotting them would make every playbook
-    # look state-divergent. `/root/.ansible` is the engine's own
-    # control-side state (its collections, its tmp staging root): real
-    # ansible creates the tmp root lazily and every --diff run leaves it
-    # behind, while krikri stages elsewhere, so it says nothing about what
-    # the module did.
-    # A module that edits one of these is invisible to this oracle - the
-    # deliberate, documented gap (same discipline as ByteDiff::MASKS).
-    EXCLUDED_PATHS = %w[/etc/hostname /etc/hosts /etc/resolv.conf /etc/machine-id
-      /root/.ansible /root/.cache /root/.ssh/known_hosts /root/kpg-venv]
-
+    # look state-divergent. Each home's control-side paths are the engine's
+    # own bookkeeping (its collections/tmp staging root, caches, the SSH
+    # client's known_hosts, and sudo's lecture marker): real ansible creates
+    # its tmp root lazily and every --diff run leaves it behind, while
+    # krikri stages elsewhere, so it says nothing about what the module did.
+    #
     # The pip happy path's tilde-prefixed virtualenv (`~/kpg-venv`) is
-    # named by the overrides data, so it lands under the root account's
-    # home. Two separately created venvs differ in compiled-bytecode
+    # named by the overrides data, so it lands under whichever account runs
+    # the row. Two separately created venvs differ in compiled-bytecode
     # metadata, which would make every pip row a state finding without
     # saying anything about the module; the venv is a work artifact, and
     # the module's own result is still compared through stdout/recap.
-    # (A non-root row's venv lives under /home/kpg, which is not scanned.)
+    #
+    # A module that edits one of these is invisible to this oracle - the
+    # deliberate, documented gap (same discipline as ByteDiff::MASKS).
+    HOME_EXCLUDED = HOME_ROOTS.flat_map do |home|
+      ["#{home}/.ansible", "#{home}/.cache", "#{home}/.ssh/known_hosts",
+       "#{home}/kpg-venv", "#{home}/.sudo_as_admin_successful"]
+    end
+
+    EXCLUDED_PATHS = %w[/etc/hostname /etc/hosts /etc/resolv.conf /etc/machine-id] + HOME_EXCLUDED
 
     # Transport bookkeeping the SSH connection profile makes each engine
     # write on its own controller: krikri's SSH ControlMaster socket dir
@@ -82,7 +89,7 @@ module KrikriPlaybookGenerator
     # keeps it after the run. It is already pruned from the snapshot by
     # EXCLUDED_PATHS; keeping it here too means a change to that list cannot
     # silently turn a legitimate keeper into a check-mode finding.
-    CHECK_MODE_IGNORED_PATHS = %w[/root/.ansible /root/.cache /root/.ssh/known_hosts /root/kpg-venv]
+    CHECK_MODE_IGNORED_PATHS = HOME_EXCLUDED
 
     # Runs on the host after (and before) an engine run. Every line is
     # deterministic so two snapshots of the same untouched host are

@@ -44,6 +44,23 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "prepends a play-level role for the role shape in the single-task form" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [] of IncludeShape, [] of Array(String),
+        [] of LookupShape, [] of ExpressionShape, [] of PluginDiscovery?,
+        [PlayShape::Role]).build([sample_task]).first
+
+      doc = YAML.parse(File.read(path)).as_a
+      assert_equal(2, doc.size)
+      assert_equal(Fixtures::ROLE_PATH, doc[0]["roles"].as_a.first["role"].as_s)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("role", meta["play_shapes"].as_s)
+      assert_equal(2, meta["plays"].as_i)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a playbook YAML real ansible/krikri can parse: one play, one task, fully-qualified module name" do
       dir = File.tempname("kpg-spec")
       path = PlaybookBuilder.new(dir).build([sample_task]).first
@@ -657,6 +674,56 @@ module KrikriPlaybookGenerator
         assert_equal(1, handlers.size)
         assert_equal(KrikriPlaybookGenerator::HANDLER_NAME, handlers.first["name"].as_s)
         assert_equal("kpg multi-task handler ran", handlers.first["ansible.builtin.debug"]["msg"].as_s)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
+
+      it "splits a scenario across two plays with a flush boundary" do
+        dir = File.tempname("kpg-spec")
+        first = GeneratedTask.new("stat", "ansible.builtin",
+          {"path" => YAML::Any.new(Fixtures::SOURCE_FILES.first)},
+          notify: KrikriPlaybookGenerator::HANDLER_NAME)
+        second = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")},
+          when_condition: "kpg_task_0 is succeeded")
+        path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+          [] of HandlerShape, [] of RetryShape, false, [] of IncludeShape, [] of Array(String),
+          [] of LookupShape, [] of ExpressionShape, [] of PluginDiscovery?,
+          [PlayShape::Split]).build_scenarios([[first, second]]).first
+
+        doc = YAML.parse(File.read(path)).as_a
+        assert_equal(2, doc.size)
+        assert_equal(3, doc[0]["tasks"].as_a.size)
+        assert_equal("Kpg notifier", doc[0]["tasks"].as_a[1]["name"].as_s)
+        assert_equal("flush_handlers", doc[0]["tasks"].as_a.last["ansible.builtin.meta"].as_s)
+        refute_nil(doc[0]["handlers"]?)
+        assert_equal("kpg_task_1", doc[1]["tasks"].as_a.first["register"].as_s)
+        assert_equal("kpg_task_0 is succeeded", doc[1]["tasks"].as_a.first["when"].as_s)
+
+        meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+        assert_equal("split", meta["play_shapes"].as_s)
+        assert_equal(2, meta["plays"].as_i)
+      ensure
+        FileUtils.rm_rf(dir) if dir
+      end
+
+      it "runs the fixture role in its own play before the tasks" do
+        dir = File.tempname("kpg-spec")
+        path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+          [] of HandlerShape, [] of RetryShape, false, [] of IncludeShape, [] of Array(String),
+          [] of LookupShape, [] of ExpressionShape, [] of PluginDiscovery?,
+          [PlayShape::Role]).build_scenarios([[sample_task]]).first
+
+        doc = YAML.parse(File.read(path)).as_a
+        assert_equal(2, doc.size)
+        role = doc[0]["roles"].as_a.first
+        assert_equal(Fixtures::ROLE_PATH, role["role"].as_s)
+        assert_equal("role-param", role["vars"][Fixtures::ROLE_DEFAULT_VAR].as_s)
+        assert_equal("play-var", doc[0]["vars"][Fixtures::ROLE_VARS_VAR].as_s)
+        assert_equal(1, doc[1]["tasks"].as_a.size)
+
+        meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+        assert_equal("role", meta["play_shapes"].as_s)
+        assert_equal(2, meta["plays"].as_i)
       ensure
         FileUtils.rm_rf(dir) if dir
       end

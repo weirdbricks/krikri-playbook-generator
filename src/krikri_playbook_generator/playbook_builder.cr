@@ -7,6 +7,7 @@ require "./handler_shapes"
 require "./retry_shapes"
 require "./include_shapes"
 require "./plugin_shapes"
+require "./play_shapes"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -110,7 +111,8 @@ module KrikriPlaybookGenerator
                    @profiles : Array(Array(String)) = [] of Array(String),
                    @lookup_shapes : Array(LookupShape) = [] of LookupShape,
                    @expression_shapes : Array(ExpressionShape) = [] of ExpressionShape,
-                   @plugin_discovery : Array(PluginDiscovery?) = [] of PluginDiscovery?)
+                   @plugin_discovery : Array(PluginDiscovery?) = [] of PluginDiscovery?,
+                   @play_shapes : Array(PlayShape) = [] of PlayShape)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -312,7 +314,9 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
       apply_handlers(play, shape)
 
-      document = [YAML::Any.new(play)]
+      document = [] of YAML::Any
+      document << YAML::Any.new(role_play(index)) if (@play_shapes[index]? || PlayShape::Off).role?
+      document << YAML::Any.new(play)
       if include_shape.import_playbook?
         document << YAML::Any.new({YAML::Any.new("ansible.builtin.import_playbook") => YAML::Any.new(Fixtures::CHILD_PLAYBOOK)})
       end
@@ -344,6 +348,8 @@ module KrikriPlaybookGenerator
           json.field "delegate_to", task.delegate_to
           json.field "delegate_facts", task.delegate_facts? if task.delegate_to
           json.field "block", (@block_shapes[index]? || BlockShape::None).label
+          json.field "play_shapes", (@play_shapes[index]? || PlayShape::Off).label
+          json.field "plays", (@play_shapes[index]? || PlayShape::Off).role? ? 2 : 1
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
@@ -353,6 +359,13 @@ module KrikriPlaybookGenerator
           json.field "profiles", playbook_profiles(index)
         end
       end
+    end
+
+    private def play_count(tasks : Array(GeneratedTask), index : Int32) : Int32
+      shape = @play_shapes[index]? || PlayShape::Off
+      count = shape.split? && tasks.size > 1 ? 2 : 1
+      count += 1 if shape.role?
+      count
     end
 
     # The host images this playbook runs on (a distro-polymorphic module
@@ -407,7 +420,36 @@ module KrikriPlaybookGenerator
     end
 
     private def scenario_yaml(tasks : Array(GeneratedTask), index : Int32, basename : String) : String
-      task_bodies = tasks.map_with_index do |task, task_index|
+      shape = @play_shapes[index]? || PlayShape::Off
+      groups = scenario_groups(tasks, shape)
+      plays = [] of YAML::Any
+      plays << YAML::Any.new(role_play(index)) if shape.role?
+
+      start_index = 0
+      groups.each_with_index do |group, play_index|
+        plays << YAML::Any.new(scenario_play(group, index, basename, play_index, groups.size,
+          start_index, play_index == groups.size - 1, shape))
+        start_index += group.size
+      end
+
+      plays.concat(import_playbook_items(@include_shapes[index]? || IncludeShape::Off))
+      yaml_document(YAML::Any.new(plays))
+    end
+
+    # `split` keeps at least one task in each play; a one-task scenario has
+    # nothing to split, so the sampled shape falls back to the single play.
+    private def scenario_groups(tasks : Array(GeneratedTask), shape : PlayShape) : Array(Array(GeneratedTask))
+      return [tasks] unless shape.split? && tasks.size > 1
+
+      midpoint = Math.max(1, tasks.size // 2)
+      [tasks[0...midpoint], tasks[midpoint..]]
+    end
+
+    private def scenario_play(group : Array(GeneratedTask), index : Int32, basename : String,
+                              play_index : Int32, play_count : Int32, start_index : Int32,
+                              last : Bool, shape : PlayShape) : Hash(YAML::Any, YAML::Any)
+      task_bodies = group.map_with_index do |task, local_index|
+        task_index = start_index + local_index
         body = {} of YAML::Any => YAML::Any
         body[YAML::Any.new("name")] = YAML::Any.new(named("#{task.module_name} ##{index}.#{task_index}"))
         body[YAML::Any.new(task.fqcn)] = task.free_form ? YAML::Any.new(task.free_form) : scenario_args(task)
@@ -426,16 +468,56 @@ module KrikriPlaybookGenerator
       end
 
       play = {} of YAML::Any => YAML::Any
-      play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: multi-task ##{index}"))
+      suffix = play_count > 1 ? ".#{play_index}" : ""
+      play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: multi-task ##{index}#{suffix}"))
       play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
-      apply_delegate_vars(play, tasks, plugin_axes(index))
-      apply_scenario_conditions(play, task_bodies, tasks, index, basename)
+      apply_delegate_vars(play, group, plugin_axes(index))
+      if last
+        apply_scenario_conditions(play, task_bodies, group, index, basename)
+      else
+        task_bodies << notifier_body
+        task_bodies << flush_handlers_body
+        play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
+        apply_split_handlers(play, @handler_shapes[index]? || HandlerShape::Off)
+      end
+      play
+    end
 
-      document = [YAML::Any.new(play)]
-      document.concat(import_playbook_items(@include_shapes[index]? || IncludeShape::Off))
-      yaml_document(YAML::Any.new(document))
+    # A play-level `roles:` entry names the seeded fixture role by absolute
+    # path, so both engines resolve it identically (same reasoning as the
+    # include_role axis). Two precedence levels are compared: a role param
+    # (`roles: - {role: ..., vars: ...}`) overrides the role default, while
+    # a play var does NOT override the role's own vars/main.yml. The role's
+    # inner/nested includes run too.
+    private def role_play(index : Int32) : Hash(YAML::Any, YAML::Any)
+      play = {} of YAML::Any => YAML::Any
+      play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: role ##{index}"))
+      play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
+      play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
+      apply_play_setting(play, @play_settings[index]?)
+
+      vars = {} of YAML::Any => YAML::Any
+      vars[YAML::Any.new(Fixtures::ROLE_VARS_VAR)] = YAML::Any.new("play-var")
+      play[YAML::Any.new("vars")] = YAML::Any.new(vars)
+
+      entry = {} of YAML::Any => YAML::Any
+      entry[YAML::Any.new("role")] = YAML::Any.new(Fixtures::ROLE_PATH)
+      role_params = {} of YAML::Any => YAML::Any
+      role_params[YAML::Any.new(Fixtures::ROLE_DEFAULT_VAR)] = YAML::Any.new("role-param")
+      entry[YAML::Any.new("vars")] = YAML::Any.new(role_params)
+      play[YAML::Any.new("roles")] = YAML::Any.new([YAML::Any.new(entry)])
+      play
+    end
+
+    # Runs before the next play's tasks: a handler notified in the first
+    # play runs here, and is not re-run at the second play's end.
+    private def flush_handlers_body : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg flush handlers")
+      body[YAML::Any.new("ansible.builtin.meta")] = YAML::Any.new("flush_handlers")
+      YAML::Any.new(body)
     end
 
     private def scenario_args(task : GeneratedTask) : YAML::Any
@@ -453,6 +535,8 @@ module KrikriPlaybookGenerator
           json.field "collection", tasks.first.collection
           json.field "chaos", tasks.any?(&.chaos?)
           play_setting_json(json, @play_settings[index]?)
+          json.field "play_shapes", (@play_shapes[index]? || PlayShape::Off).label
+          json.field "plays", play_count(tasks, index)
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
@@ -1032,12 +1116,27 @@ module KrikriPlaybookGenerator
       end
       return unless tasks.any? { |task| task.notify && task.notify_allowed? }
 
+      play[YAML::Any.new("handlers")] = YAML::Any.new([debug_handler_body])
+    end
+
+    # The first play of a split always carries the notifier, so its flush
+    # boundary runs a handler whether or not a scenario task happened to
+    # notify; the second play's end-of-play flush is the comparison.
+    private def apply_split_handlers(play : Hash(YAML::Any, YAML::Any), shape : HandlerShape) : Nil
+      if shape.off?
+        play[YAML::Any.new("handlers")] = YAML::Any.new([debug_handler_body])
+      else
+        apply_handlers(play, shape)
+      end
+    end
+
+    private def debug_handler_body : YAML::Any
       handler = {} of YAML::Any => YAML::Any
       handler[YAML::Any.new("name")] = YAML::Any.new(HANDLER_NAME)
       handler_args = {} of YAML::Any => YAML::Any
       handler_args[YAML::Any.new("msg")] = YAML::Any.new(HANDLER_MESSAGE)
       handler[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(handler_args)
-      play[YAML::Any.new("handlers")] = YAML::Any.new([YAML::Any.new(handler)])
+      YAML::Any.new(handler)
     end
 
     private def apply_handlers(play : Hash(YAML::Any, YAML::Any), shape : HandlerShape) : Nil

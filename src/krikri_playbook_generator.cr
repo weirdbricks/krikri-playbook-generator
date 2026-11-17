@@ -155,11 +155,14 @@ module KrikriPlaybookGenerator
     expressions = tasks.map { |task| task.library ? ExpressionShape::Off : expression_sampler.sample }
     discovery_sampler = PluginDiscoverySampler.new(opts.seed, opts.plugin_discovery)
     discoveries = tasks.map { |task| task.library ? PluginDiscovery::Relative : discovery_sampler.sample }
+    play_shape_sampler = PlayShapeSampler.new(opts.seed, opts.play_shapes)
+    play_shapes = tasks.map { |task| task.library ? PlayShape::Off : play_shape_sampler.sample }
     profiles = tasks.map do |task|
       task.library ? ["debian"] : Dependencies.playbook_profiles([task.fqcn], Overrides.load)
     end
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-      opts.gather_facts?, includes, profiles, lookups, expressions, discoveries).build(tasks)
+      opts.gather_facts?, includes, profiles, lookups, expressions, discoveries,
+      play_shapes: play_shapes).build(tasks)
   end
 
   private def self.sample_play_settings(opts : Options,
@@ -213,6 +216,8 @@ module KrikriPlaybookGenerator
     expressions = scenarios.map { expression_sampler.sample }
     discovery_sampler = PluginDiscoverySampler.new(opts.seed, opts.plugin_discovery)
     discoveries = scenarios.map { discovery_sampler.sample }
+    play_shape_sampler = PlayShapeSampler.new(opts.seed, opts.play_shapes)
+    play_shapes = scenarios.map { play_shape_sampler.sample }
     profiles = scenarios.map do |tasks|
       Dependencies.playbook_profiles(tasks.map(&.fqcn), Overrides.load)
     end
@@ -221,7 +226,7 @@ module KrikriPlaybookGenerator
       retry_shapes: retries, gather_facts: opts.gather_facts?,
       include_shapes: includes, profiles: profiles,
       lookup_shapes: lookups, expression_shapes: expressions,
-      plugin_discovery: discoveries).build_scenarios(scenarios)
+      plugin_discovery: discoveries, play_shapes: play_shapes).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32

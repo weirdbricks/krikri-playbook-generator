@@ -59,6 +59,12 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    play-level handler (v2). One playbook's tasks always share a host
    profile (Ubuntu vs Rocky), so a profile with fewer than N modules
    yields a shorter playbook rather than a mix no single host can run.
+   `--play-shapes split,role` (opt-in) widens the layout: `split` puts the
+   tasks in two plays with `meta: flush_handlers` at the boundary (handler
+   timing and the register chain across plays), `role` prepends a play
+   whose `roles:` entry runs the seeded fixture role (role-relative
+   includes and role-param/play-var/defaults precedence). Both are recorded in the
+   sidecar as `play_shapes`/`plays`.
 4. **runner** — two backends, neither the default. Every playbook is
   compared once per **mode** (`--check` and real) so a module that is
   right in one and wrong in the other cannot hide; each mode gets a
@@ -98,8 +104,11 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
   credential source) is the third backend: one disposable VM per module
   profile (rpm, db, containers, misc) for the modules whose happy path
   needs a real service or kernel, dispatched from the same per-module
-  profile table. `--atlantic-hosts` caps how many of those VMs run at
-  once.
+  profile table. Each VM installs the same pinned `ansible-core` and
+  `collection_pins:` set as the podman/microVM images, and refuses to run
+  if the resolved collection versions drifted, so a community module
+  compares against the argspec krikri targets. `--atlantic-hosts` caps
+  how many of those VMs run at once.
 5. **triage** — reads `results.jsonl` and produces the full report:
   divergences grouped by module + **diff signature** (changed lines with
   digits/paths/random names generalized and hashed — keyed on the ansible
@@ -172,7 +181,8 @@ section prints the modes, the idempotency flag and wall time, and
 Printing the same thing is not the whole comparison. On the podman and
 microVM backends each engine's host is also snapshotted before and after
 its run (file tree under `/etc`, `/tmp/kpg-work`, `/var/spool/cron` and
-`/root` with type/uid/gid/mode/size plus a sha256 for files under 1 MiB,
+both identity homes, `/root` and `/home/kpg`, with
+type/uid/gid/mode/size plus a sha256 for files under 1 MiB,
 boot id, package versions, enabled systemd units, listening ports), and
 the two before/after **deltas** are compared. Only deltas: the real and
 krikri images start from different baselines, so comparing absolute
@@ -230,8 +240,11 @@ first snapshot, so both engines still start from identical state. The
 generated `owner`/`group` options template to `{{ kpg_owner }}` /
 `{{ kpg_group }}`, resolved by the invocation to root or to the
 unprivileged account, because a non-root task cannot chown to root and
-would otherwise fail on the reference engine. Local runs stay the
-invoking account and Atlantic runs stay root; both still honor `--umask`.
+would otherwise fail on the reference engine. The state oracle scans that
+account's HOME too (with the same per-home control-side exclusions), so a
+leftover or mode change under `/home/kpg` is not invisible. Local runs
+stay the invoking account and Atlantic runs stay root; both still honor
+`--umask`.
 
 ## Transport
 
@@ -376,6 +389,7 @@ The axis checklist (all of these, not just the reported one):
 | module_utils surface | `--module-utils all` (or one import path) | a custom module importing a module_utils module or public name krikri's shim lacks |
 | reference version | `--reference-core-version 2.20.1 --run-on-podman` (repeatable) | a divergence that only exists on the version the production playbooks actually run |
 | transport | `--connection both` | user/key/port plumbing, plugin upload and daemon reuse over the wire, `become` with no user set |
+| play layout | `--play-shapes split,role` | a fix that only holds inside one play: handler flush timing, role-param/play-var precedence through `roles:`, registers carried across plays |
 
 krikri-loop's fix workflow should gate on this: after a KPG-derived fix,
 run the table above for the touched module (and its sibling module when

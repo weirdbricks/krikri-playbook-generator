@@ -25,5 +25,22 @@ module KrikriPlaybookGenerator
       assert_equal true, !AtlanticBackend::ENGINE_ENV_STRIP.includes?("ANSIBLE_GATHERING=")
       assert_equal true, AtlanticBackend::ENGINE_ENV_STRIP.includes?("ANSIBLE_NOCOLOR=1")
     end
+
+    it "installs every pinned collection at its pinned version" do
+      pins = Dependencies.load.collection_pins
+      expected = pins.keys.sort!.map { |name| "#{name}:==#{pins[name]}" }
+      assert_equal(expected, AtlanticBackend.collection_requirements)
+      assert_includes(AtlanticBackend.collection_requirements, "community.docker:==#{pins["community.docker"]}")
+    end
+
+    it "reports a resolved collection version that does not match its pin" do
+      pin = Dependencies.load.collection_pins["community.docker"]
+      requirements = ["community.docker:==#{pin}"]
+      mismatches = Dependencies.collection_version_mismatches(
+        requirements, {"community.docker" => ["0.0.1"]})
+      assert_equal(["expected community.docker #{pin}, resolved 0.0.1"], mismatches)
+      assert_equal([] of String, Dependencies.collection_version_mismatches(
+        requirements, {"community.docker" => [pin]}))
+    end
   end
 end
