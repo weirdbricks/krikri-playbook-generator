@@ -514,6 +514,26 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(results_dir) if results_dir
     end
 
+    it "maps sidecar profiles to microVM OSes and records the row's profile" do
+      assert_equal("ubuntu", Runner.microvm_os("debian"))
+      assert_equal("rocky", Runner.microvm_os("rocky"))
+
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+      task = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("profile")})
+      playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      result = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin,
+        modes: [RunMode::Check], second_run: false).run.first
+      assert_equal("debian", result.profile)
+      parsed = JSON.parse(File.read_lines(File.join(results_dir, "results.jsonl")).first)
+      assert_equal("debian", parsed["profile"].as_s)
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
     it "skips the second-run idempotency pass when the first run failed on an engine" do
       playbook_dir = File.tempname("kpg-spec-playbooks")
       results_dir = File.tempname("kpg-spec-results")

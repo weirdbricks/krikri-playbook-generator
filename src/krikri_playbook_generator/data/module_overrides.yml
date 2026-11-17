@@ -28,8 +28,14 @@
 #                  e.g. uid collisions or runtime-mutually-exclusive
 #                  siblings of another option)
 #
-# Module-level keys: `exclude` (list) and `require_one_of` (list of
-# lists). `always` (list) forces options into every happy-path task -
+# Module-level keys: `exclude` (list), `require_one_of` (list of lists)
+# and `profiles` (list: debian, rocky) — a module whose happy path runs on
+# BOTH host images is run once per image, so its coverage spans distros
+# while each playbook still runs on one image. `apt`/`dnf`/`yum` stay
+# single-profile (the other image cannot install them); `service` and
+# `systemd` need a unit name that exists on both, which their current
+# pools do not guarantee (cron vs crond), so they stay Debian-only until
+# they get profile-specific values. `always` (list) forces options into every happy-path task -
 # needed when omitting the option fails, e.g. `file` without `state`
 # cannot set attributes on an absent path. `free_form` (a pool) is for
 # the actions whose task body is a bare string instead of an argument map
@@ -1002,10 +1008,14 @@ modules:
 
   # package's name/state are untyped in DOCUMENTATION (random words fail
   # validation); an already-installed package makes the happy path a no-op.
+  # bash exists on both images, and package wraps whatever manager the
+  # host has (apt on Debian, dnf on Rocky), so this is the module the
+  # per-profile coverage exists for.
   package:
     name: {kind: literal_pool, pool: ["bash"]}
     state: {kind: literal_pool, pool: ["present"]}
     use: {exclude: true}
+    profiles: [debian, rocky]
 
   # rpm_key imports a key with gpg2 (the rpm template pair provides it);
   # a random key path is not a key.

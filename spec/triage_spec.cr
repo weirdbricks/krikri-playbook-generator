@@ -10,7 +10,7 @@ module KrikriPlaybookGenerator
                      signature : String? = nil, chaos : Bool = false,
                      mode : String = "real", run : Int32 = 1,
                      user : String = "root", umask : String = "022", hosts : Int32 = 1,
-                     limit : String = "off",
+                     limit : String = "off", profile : String = "debian",
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
                      error : String? = nil, masked_diff : String = "",
@@ -29,6 +29,7 @@ module KrikriPlaybookGenerator
         "umask"              => umask,
         "hosts"              => hosts,
         "limit"              => limit,
+        "profile"            => profile,
         "chaos"              => chaos,
         "divergent"          => divergent,
         "masked_identical"   => masked_identical.nil? ? !divergent : masked_identical,
@@ -146,6 +147,23 @@ module KrikriPlaybookGenerator
         {} of String => String, "one")
       assert(command.includes?("--limit one"))
       refute(Triage.repro_command("/tmp/p.yml", ["copy"]).includes?("--limit"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "groups and rates per host image, and pins neither in the repro" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      diff = "stdout:\n--- a\n+++ b\n"
+      write_result(dir, "deb", "package", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff)
+      write_result(dir, "rpm", "package", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff, profile: "rocky")
+
+      assert_equal(2, Triage.new(dir).report.size)
+      rates = Triage.new(dir).rates
+      assert_equal(%w[debian rocky], rates.map(&.profile))
+      assert_equal(["package [debian]", "package [rocky]"], rates.map(&.label))
     ensure
       FileUtils.rm_rf(dir) if dir
     end

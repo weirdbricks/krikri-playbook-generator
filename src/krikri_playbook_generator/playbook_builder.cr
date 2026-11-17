@@ -49,7 +49,8 @@ module KrikriPlaybookGenerator
                    @handler_shapes : Array(HandlerShape) = [] of HandlerShape,
                    @retry_shapes : Array(RetryShape) = [] of RetryShape,
                    @gather_facts : Bool = false,
-                   @include_shapes : Array(IncludeShape) = [] of IncludeShape)
+                   @include_shapes : Array(IncludeShape) = [] of IncludeShape,
+                   @profiles : Array(Array(String)) = [] of Array(String))
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -266,8 +267,15 @@ module KrikriPlaybookGenerator
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
           json.field "structural_failure", structural_failure?(index)
+          json.field "profiles", playbook_profiles(index)
         end
       end
+    end
+
+    # The host images this playbook runs on (a distro-polymorphic module
+    # runs once per image; see Dependencies.playbook_profiles).
+    private def playbook_profiles(index : Int32) : Array(String)
+      @profiles[index]? || ["debian"]
     end
 
     # A shape that deliberately fails (a rescued forced failure, an
@@ -351,6 +359,7 @@ module KrikriPlaybookGenerator
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
           json.field "structural_failure", structural_failure?(index)
+          json.field "profiles", playbook_profiles(index)
           json.field "mutations" do
             json.array do
               tasks.each_with_index do |task, task_index|

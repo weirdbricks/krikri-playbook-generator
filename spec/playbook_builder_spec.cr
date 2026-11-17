@@ -573,6 +573,21 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "records the host images a playbook covers in its sidecar" do
+      dir = File.tempname("kpg-spec")
+      defaults = PlaybookBuilder.new(dir).build([sample_task]).first
+      assert_equal(["debian"],
+        JSON.parse(File.read(defaults.sub(/\.yml$/, ".meta.json")))["profiles"].as_a.map(&.as_s))
+
+      both = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [] of IncludeShape,
+        [["debian", "rocky"]]).build([sample_task]).first
+      assert_equal(["debian", "rocky"],
+        JSON.parse(File.read(both.sub(/\.yml$/, ".meta.json")))["profiles"].as_a.map(&.as_s))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

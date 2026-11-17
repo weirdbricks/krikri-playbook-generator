@@ -33,6 +33,13 @@ module KrikriPlaybookGenerator
       refute(overrides.excluded?("copy", "src"))
     end
 
+    it "parses a module's distro profiles, by short name or FQCN" do
+      overrides = Overrides.load
+      assert_equal(%w[debian rocky], overrides.profiles("package"))
+      assert_equal(%w[debian rocky], overrides.profiles("ansible.builtin.package"))
+      assert_empty(overrides.profiles("apt"))
+    end
+
     it "exposes module-level require_one_of groups" do
       overrides = Overrides.load
       assert_equal([["src", "content"]], overrides.require_one_of("copy"))

@@ -91,7 +91,7 @@ module KrikriPlaybookGenerator
     # backend must export it identically for both engines.
     record MetaInfo, module_name : String, chaos : Bool, mutations : Array({String, String}),
       module_names : Array(String), env : Hash(String, String) = {} of String => String,
-      structural_failure : Bool = false do
+      structural_failure : Bool = false, profiles : Array(String) = ["debian"] do
       def self.primary(module_name : String, chaos : Bool, mutations : Array({String, String})) : MetaInfo
         MetaInfo.new(module_name, chaos, mutations, [module_name])
       end
@@ -116,6 +116,9 @@ module KrikriPlaybookGenerator
       # not requested at all); the actual ansible pattern comes from
       # Options.limit_pattern.
       getter limit : String
+      # Which host image this row ran on ("debian" or "rocky"); a
+      # distro-polymorphic module gets one row per image.
+      getter profile : String
 
       # "(check, run 1, nonroot, umask 022)" - one row's matrix point; the
       # host count and limit are appended only when they are not the
@@ -124,6 +127,7 @@ module KrikriPlaybookGenerator
         label = "(#{mode.label}, run #{run}, #{user.label}, umask #{umask}"
         label += ", hosts #{hosts}" unless hosts == 1
         label += ", limit #{limit}" unless limit == "off"
+        label += ", #{profile}" unless profile == "debian"
         "#{label})"
       end
 
@@ -141,7 +145,7 @@ module KrikriPlaybookGenerator
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil,
                      @mode = RunMode::Real, @run = 1,
                      @user = UserProfile::Root, @umask = DEFAULT_UMASK, @hosts = 1,
-                     @limit = "off")
+                     @limit = "off", @profile = "debian")
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
         @leftover_temps_ansible = PlaybookResult.annotate_leftovers(@ansible)
         @leftover_temps_krikri = PlaybookResult.annotate_leftovers(@krikri)
@@ -182,9 +186,10 @@ module KrikriPlaybookGenerator
       def self.errored(playbook : String, meta : MetaInfo?, message : String,
                        mode : RunMode = RunMode::Real, run : Int32 = 1,
                        user : UserProfile = UserProfile::Root, umask : String = DEFAULT_UMASK,
-                       hosts : Int32 = 1, limit : String = "off") : PlaybookResult
+                       hosts : Int32 = 1, limit : String = "off",
+                       profile : String = "debian") : PlaybookResult
         failed = EngineRun.new("ansible", -1, nil, "", "", false)
-        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts, limit)
+        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts, limit, profile)
       end
 
       # The environment variables the playbook's sidecar asks the engines
@@ -495,7 +500,7 @@ module KrikriPlaybookGenerator
       # as the invoking account, and Atlantic's VMs are only root.
       @user_profiles = [UserProfile::Local] if local_backend?
       @user_profiles = [UserProfile::Root] if @run_on_atlantic
-      @planned = @playbook_paths.size * @modes.size * contexts.size
+      @planned = planned_rows
       log("starting #{@playbook_paths.size} playbook(s) x #{@modes.map(&.label).join("+")} " \
           "mode(s) x #{@user_profiles.map(&.label).join("+")} x umask #{@umasks.join("+")} " \
           "x hosts #{@hosts.join("+")} x limit #{@limits.join("+")} " \
@@ -523,6 +528,17 @@ module KrikriPlaybookGenerator
           "#{Log.paint(Log::YELLOW, divergent.to_s)} divergent, " \
           "#{Log.paint(Log::RED, results.count(&.error).to_s)} errored")
       results
+    end
+
+    # A distro-polymorphic playbook contributes one row per host image on
+    # the isolated backends; local and Atlantic run it once.
+    private def planned_rows : Int32
+      per_playbook = if @run_on_podman || @run_on_microvm || @run_on_mixed
+                       @playbook_paths.sum { |path| load_meta(path).try(&.profiles.size) || 1 }
+                     else
+                       @playbook_paths.size
+                     end
+      per_playbook * @modes.size * contexts.size
     end
 
     private def local_backend? : Bool
@@ -560,7 +576,12 @@ module KrikriPlaybookGenerator
       results = [] of PlaybookResult
       results.concat(run_via_podman(podman_paths)) unless podman_paths.empty?
       results.concat(run_via_microvm(microvm_paths)) unless microvm_paths.empty?
-      @playbook_paths.map { |path| results.find { |result| result.playbook == path } || raise "playbook #{path} never ran" }
+      @playbook_paths.flat_map do |path|
+        selected = results.select { |result| result.playbook == path }
+        raise "playbook #{path} never ran" if selected.empty?
+
+        selected
+      end
     end
 
     # Groups the batch by the golden image the playbooks need (Ubuntu or
@@ -577,7 +598,13 @@ module KrikriPlaybookGenerator
       end
       paths.each do |path|
         names = load_meta(path).try(&.module_names) || [] of String
-        profiles[MicrovmBackend.profile_for(names)] << path
+        sidecar = load_meta(path).try(&.profiles) || ["debian"]
+        # An rpm-only module still pins the playbook to Rocky.
+        if names.any? { |name| AtlanticBackend::PROFILE_FOR_MODULE[name.split(".").last]? == "rpm" }
+          profiles[MicrovmBackend.profile_for(names)] << path
+        else
+          sidecar.each { |profile| profiles[Runner.microvm_os(profile)] << path }
+        end
       end
       begin
         profiles.each_key { |os| backend.provision(os) }
@@ -587,11 +614,13 @@ module KrikriPlaybookGenerator
           Runner.in_parallel(batch, @microvm_parallel) do |path|
             contexts.flat_map do |(user, umask, hosts, limit)|
               @modes.flat_map do |mode|
-                guarded_results(path, mode, user, umask, hosts, limit) do
+                guarded_results(path, mode, user, umask, hosts, limit,
+                  os == "rocky" ? "rocky" : "debian") do
                   runs = backend.run_playbook(path, os, check: mode.check?, second_run: @second_run,
                     user: user, umask: umask, hosts: hosts, env: play_env(path),
                     limit: Options.limit_pattern(limit), include_unreachable: limit != "off")
-                  comparison_results(path, mode, runs, user, umask, hosts, limit)
+                  comparison_results(path, mode, runs, user, umask, hosts, limit,
+                    os == "rocky" ? "rocky" : "debian")
                 end
               end
             end
@@ -671,7 +700,7 @@ module KrikriPlaybookGenerator
           hash[profile] = [] of String
         end
         paths.each do |path|
-          profiles[podman_profile_for(path)] << path
+          podman_profile_for(path).each { |profile| profiles[profile] << path }
         end
         profiles.each_key { |profile| backend.provision(profile) }
         profile_counts = profiles.map { |profile, batch| [profile, batch.size] }
@@ -681,11 +710,13 @@ module KrikriPlaybookGenerator
           Runner.in_parallel(batch, @podman_parallel) do |path|
             contexts.flat_map do |(user, umask, hosts, limit)|
               @modes.flat_map do |mode|
-                guarded_results(path, mode, user, umask, hosts, limit) do
+                guarded_results(path, mode, user, umask, hosts, limit,
+                  profile.debian? ? "debian" : "rocky") do
                   runs = backend.run_playbook(path, profile, check: mode.check?, second_run: @second_run,
                     user: user, umask: umask, hosts: hosts, env: play_env(path),
                     limit: Options.limit_pattern(limit), include_unreachable: limit != "off")
-                  comparison_results(path, mode, runs, user, umask, hosts, limit)
+                  comparison_results(path, mode, runs, user, umask, hosts, limit,
+                    profile.debian? ? "debian" : "rocky")
                 end
               end
             end
@@ -701,13 +732,19 @@ module KrikriPlaybookGenerator
     # needs the rpm-family profile - the Debian image cannot satisfy an
     # rpm task, while the Rocky image runs Debian tasks via its union
     # dependency set.
-    private def podman_profile_for(path : String) : PodmanBackend::Profile
+    private def podman_profile_for(path : String) : Array(PodmanBackend::Profile)
       names = load_meta(path).try(&.module_names) || [] of String
-      if names.any? { |name| AtlanticBackend::PROFILE_FOR_MODULE[name.split(".").last]? == "rpm" }
-        PodmanBackend::Profile::Rpm
-      else
-        PodmanBackend::Profile::Debian
-      end
+      # An rpm-only module pins the whole playbook to Rocky even if a
+      # legacy sidecar has no profile list.
+      return [PodmanBackend::Profile::Rpm] if names.any? { |name| AtlanticBackend::PROFILE_FOR_MODULE[name.split(".").last]? == "rpm" }
+
+      profiles = load_meta(path).try(&.profiles) || ["debian"]
+      profiles.map { |profile| profile == "rocky" ? PodmanBackend::Profile::Rpm : PodmanBackend::Profile::Debian }.uniq!
+    end
+
+    # The microVM OS a sidecar profile maps to.
+    def self.microvm_os(profile : String) : String
+      profile == "rocky" ? "rocky" : "ubuntu"
     end
 
     private def run_locally : Array(PlaybookResult)
@@ -805,14 +842,16 @@ module KrikriPlaybookGenerator
     private def comparison_results(path : String, mode : RunMode,
                                    runs : Array(HostState::Comparison),
                                    user : UserProfile, umask : String,
-                                   hosts : Int32 = 1, limit : String = "off") : Array(PlaybookResult)
+                                   hosts : Int32 = 1, limit : String = "off",
+                                   profile : String = "debian") : Array(PlaybookResult)
       results = [] of PlaybookResult
       runs.each_with_index do |comparison, index|
         run_number = index + 1
         result = PlaybookResult.new(path,
           to_engine_run("ansible", comparison[:ansible]),
           to_engine_run("krikri", comparison[:krikri]), load_meta(path),
-          mode: mode, run: run_number, user: user, umask: umask, hosts: hosts, limit: limit)
+          mode: mode, run: run_number, user: user, umask: umask, hosts: hosts, limit: limit,
+          profile: profile)
         results << (run_number == 1 ? progress(result) : log_second_run(result))
       end
       results
@@ -854,13 +893,15 @@ module KrikriPlaybookGenerator
 
     private def guarded_results(path : String, mode : RunMode, user : UserProfile, umask : String,
                                 hosts : Int32 = 1, limit : String = "off",
+                                profile : String = "debian",
                                 &block : -> Array(PlaybookResult)) : Array(PlaybookResult)
       block.call
     rescue e : Exception
       raise e unless @keep_going
 
       STDERR.puts "warning: #{File.basename(path)}: #{e.message} - continuing (--keep-going)"
-      [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1, user, umask, hosts, limit)]
+      [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1,
+        user, umask, hosts, limit, profile)]
     end
 
     private def report_leaks : Nil
@@ -983,9 +1024,18 @@ module KrikriPlaybookGenerator
       module_names.unshift(module_name) unless module_names.includes?(module_name)
 
       MetaInfo.new(module_name, chaos, mutations, module_names, parse_play_env(parsed),
-        parse_structural_failure(parsed))
+        parse_structural_failure(parsed), parse_profiles(parsed))
     rescue JSON::ParseException
       nil
+    end
+
+    # The host images the playbook covers (a distro-polymorphic module runs
+    # once per image); a legacy sidecar has no list and runs on Debian.
+    private def parse_profiles(parsed : Hash(String, JSON::Any)) : Array(String)
+      profiles = parsed["profiles"]?.try(&.as_a?).try(&.compact_map(&.as_s?))
+      return ["debian"] if !profiles || profiles.empty?
+
+      profiles
     end
 
     private def parse_structural_failure(parsed : Hash(String, JSON::Any)) : Bool
@@ -1032,6 +1082,7 @@ module KrikriPlaybookGenerator
           json.field "umask", result.umask
           json.field "hosts", result.hosts
           json.field "limit", result.limit
+          json.field "profile", result.profile
           json.field "env", result.env.empty? ? nil : result.env
           write_meta_fields(json, result)
           json.field "error", result.error

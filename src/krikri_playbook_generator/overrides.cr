@@ -23,13 +23,14 @@ module KrikriPlaybookGenerator
     @free_form : Hash(String, Array(String))
     @expect_failure : Hash(String, Bool)
     @not_applicable : Hash(String, Bool)
+    @profiles : Hash(String, Array(String))
 
     # Module-level keys are not option overrides; the per-option parser must
     # skip them even when their YAML shape (a map) looks identical. `free_form`
     # is deliberately absent: it is BOTH a module-level key (a pool of bare
     # task bodies) and a real option of shell/script (the raw command), so it
     # is disambiguated by its value - see `module_key?`.
-    MODULE_KEYS = %w[always exclude expect_failure not_applicable require_one_of]
+    MODULE_KEYS = %w[always exclude expect_failure not_applicable require_one_of profiles]
 
     def initialize(yaml : String)
       parsed = YAML.parse(yaml)
@@ -40,6 +41,7 @@ module KrikriPlaybookGenerator
       @free_form = parse_pool_by_module(parsed["modules"]?, "free_form")
       @expect_failure = parse_flag_by_module(parsed["modules"]?, "expect_failure")
       @not_applicable = parse_flag_by_module(parsed["modules"]?, "not_applicable")
+      @profiles = parse_list_by_module(parsed["modules"]?, "profiles")
     end
 
     # Module-level happy-path requirement groups from the data file: a
@@ -157,6 +159,27 @@ module KrikriPlaybookGenerator
     # quality and happy-coverage metrics - visibly, never silently.
     def not_applicable?(module_name : String) : Bool
       @not_applicable[module_name]? || false
+    end
+
+    # Module-level `profiles: [debian, rocky]`: a module that is deliberately
+    # exercised on more than one host image (its happy path runs on both).
+    # Absent means the module's default profile only.
+    def profiles(module_name : String) : Array(String)
+      @profiles[module_name.split(".").last]? || [] of String
+    end
+
+    # A module-level bare list (`profiles: [debian, rocky]`), unlike the
+    # option overrides' `{pool: [...]}` shape.
+    private def parse_list_by_module(section : YAML::Any?, key : String) : Hash(String, Array(String))
+      result = {} of String => Array(String)
+      section.try(&.as_h?).try do |section_hash|
+        section_hash.each do |module_name, options|
+          list = options.as_h?.try(&.[key]?).try(&.as_a?).try(&.compact_map(&.as_s?))
+          next if module_name.to_s == key
+          result[module_name.to_s] = list if list && !list.empty?
+        end
+      end
+      result
     end
 
     private def parse_pool_by_module(section : YAML::Any?, key : String) : Hash(String, Array(String))

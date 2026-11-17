@@ -1,4 +1,5 @@
 require "yaml"
+require "./overrides"
 
 module KrikriPlaybookGenerator
   # Union dependency model for the podman template pair. See
@@ -32,6 +33,23 @@ module KrikriPlaybookGenerator
     # side by side. `module_names` may hold short names or FQCNs.
     def self.host_profile(module_names : Array(String)) : String
       module_names.any? { |name| ROCKY_MODULES.includes?(name.split(".").last) } ? "rocky" : "ubuntu"
+    end
+
+    # Which images one playbook runs on. One playbook still runs on one
+    # image; a module marked distro-polymorphic in the overrides
+    # (`profiles: [debian, rocky]`) is simply run once per image, so its
+    # coverage spans both. A rocky-only module pins the playbook to Rocky
+    # (the Debian image cannot host it), and a v2 playbook needs EVERY
+    # task's module to accept the extra profile.
+    def self.playbook_profiles(module_names : Array(String), overrides : Overrides) : Array(String)
+      return ["rocky"] if module_names.any? { |name| host_profile([name]) == "rocky" }
+
+      requested = module_names.map { |name| overrides.profiles(name) }
+      if !requested.empty? && requested.all? { |list| list.includes?("debian") && list.includes?("rocky") }
+        ["debian", "rocky"]
+      else
+        ["debian"]
+      end
     end
 
     def self.load : Dependencies

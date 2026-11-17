@@ -30,7 +30,8 @@ module KrikriPlaybookGenerator
   class Triage
     record MutationEntry, option : String, kind : String
     record ResultLine, playbook : String, module_name : String, mode : String, run : Int32,
-      user : String, umask : String, hosts : Int32, limit : String, env : Hash(String, String),
+      user : String, umask : String, hosts : Int32, limit : String, profile : String,
+      env : Hash(String, String),
       chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
       ansible_error : String?, mutations : Array(MutationEntry), error : String?,
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
@@ -61,7 +62,12 @@ module KrikriPlaybookGenerator
       end
     end
     record Quality, module_name : String, failed : Int32, total : Int32, example_error : String
-    record Rate, module_name : String, identical : Int32, total : Int32
+    record Rate, module_name : String, profile : String, identical : Int32, total : Int32 do
+      # "package [rocky]" when a module spans more than one image.
+      def label : String
+        "#{module_name} [#{profile}]"
+      end
+    end
 
     # Batch-level happy-path runnability: how many generated happy-path
     # playbooks the REFERENCE engine could actually run. A failed one is
@@ -102,23 +108,23 @@ module KrikriPlaybookGenerator
     end
 
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def state_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.state_divergent
@@ -127,28 +133,28 @@ module KrikriPlaybookGenerator
         # the "one root cause never appears twice" rule.
         next if line.check_mode_mutated
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.state_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.state_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def check_mode_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.check_mode_divergent?
         next if line.errored? || line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.check_mode_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.check_mode_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
@@ -243,6 +249,7 @@ module KrikriPlaybookGenerator
             json.field "umask", example.umask
             json.field "hosts", example.hosts
             json.field "limit", example.limit
+            json.field "profile", example.profile
             json.field "env", example.env.empty? ? nil : example.env
             json.field "chaos", example.chaos
             json.field "mutations" do
@@ -287,6 +294,7 @@ module KrikriPlaybookGenerator
     private def rate_json(json : JSON::Builder, rate : Rate) : Nil
       json.object do
         json.field "module", rate.module_name
+        json.field "profile", rate.profile
         json.field "identical", rate.identical
         json.field "total", rate.total
       end
@@ -382,18 +390,22 @@ module KrikriPlaybookGenerator
       rates_from(result_lines)
     end
 
+    # Per module AND per host image: a distro-polymorphic module is run on
+    # both, and a Rocky-only failure would be invisible in a merged rate.
     private def rates_from(lines : Array(ResultLine)) : Array(Rate)
-      groups = Hash(String, Array(ResultLine)).new { |hash, key| hash[key] = [] of ResultLine }
+      groups = Hash({String, String}, Array(ResultLine)).new do |hash, key|
+        hash[key] = [] of ResultLine
+      end
 
       lines.each do |line|
         next if line.errored?
 
-        groups[line.module_name] << line
+        groups[{line.module_name, line.profile}] << line
       end
 
-      groups.map do |module_name, entries|
-        Rate.new(module_name, entries.count(&.masked_identical), entries.size)
-      end.sort_by!(&.module_name)
+      groups.map do |(module_name, profile), entries|
+        Rate.new(module_name, profile, entries.count(&.masked_identical), entries.size)
+      end.sort_by! { |rate| {rate.module_name, rate.profile} }
     end
 
     # Copy-paste repro for a single divergent playbook: `run` accepts a
@@ -484,6 +496,7 @@ module KrikriPlaybookGenerator
         parsed["umask"]?.try(&.as_s?) || DEFAULT_UMASK,
         parse_hosts(parsed),
         parsed["limit"]?.try(&.as_s?) || "off",
+        parsed["profile"]?.try(&.as_s?) || "debian",
         parse_env(parsed),
         parsed["chaos"]?.try(&.as_bool?) || false,
         divergent,

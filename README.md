@@ -224,6 +224,18 @@ invoking account and Atlantic runs stay root; both still honor `--umask`.
 See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for the full proposal,
 open questions, and rationale for a separate repo.
 
+## Distro profiles
+
+A module whose happy path is installable on both images is marked
+`profiles: [debian, rocky]` in `module_overrides.yml` (currently
+`package`, whose `name: bash` exists everywhere). Every other module keeps
+its one image. A marked playbook is run once per image as its own result
+row: the report's byte-identical rates are per module AND per image, and
+`package` therefore exercises apt on the Debian template and dnf on the
+Rocky one. `apt`/`dnf`/`yum` cannot be promoted (the other image cannot
+install them), and `service`/`systemd` wait for unit names that exist on
+both distros.
+
 ## Coverage scope
 
 Same rule as `krikri-role-tester`'s Galaxy-role workflow: 100% bar for

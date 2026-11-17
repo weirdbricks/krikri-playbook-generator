@@ -4,6 +4,15 @@ require "../src/krikri_playbook_generator/schema"
 
 module KrikriPlaybookGenerator
   describe Dependencies do
+    it "spans both images only for a module marked distro-polymorphic" do
+      overrides = Overrides.load
+      assert_equal(%w[debian rocky], Dependencies.playbook_profiles(["package"], overrides))
+      assert_equal(%w[debian], Dependencies.playbook_profiles(["apt"], overrides))
+      assert_equal(%w[rocky], Dependencies.playbook_profiles(["dnf"], overrides))
+      # one non-polymorphic task keeps the whole v2 playbook on one image
+      assert_equal(%w[debian], Dependencies.playbook_profiles(["package", "debug"], overrides))
+    end
+
     it "loads the empty supported set from the data file (promote a module there, not in code)" do
       deps = Dependencies.load
       assert_equal([] of String, deps.supported)

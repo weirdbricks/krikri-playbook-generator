@@ -115,8 +115,9 @@ module KrikriPlaybookGenerator
       retries = tasks.map { retry_sampler.sample }
       include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
       includes = tasks.map { include_sampler.sample }
+      profiles = tasks.map { |task| Dependencies.playbook_profiles([task.fqcn], Overrides.load) }
       playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-        opts.gather_facts?, includes).build(tasks)
+        opts.gather_facts?, includes, profiles).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -147,8 +148,9 @@ module KrikriPlaybookGenerator
       retries = tasks.map { retry_sampler.sample }
       include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
       includes = tasks.map { include_sampler.sample }
+      profiles = tasks.map { |task| Dependencies.playbook_profiles([task.fqcn], Overrides.load) }
       return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-        opts.gather_facts?, includes).build(tasks)
+        opts.gather_facts?, includes, profiles).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -168,10 +170,13 @@ module KrikriPlaybookGenerator
     retries = scenarios.map { retry_sampler.sample }
     include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
     includes = scenarios.map { include_sampler.sample }
+    profiles = scenarios.map do |tasks|
+      Dependencies.playbook_profiles(tasks.map(&.fqcn), Overrides.load)
+    end
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings,
       block_shapes: [] of BlockShape, handler_shapes: handlers,
       retry_shapes: retries, gather_facts: opts.gather_facts?,
-      include_shapes: includes).build_scenarios(scenarios)
+      include_shapes: includes, profiles: profiles).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32
@@ -390,7 +395,7 @@ module KrikriPlaybookGenerator
   private def self.print_rates(rates : Array(Triage::Rate)) : Nil
     puts "== Per-module byte-identical rate (masked comparison) =="
     rates.each do |rate|
-      puts "#{rate.module_name}: #{rate.identical}/#{rate.total} byte-identical"
+      puts "#{rate.label}: #{rate.identical}/#{rate.total} byte-identical"
     end
   end
 end

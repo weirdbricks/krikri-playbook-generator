@@ -796,6 +796,20 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
   `podman_backend.cr`) so external cleanup tooling can tell a live run's
   containers from abandoned ones.
 
+### Distro profiles
+
+`module_overrides.yml` can mark a module `profiles: [debian, rocky]`
+(module-level, parsed by `Overrides#profiles`). `Dependencies
+.playbook_profiles` turns that into the sidecar's `profiles` list: a
+playbook runs on ONE image, but a distro-polymorphic module is run once
+per image (`package` is the current promotion), and an rpm-only module
+still pins the whole playbook to Rocky. The podman and microVM paths run
+each sidecar profile as its own row (`profile` in results.jsonl, in the
+context label, and per-profile rates in the report); local/Atlantic run
+once. `apt`/`dnf`/`yum` stay single-profile because the other image
+cannot install them, and `service`/`systemd` stay Debian-only until they
+get unit names that exist on both (cron vs crond).
+
 ## Known gaps
 
 Documented deliberately, not silently:
@@ -975,7 +989,12 @@ notifier task, the v2 application, and no handlers when off)
 and the flat list when the axis is off);
 `run_context_spec.cr` covers `HostInventory`'s aliases, the
 `kpg_targets` group, delegate-only hosts and the unreachable host added
-only for limit rows. `options_spec.cr` covers the identity/umask defaults, parsing,
+only for limit rows. `overrides_spec.cr` also covers the `profiles` list and
+`dependencies_spec.cr` the playbook-profile expansion (both images for a
+polymorphic module, one for everything else); `playbook_builder_spec.cr`
+records the sidecar list, `runner_spec.cr` maps it to the microVM OS and
+records the row's profile, and `triage_spec.cr` groups and rates per
+profile. `options_spec.cr` covers the identity/umask defaults, parsing,
 normalization and target restrictions, the `--hosts` matrix/validation
 (and Atlantic's single value), `--limit`'s symbols/patterns (and
 Atlantic's single value), `--gather-facts`, and `--play-keywords`
