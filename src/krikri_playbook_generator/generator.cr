@@ -21,6 +21,22 @@ module KrikriPlaybookGenerator
     Jinja
   end
 
+  # Where a happy-path argument's value came from. Recorded in the
+  # playbook sidecar so wasted coverage stays diagnosable: a `Random`
+  # source on an enum option is exactly the slot to reconsider, while
+  # `Default` and `Constructive` are the modes a module is meant to be
+  # exercised in.
+  enum ChoiceSource
+    Default
+    Constructive
+    Override
+    Random
+
+    def label : String
+      to_s.downcase
+    end
+  end
+
   # One generated task's arguments plus, for chaos-mode tasks, which
   # slots were mutated and how — carried through to triage so a
   # divergence can always be traced back to a specific mutation kind.
@@ -40,10 +56,14 @@ module KrikriPlaybookGenerator
     property loop_option : String?
     property loop_items : Array(String)?
     property notify : String?
+    # Per-argument provenance for the happy baseline; a chaos-mutated slot
+    # is absent from this map because its value no longer came from there.
+    property choice_sources : Hash(String, ChoiceSource)
 
     def initialize(@module_name, @collection = "ansible.builtin", @args = {} of String => YAML::Any,
                    @mutations = [] of {String, ChaosKind}, @free_form = nil,
-                   @when_condition = nil, @loop_option = nil, @loop_items = nil, @notify = nil)
+                   @when_condition = nil, @loop_option = nil, @loop_items = nil, @notify = nil,
+                   @choice_sources = {} of String => ChoiceSource)
     end
 
     def fqcn : String
@@ -75,7 +95,10 @@ module KrikriPlaybookGenerator
   #   the podman containers. Path-typed options point at pre-seeded
   #   fixture files (Fixtures), mode/owner/group/validate come from the
   #   per-module override table (data/module_overrides.yml), choices are
-  #   respected, ints stay in sane ranges, and the baseline satisfies
+  #   respected but never sampled uniformly onto a module's teardown mode
+  #   (see preferred_choice: documented default, then a constructive
+  #   member, then any non-destructive one), ints stay in sane ranges, and
+  #   the baseline satisfies
   #   mutually_exclusive/required_together/required_one_of/required_if
   #   rather than violating them.
   # - chaos: an INDEPENDENT mutation of that valid baseline per
@@ -106,6 +129,14 @@ module KrikriPlaybookGenerator
     ALPHABET = ("a".."z").to_a
     MODES    = ["0644", "0755", "0600", "0750"]
 
+    # Enum members that put a module into its working mode, in preference
+    # order. Half a batch sampling `absent`/`stopped` turns a happy path
+    # into a no-op or a destroy, which is wasted coverage at best.
+    CONSTRUCTIVE_CHOICES = %w[present started mounted enabled running latest installed directory touch]
+    # Members that no happy path should pick while anything else is
+    # available: they tear state down or disable it.
+    DESTRUCTIVE_CHOICES = %w[absent stopped unmounted disabled purged removed uninstalled]
+
     # Actions that are keywords rather than modules and run at parse time;
     # see GeneratedTask#static_import?.
     STATIC_IMPORTS = Set{"import_tasks", "import_role"}
@@ -116,6 +147,7 @@ module KrikriPlaybookGenerator
                    @chaos_kinds : Array(ChaosKind) = ChaosKind.values,
                    @overrides : Overrides = Overrides.load)
       @rng = Random::PCG32.new(@seed.to_u64)
+      @choice_sources = {} of String => ChoiceSource
     end
 
     def generate(schema : ModuleSchema, count : Int32) : Array(GeneratedTask)
@@ -197,10 +229,13 @@ module KrikriPlaybookGenerator
     private def build_task(schema : ModuleSchema) : GeneratedTask
       return free_form_task(schema) unless @overrides.free_form(schema.module_name).empty?
 
+      @choice_sources = {} of String => ChoiceSource
       args = happy_baseline(schema)
       mutations = [] of {String, ChaosKind}
       apply_chaos!(schema, args, mutations)
-      GeneratedTask.new(schema.module_name, schema.collection, args, mutations)
+      mutations.each { |(name, _)| @choice_sources.delete(name) }
+      GeneratedTask.new(schema.module_name, schema.collection, args, mutations,
+        choice_sources: @choice_sources.dup)
     end
 
     # Actions like `meta` take a bare string, not an argument map, so the
@@ -586,15 +621,46 @@ module KrikriPlaybookGenerator
 
       if override = @overrides.for_option(schema.module_name, option.name)
         value = override_value(override)
-        return value if value
+        if value
+          @choice_sources[option.name] = ChoiceSource::Override
+          return value
+        end
         if (choices = override.choices) && !choices.empty?
-          return YAML::Any.new(choices.sample(@rng))
+          choice, source = preferred_choice(choices)
+          @choice_sources[option.name] = source
+          return YAML::Any.new(choice)
         end
       end
 
-      return YAML::Any.new(option.choices.sample(@rng)) unless option.choices.empty?
+      unless option.choices.empty?
+        choice, source = preferred_choice(option.choices, option.default)
+        @choice_sources[option.name] = source
+        return YAML::Any.new(choice)
+      end
 
+      @choice_sources[option.name] = ChoiceSource::Random
       happy_scalar(schema.module_name, option)
+    end
+
+    # A documented default wins when it is one of the choices, then a
+    # constructive member, then any member that is not destructive; a
+    # uniform sample is the last resort (a module whose only choices tear
+    # state down has nothing constructive to offer). The source is
+    # returned alongside so the sidecar can record it.
+    private def preferred_choice(choices : Array(String),
+                                 default : JSON::Any? = nil) : {String, ChoiceSource}
+      if (raw = default.try(&.raw)).is_a?(String) && choices.includes?(raw)
+        return {raw, ChoiceSource::Default}
+      end
+
+      if constructive = choices.find { |candidate| CONSTRUCTIVE_CHOICES.includes?(candidate) }
+        return {constructive, ChoiceSource::Constructive}
+      end
+
+      survivors = choices.reject { |candidate| DESTRUCTIVE_CHOICES.includes?(candidate) }
+      return {survivors.sample(@rng), ChoiceSource::Random} unless survivors.empty?
+
+      {choices.sample(@rng), ChoiceSource::Random}
     end
 
     private def override_value(override : Overrides::OptionOverride) : YAML::Any?

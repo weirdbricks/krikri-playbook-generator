@@ -174,6 +174,86 @@ module KrikriPlaybookGenerator
       assert_includes(%w[absent present latest], state.as_s) if state
     end
 
+    it "never samples a destructive enum member while a constructive one exists" do
+      (1..40).each do |seed|
+        Generator.new(seed, 0.0).generate(apt_schema, 5).each do |task|
+          next unless state = task.args["state"]?
+
+          assert_equal("present", state.as_s, "seed #{seed}: #{task.args}")
+          assert_equal(ChoiceSource::Constructive, task.choice_sources["state"])
+        end
+      end
+    end
+
+    it "prefers a documented enum default over the constructive member" do
+      schema = ModuleSchema.new("defaulted_enum", "ansible.builtin")
+      schema.options["state"] = OptionSchema.new("state", "str", required: true,
+        choices: %w[touch directory file], default: JSON.parse(%q("directory")))
+
+      Generator.new(3, 0.0).generate(schema, 20).each do |task|
+        assert_equal("directory", task.args["state"].as_s)
+        assert_equal(ChoiceSource::Default, task.choice_sources["state"])
+      end
+    end
+
+    it "avoids destructive members even when none is constructive" do
+      schema = ModuleSchema.new("odd_enum", "ansible.builtin")
+      schema.options["state"] = OptionSchema.new("state", "str", required: true,
+        choices: %w[absent removed ephemeral])
+
+      Generator.new(5, 0.0).generate(schema, 20).each do |task|
+        assert_equal("ephemeral", task.args["state"].as_s)
+        assert_equal(ChoiceSource::Random, task.choice_sources["state"])
+      end
+    end
+
+    it "samples the choices when every member is destructive" do
+      schema = ModuleSchema.new("teardown_enum", "ansible.builtin")
+      schema.options["state"] = OptionSchema.new("state", "str", required: true,
+        choices: %w[absent purged])
+
+      Generator.new(7, 0.0).generate(schema, 20).each do |task|
+        assert_includes(%w[absent purged], task.args["state"].as_s)
+        assert_equal(ChoiceSource::Random, task.choice_sources["state"])
+      end
+    end
+
+    it "prefers a constructive member inside an override's choice pool" do
+      schema = ModuleSchema.new("file_like", "ansible.builtin")
+      schema.options["path"] = OptionSchema.new("path", "path", required: true)
+      schema.options["state"] = OptionSchema.new("state", "str", choices: %w[absent directory file hard link touch])
+
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            file_like:
+              state: {choices: [touch, directory, absent]}
+              always: [state]
+        YAML
+
+      Generator.new(11, 0.0, ChaosKind.values, overrides).generate(schema, 20).each do |task|
+        assert_includes(%w[touch directory], task.args["state"].as_s)
+        assert_equal(ChoiceSource::Constructive, task.choice_sources["state"])
+      end
+    end
+
+    it "records an override source and forgets sources for chaos-mutated slots" do
+      baseline = Generator.new(13, 0.0).generate(copy_schema, 1).first
+      assert_equal(ChoiceSource::Override, baseline.choice_sources["mode"])
+
+      mutated = Generator.new(13, 100.0, [ChaosKind::WrongType]).generate(copy_schema, 1).first
+      mutated.mutations.each { |(name, _)| refute(mutated.choice_sources.has_key?(name)) }
+    end
+
+    it "never asks zfs to destroy state in a happy path" do
+      schema = SchemaScanner.new(["community.general.zfs"]).scan.first
+      Generator.new(7, 0.0).generate(schema, 30).each do |task|
+        next unless state = task.args["state"]?
+
+        assert_equal("present", state.as_s, "zfs happy path destroy: #{task.args}")
+        assert_equal(ChoiceSource::Constructive, task.choice_sources["state"])
+      end
+    end
+
     it "points path-typed options at pre-seeded fixture or work paths only" do
       Generator.new(3, 0.0).generate(copy_schema, 30).each do |task|
         {"src" => Fixtures::SOURCE_FILES, "dest" => Fixtures::DEST_PATHS}.each do |name, allowed|

@@ -59,7 +59,18 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `literal_pool`, `empty_dict`, `exclude`, plus module-level `always`,
   `free_form`, `require_one_of`, `expect_failure` and `not_applicable`),
   `choices` are respected, ints stay in sane
-  ranges (0–100). After value assignment, a fill never introduces a
+  ranges (0–100). An enum option never samples its destructive members
+  while a working one exists: the documented default wins when it is a
+  choice, then a constructive member (`present`, `started`, `mounted`,
+  `enabled`, `running`, `latest`, `installed`, `directory`, `touch`), then
+  any member that is not destructive (`absent`, `stopped`, `unmounted`,
+  `disabled`, `purged`, `removed`, `uninstalled`), and only a module whose
+  every choice tears state down is sampled uniformly — so a happy path no
+  longer runs `state: absent` half the time. Chaos is untouched
+  (`BadChoice` still picks any member). Where each argument's value came
+  from (`default`/`constructive`/`override`/`random`) is recorded per task
+  in the playbook sidecar as `choice_sources`, minus the slots a chaos
+  mutation replaced. After value assignment, a fill never introduces a
   second member of a `mutually_exclusive` group (Ansible validates that
   last, so `addable?` checks it and a final pass enforces it), and the
   baseline *satisfies*
@@ -135,12 +146,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   the multi-task interaction fuzzing the proposal deferred to v2. Each
   `<n>-<module>-happy|chaos.yml` (v2
   names `<n>-multi-<first module>-happy|chaos.yml`) gets a sibling
-  `<n>-...meta.json` (module/collection/chaos?/mutations) since the
+  `<n>-...meta.json` (module/collection/chaos?/mutations/choice_sources) since the
   playbook YAML alone doesn't say which slots were mutated or how; for v2
   the sidecar keeps the FIRST task's module as top-level `module` (runner
   profile selection and Triage keep working unchanged), aggregates all
   tasks' mutations with `t<i>:` prefixes, and adds a `modules` array with
-  each task's own module/chaos/mutations/wiring — `Triage` reads this back.
+  each task's own module/chaos/mutations/choice_sources/wiring — `Triage`
+  reads this back.
   The playbook YAML is rendered by `PlaybookBuilder` itself instead of
   Crystal's `YAML::Any#to_yaml`, which puts a sequence item at the same
   column as its key (`tasks:` followed by `- name:`), something ansible-lint
@@ -517,7 +529,8 @@ loop wiring, determinism, and the two ArgumentError guards).
 YAML back with `YAML.parse` and the sidecar with `JSON.parse` rather than
 string-matching the file, including the v2 shape (register names,
 when/loop/notify wiring, the conditional handlers section, the sidecar's
-aggregated `t<i>:` mutations and per-task `modules` array) and writes
+aggregated `t<i>:` mutations and per-task `modules` array, each task's
+`choice_sources`) and writes
 the generator's seed as a first-line comment when one is passed (the
 random-by-default seed needs the file itself to carry it). Two specs guard
 the lint-clean rendering: every play/task name starts uppercase, and a
@@ -544,7 +557,10 @@ itself exercises live (verified manually; no spec drives the full CLI
 chain end to end yet). `masks_spec.cr` unit-tests the mask list, the
 LCS diff and signature stability. `generator_spec.cr` also covers the
 Jinja kind (the templated value must be equivalent to the baseline
-value), the `empty_dict` override and the mutually-exclusive-safe fills.
+value), the `empty_dict` override, the mutually-exclusive-safe fills, and
+the enum choice preference (documented default, then constructive, never
+destructive while something else exists, plus the recorded
+`choice_sources`).
 `podman_backend_spec.cr` provisions BOTH profiles in its regression case
 and asserts a Debian playbook still runs on the Debian image after the rpm
 template was provisioned last (apt-get exists only there).

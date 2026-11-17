@@ -214,8 +214,15 @@ module KrikriPlaybookGenerator
               end
             end
           end
+          json.field "choice_sources" do
+            json.object { choice_sources_json(json, task) }
+          end
         end
       end
+    end
+
+    private def choice_sources_json(json : JSON::Builder, task : GeneratedTask) : Nil
+      task.choice_sources.each { |name, source| json.field name, source.label }
     end
 
     private def write_scenario(tasks : Array(GeneratedTask), index : Int32) : String
@@ -305,6 +312,9 @@ module KrikriPlaybookGenerator
                         end
                       end
                     end
+                  end
+                  json.field "choice_sources" do
+                    json.object { choice_sources_json(json, task) }
                   end
                   json.field "wiring", wiring_descriptions(task)
                 end

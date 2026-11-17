@@ -119,6 +119,20 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "records where each happy-path argument's value came from" do
+      dir = File.tempname("kpg-spec")
+      task = GeneratedTask.new("apt", "ansible.builtin",
+        {"name" => YAML::Any.new([YAML::Any.new("nginx")]), "state" => YAML::Any.new("present")},
+        choice_sources: {"state" => ChoiceSource::Constructive, "name" => ChoiceSource::Random})
+      path = PlaybookBuilder.new(dir).build([task]).first
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+
+      assert_equal("constructive", meta["choice_sources"]["state"].as_s)
+      assert_equal("random", meta["choice_sources"]["name"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")
@@ -133,7 +147,8 @@ module KrikriPlaybookGenerator
 
     describe "multi-task scenarios (v2)" do
       def scenario : Array(GeneratedTask)
-        first = GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new(Fixtures::SOURCE_FILES.first)})
+        first = GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new(Fixtures::SOURCE_FILES.first)},
+          choice_sources: {"path" => ChoiceSource::Random})
         second = GeneratedTask.new("copy", "ansible.builtin",
           {"src" => YAML::Any.new("{{ item }}"), "dest" => YAML::Any.new(Fixtures::DEST_PATHS.first)},
           [{"mode", ChaosKind::BadChoice}], loop_option: "src", loop_items: Fixtures::SOURCE_FILES,
@@ -235,6 +250,7 @@ module KrikriPlaybookGenerator
         assert_equal("copy", modules[1]["module"].as_s)
         assert_equal(true, modules[1]["chaos"].as_bool)
         assert_equal("mode", modules[1]["mutations"][0]["option"].as_s)
+        assert_equal("random", modules[0]["choice_sources"]["path"].as_s)
         assert_empty(modules[0]["wiring"].as_a)
         assert_equal("loop:src", modules[1]["wiring"][0].as_s)
         assert_equal("notify:#{KrikriPlaybookGenerator::HANDLER_NAME}", modules[1]["wiring"][1].as_s)
