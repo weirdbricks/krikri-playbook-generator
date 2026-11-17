@@ -32,7 +32,7 @@ module KrikriPlaybookGenerator
     end
 
     def label : String
-      to_s.downcase
+      to_s.gsub(/([a-z])([A-Z])/, "\\1-\\2").downcase
     end
   end
 

@@ -113,8 +113,10 @@ module KrikriPlaybookGenerator
       handlers = tasks.map { handler_sampler.sample }
       retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
       retries = tasks.map { retry_sampler.sample }
+      include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
+      includes = tasks.map { include_sampler.sample }
       playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-        opts.gather_facts?).build(tasks)
+        opts.gather_facts?, includes).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -143,8 +145,10 @@ module KrikriPlaybookGenerator
       handlers = tasks.map { handler_sampler.sample }
       retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
       retries = tasks.map { retry_sampler.sample }
+      include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
+      includes = tasks.map { include_sampler.sample }
       return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-        opts.gather_facts?).build(tasks)
+        opts.gather_facts?, includes).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -162,9 +166,12 @@ module KrikriPlaybookGenerator
     handlers = scenarios.map { handler_sampler.sample }
     retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
     retries = scenarios.map { retry_sampler.sample }
+    include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
+    includes = scenarios.map { include_sampler.sample }
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings,
       block_shapes: [] of BlockShape, handler_shapes: handlers,
-      retry_shapes: retries, gather_facts: opts.gather_facts?).build_scenarios(scenarios)
+      retry_shapes: retries, gather_facts: opts.gather_facts?,
+      include_shapes: includes).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32
@@ -202,11 +209,13 @@ module KrikriPlaybookGenerator
 
   # `run` accepts either a directory (the whole generated batch, the
   # previous behavior) or a single playbook file path - the copy-paste
-  # repro form Triage prints for every finding.
+  # repro form Triage prints for every finding. Only top-level playbooks
+  # are batch members: the include-shape axis writes its child task files
+  # into sibling `<name>-inc/` directories, which are not playbooks.
   private def self.playbook_paths_for_run(opts : Options) : Array(String)
     return [opts.out_dir] if File.file?(opts.out_dir)
 
-    Dir.glob("#{opts.out_dir}/**/*.yml")
+    Dir.glob("#{opts.out_dir}/*.yml")
   end
 
   private def self.divergences?(results : Array(Runner::PlaybookResult)) : Bool

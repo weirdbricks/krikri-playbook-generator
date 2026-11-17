@@ -66,6 +66,21 @@ module KrikriPlaybookGenerator
     # exists - the actions read it at play-parse/run time, and seeding it
     # here keeps the seeding out of the compared output.
     TASKS_FILE = "#{FIXTURE_ROOT}/tasks.yml"
+    # A second task file, so a looped include_tasks iterates more than once.
+    TASKS_FILE_2 = "#{FIXTURE_ROOT}/tasks2.yml"
+
+    # A task file and its playbook-relative child: the include-forms axis
+    # copies this directory next to the generated playbook, so the
+    # playbook-relative include (`<basename>-inc/a.yml`, which itself
+    # includes `b.yml` relatively) exercises the same resolution ansible
+    # and krikri must agree on.
+    RELATIVE_DIR   = "#{FIXTURE_ROOT}/inc"
+    RELATIVE_ENTRY = "#{RELATIVE_DIR}/a.yml"
+    RELATIVE_CHILD = "#{RELATIVE_DIR}/b.yml"
+
+    # A whole play for the import_playbook form (the directive is
+    # play-level, so the generated playbook gets a second top-level item).
+    CHILD_PLAYBOOK = "#{FIXTURE_ROOT}/child-play.yml"
 
     # A real armored OpenPGP public key: apt_key's alternatives (a random
     # id, a URL) all fail before the module logic runs, and rpm_key needs a
@@ -90,7 +105,11 @@ module KrikriPlaybookGenerator
     # is handed - the same value resolves identically on both sides. Same
     # reasoning as TASKS_FILE above.
     ROLE_NAME = "kpgrole"
-    ROLE_PATH = "#{FIXTURE_ROOT}/roles/#{ROLE_NAME}"
+    # The role's own defaults/vars keys; the include-forms axis overrides
+    # them with task-level `vars:` to compare precedence.
+    ROLE_DEFAULT_VAR = "kpg_role_default"
+    ROLE_VARS_VAR    = "kpg_role_var"
+    ROLE_PATH        = "#{FIXTURE_ROOT}/roles/#{ROLE_NAME}"
 
     SOURCE_DIRS = [
       "#{FIXTURE_ROOT}/dir",
@@ -258,17 +277,62 @@ module KrikriPlaybookGenerator
         ansible.builtin.debug:
           msg: kpg-fixture-task
       KPG_TASKS_EOF
+      cat > #{TASKS_FILE_2} <<'KPG_TASKS2_EOF'
+      ---
+      - name: kpg fixture task two
+        ansible.builtin.debug:
+          msg: kpg-fixture-task-two
+      KPG_TASKS2_EOF
+      mkdir -p #{RELATIVE_DIR}
+      cat > #{RELATIVE_ENTRY} <<'KPG_REL_A_EOF'
+      ---
+      - name: kpg relative include a
+        ansible.builtin.debug:
+          msg: kpg-relative-a
+      - name: kpg relative include b
+        ansible.builtin.include_tasks: b.yml
+      KPG_REL_A_EOF
+      cat > #{RELATIVE_CHILD} <<'KPG_REL_B_EOF'
+      ---
+      - name: kpg relative include b task
+        ansible.builtin.debug:
+          msg: kpg-relative-b
+      KPG_REL_B_EOF
+      cat > #{CHILD_PLAYBOOK} <<'KPG_CHILD_PLAY_EOF'
+      ---
+      - name: Kpg imported play
+        hosts: kpg_targets
+        gather_facts: false
+        tasks:
+          - name: Kpg imported task
+            ansible.builtin.debug:
+              msg: kpg-imported-play
+      KPG_CHILD_PLAY_EOF
       mkdir -p #{ROLE_PATH}/tasks #{ROLE_PATH}/defaults #{ROLE_PATH}/vars #{ROLE_PATH}/handlers
       cat > #{ROLE_PATH}/tasks/main.yml <<'KPG_ROLE_TASKS_EOF'
       - name: kpg fixture role task
         ansible.builtin.debug:
-          msg: kpg-fixture-role
+          msg: "{{ kpg_role_default }}-{{ kpg_role_var }}"
+      - name: kpg fixture role include
+        ansible.builtin.include_tasks: inner.yml
       KPG_ROLE_TASKS_EOF
+      cat > #{ROLE_PATH}/tasks/inner.yml <<'KPG_ROLE_INNER_EOF'
+      - name: kpg fixture role inner task
+        ansible.builtin.debug:
+          msg: kpg-fixture-role-inner
+      - name: kpg fixture role nested include
+        ansible.builtin.include_tasks: nested.yml
+      KPG_ROLE_INNER_EOF
+      cat > #{ROLE_PATH}/tasks/nested.yml <<'KPG_ROLE_NESTED_EOF'
+      - name: kpg fixture role nested task
+        ansible.builtin.debug:
+          msg: kpg-fixture-role-nested
+      KPG_ROLE_NESTED_EOF
       cat > #{ROLE_PATH}/defaults/main.yml <<'KPG_ROLE_DEFAULTS_EOF'
-      kpg_role_default: one
+      #{ROLE_DEFAULT_VAR}: one
       KPG_ROLE_DEFAULTS_EOF
       cat > #{ROLE_PATH}/vars/main.yml <<'KPG_ROLE_VARS_EOF'
-      kpg_role_var: one
+      #{ROLE_VARS_VAR}: one
       KPG_ROLE_VARS_EOF
       cat > #{ROLE_PATH}/handlers/main.yml <<'KPG_ROLE_HANDLERS_EOF'
       - name: kpg fixture role handler

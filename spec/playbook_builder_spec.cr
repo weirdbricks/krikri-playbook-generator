@@ -485,6 +485,91 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "writes a playbook-relative include layout beside the playbook" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::Relative])
+        .build([sample_task]).first
+
+      basename = File.basename(path, ".yml")
+      layout = PlaybookBuilder.include_dir(path)
+      assert File.file?(File.join(layout, "a.yml"))
+      assert File.file?(File.join(layout, "b.yml"))
+      assert(File.read(File.join(layout, "a.yml")).includes?("include_tasks: b.yml"))
+
+      body = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.last
+      assert_equal("#{basename}-inc/a.yml", body["ansible.builtin.include_tasks"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "includes a role with task-level vars and its inner task file" do
+      dir = File.tempname("kpg-spec")
+      vars = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::RoleVars])
+        .build([sample_task]).first
+      body = YAML.parse(File.read(vars)).as_a.first["tasks"].as_a.last
+      assert_equal(Fixtures::ROLE_PATH, body["ansible.builtin.include_role"]["name"].as_s)
+      assert_equal("two", body["vars"][Fixtures::ROLE_DEFAULT_VAR].as_s)
+      assert_equal("three", body["vars"][Fixtures::ROLE_VARS_VAR].as_s)
+
+      inner = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::RoleInner])
+        .build([sample_task]).first
+      inner_body = YAML.parse(File.read(inner)).as_a.first["tasks"].as_a.last
+      assert_equal("inner", inner_body["ansible.builtin.include_role"]["tasks_from"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "loops include_tasks over the fixture task files and include_role over the role" do
+      dir = File.tempname("kpg-spec")
+      tasks = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::LoopTasks])
+        .build([sample_task]).first
+      tasks_body = YAML.parse(File.read(tasks)).as_a.first["tasks"].as_a.last
+      assert_equal("{{ item }}", tasks_body["ansible.builtin.include_tasks"].as_s)
+      assert_equal([Fixtures::TASKS_FILE, Fixtures::TASKS_FILE_2],
+        tasks_body["loop"].as_a.map(&.as_s))
+
+      role = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::LoopRole])
+        .build([sample_task]).first
+      role_body = YAML.parse(File.read(role)).as_a.first["tasks"].as_a.last
+      assert_equal("{{ item }}", role_body["ansible.builtin.include_role"]["name"].as_s)
+      assert_equal([Fixtures::ROLE_PATH], role_body["loop"].as_a.map(&.as_s))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "adds a top-level import_playbook item for that shape and records it" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::ImportPlaybook])
+        .build([sample_task]).first
+
+      document = YAML.parse(File.read(path)).as_a
+      assert_equal(2, document.size)
+      assert_equal(Fixtures::CHILD_PLAYBOOK, document[1]["ansible.builtin.import_playbook"].as_s)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("import-playbook", meta["includes"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "uses the short import_role spelling for that shape" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [] of RetryShape, false, [IncludeShape::ImportRole])
+        .build([sample_task]).first
+
+      body = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.last
+      assert_equal(Fixtures::ROLE_PATH, body["import_role"]["name"].as_s)
+      assert_equal("inner", body["import_role"]["tasks_from"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

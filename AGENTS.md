@@ -220,6 +220,23 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   a `set_fact` retried with `delegate_to` + `delegate_facts` followed by a
   probe that reads the fact out of the delegate's hostvars. Recorded as
   `retries` in the sidecar.
+- `src/krikri_playbook_generator/include_shapes.cr` — `IncludeShape`,
+  `IncludeShapes` and `IncludeShapeSampler`. **Implemented**: the
+  include/import axis (`--includes relative,role-vars,role-inner,loop-tasks,
+  loop-role,import-playbook,import-role`, `none` off), one shape per
+  playbook. `relative` writes `<playbook>-inc/a.yml` (which includes
+  `b.yml` relatively) beside the playbook and includes it by a
+  playbook-relative path, so every backend copies that sibling directory
+  along (podman `cp`, microVM/Atlantic `scp -r`); `role-vars` includes the
+  fixture role with task-level `vars:` (the role's debug prints its
+  defaults/vars, so precedence is observable); `role-inner` uses
+  `tasks_from: inner`, and the role's own tasks include `inner.yml` and
+  `nested.yml`, so role-relative includes are exercised; `loop-tasks`
+  loops `include_tasks` over two fixture task files; `loop-role` loops
+  `include_role`; `import-playbook` adds a second top-level
+  `ansible.builtin.import_playbook` item pointing at
+  `Fixtures::CHILD_PLAYBOOK`; `import-role` uses the short `import_role`
+  spelling. Recorded as `includes` in the sidecar.
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -637,7 +654,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   (`none` disables it); `--delegation off|literal|templated|both` is the
   delegate_to axis; `--blocks LIST` wraps single-task playbooks in a
   block shape; `--handlers LIST` picks the handler shape; `--retries LIST`
-  picks the retry shape. All five are generate-only.
+  picks the retry shape; `--includes LIST` picks the include/import form.
+  All six are generate-only.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -853,7 +871,7 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
 `play_keywords_spec.cr`, `block_shapes_spec.cr`, `handler_shapes_spec.cr`,
-`retry_shapes_spec.cr`, `run_context_spec.cr`,
+`retry_shapes_spec.cr`, `include_shapes_spec.cr`, `run_context_spec.cr`,
 `playbook_builder_spec.cr`,
 `fixtures_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
 `podman_backend_spec.cr`,
@@ -919,11 +937,12 @@ engine outputs name `target2`, the recap has the host, the row records
 and landing in results.jsonl. `fixtures_spec.cr` covers the
 role/HTTP fixtures plus `IDENTITY_SCRIPT`, `ownership_command`, the
 unusual-mode destinations/directories, `RESTORE_UNUSUAL_SCRIPT`'s
-idempotency and the retry fixtures' attempt counting. `play_keywords_spec.cr` covers the kind list, valid vs
+idempotency, the retry fixtures' attempt counting and the include/import
+fixtures. `play_keywords_spec.cr` covers the kind list, valid vs
 chaos value pools, determinism, env-only `forks` and the 50/50 env door;
 `block_shapes_spec.cr`, `handler_shapes_spec.cr` and
-`retry_shapes_spec.cr` cover the shape lists, parsing and the seeded
-samplers, and `playbook_builder_spec.cr`
+`retry_shapes_spec.cr` and `include_shapes_spec.cr` cover the shape
+lists, parsing and the seeded samplers, and `playbook_builder_spec.cr`
 covers each shape's YAML (handler failure/ignoring/delegation/chain, the
 notifier task, the v2 application, and no handlers when off)
 (forced failure, rescue/always bodies, the block gate and its play var,

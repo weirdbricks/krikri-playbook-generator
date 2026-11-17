@@ -4,6 +4,7 @@ require "./play_keywords"
 require "./block_shapes"
 require "./handler_shapes"
 require "./retry_shapes"
+require "./include_shapes"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -28,6 +29,12 @@ module KrikriPlaybookGenerator
 
     HANDLER_MESSAGE = "kpg multi-task handler ran"
 
+    # The sibling directory a playbook-relative include shape writes next to
+    # the playbook; every backend copies it along with the playbook.
+    def self.include_dir(playbook_path : String) : String
+      playbook_path.sub(/\.yml\z/, "") + "-inc"
+    end
+
     # The forced-failure task a block shape adds: a real command that exits
     # non-zero, so the failure path is deterministic and comes from the
     # playbook's own structure rather than from a chaos mutation.
@@ -41,7 +48,8 @@ module KrikriPlaybookGenerator
                    @block_shapes : Array(BlockShape) = [] of BlockShape,
                    @handler_shapes : Array(HandlerShape) = [] of HandlerShape,
                    @retry_shapes : Array(RetryShape) = [] of RetryShape,
-                   @gather_facts : Bool = false)
+                   @gather_facts : Bool = false,
+                   @include_shapes : Array(IncludeShape) = [] of IncludeShape)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -189,13 +197,14 @@ module KrikriPlaybookGenerator
       playbook_path = File.join(@out_dir, "#{basename}.yml")
       meta_path = File.join(@out_dir, "#{basename}.meta.json")
 
-      File.write(playbook_path, "#{seed_comment}#{playbook_yaml(task, index)}")
+      write_include_layout(basename, @include_shapes[index]? || IncludeShape::Off)
+      File.write(playbook_path, "#{seed_comment}#{playbook_yaml(task, index, basename)}")
       File.write(meta_path, metadata_json(task, playbook_path, index))
 
       playbook_path
     end
 
-    private def playbook_yaml(task : GeneratedTask, index : Int32) : String
+    private def playbook_yaml(task : GeneratedTask, index : Int32, basename : String) : String
       args = {} of YAML::Any => YAML::Any
       task.args.each { |name, value| args[YAML::Any.new(name)] = value }
 
@@ -217,10 +226,16 @@ module KrikriPlaybookGenerator
       bodies = block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None)
       bodies << notifier_body unless shape.off?
       bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
+      include_shape = @include_shapes[index]? || IncludeShape::Off
+      bodies.concat(include_task_bodies(include_shape, basename))
       play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
       apply_handlers(play, shape)
 
-      yaml_document(YAML::Any.new([YAML::Any.new(play)]))
+      document = [YAML::Any.new(play)]
+      if include_shape.import_playbook?
+        document << YAML::Any.new({YAML::Any.new("ansible.builtin.import_playbook") => YAML::Any.new(Fixtures::CHILD_PLAYBOOK)})
+      end
+      yaml_document(YAML::Any.new(document))
     end
 
     private def metadata_json(task : GeneratedTask, playbook_path : String, index : Int32) : String
@@ -249,6 +264,7 @@ module KrikriPlaybookGenerator
           json.field "block", (@block_shapes[index]? || BlockShape::None).label
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
+          json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
         end
       end
     end
@@ -263,13 +279,14 @@ module KrikriPlaybookGenerator
       playbook_path = File.join(@out_dir, "#{basename}.yml")
       meta_path = File.join(@out_dir, "#{basename}.meta.json")
 
-      File.write(playbook_path, "#{seed_comment}#{scenario_yaml(tasks, index)}")
+      write_include_layout(basename, @include_shapes[index]? || IncludeShape::Off)
+      File.write(playbook_path, "#{seed_comment}#{scenario_yaml(tasks, index, basename)}")
       File.write(meta_path, scenario_metadata_json(tasks, playbook_path, index))
 
       playbook_path
     end
 
-    private def scenario_yaml(tasks : Array(GeneratedTask), index : Int32) : String
+    private def scenario_yaml(tasks : Array(GeneratedTask), index : Int32, basename : String) : String
       task_bodies = tasks.map_with_index do |task, task_index|
         body = {} of YAML::Any => YAML::Any
         body[YAML::Any.new("name")] = YAML::Any.new(named("#{task.module_name} ##{index}.#{task_index}"))
@@ -292,17 +309,12 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
-      if tasks.any? { |task| task.delegate_to.try(&.includes?("{{")) }
-        play[YAML::Any.new("vars")] = YAML::Any.new(
-          {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
-      end
-      shape = @handler_shapes[index]? || HandlerShape::Off
-      task_bodies << notifier_body unless shape.off?
-      task_bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
-      play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
-      apply_scenario_handlers(play, tasks, shape)
+      apply_delegate_vars(play, tasks)
+      apply_scenario_conditions(play, task_bodies, tasks, index, basename)
 
-      yaml_document(YAML::Any.new([YAML::Any.new(play)]))
+      document = [YAML::Any.new(play)]
+      document.concat(import_playbook_items(@include_shapes[index]? || IncludeShape::Off))
+      yaml_document(YAML::Any.new(document))
     end
 
     private def scenario_args(task : GeneratedTask) : YAML::Any
@@ -322,6 +334,7 @@ module KrikriPlaybookGenerator
           play_setting_json(json, @play_settings[index]?)
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
+          json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
           json.field "mutations" do
             json.array do
               tasks.each_with_index do |task, task_index|
@@ -460,6 +473,119 @@ module KrikriPlaybookGenerator
       args[YAML::Any.new("msg")] = YAML::Any.new(message)
       body[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(args)
       YAML::Any.new(body)
+    end
+
+    # An include/import shape as extra play tasks. `import_playbook` is
+    # play-level, so it is added to the document by the caller instead.
+    private def include_task_bodies(shape : IncludeShape, basename : String) : Array(YAML::Any)
+      case shape
+      when .relative?
+        [include_tasks_body("#{basename}-inc/a.yml")]
+      when .role_vars?
+        [include_role_body(Fixtures::ROLE_PATH,
+          vars: {Fixtures::ROLE_DEFAULT_VAR => "two", Fixtures::ROLE_VARS_VAR => "three"})]
+      when .role_inner?
+        [include_role_body(Fixtures::ROLE_PATH, tasks_from: "inner")]
+      when .loop_tasks?
+        [include_tasks_body("{{ item }}", loop: [Fixtures::TASKS_FILE, Fixtures::TASKS_FILE_2])]
+      when .loop_role?
+        [include_role_body("{{ item }}", loop: [Fixtures::ROLE_PATH])]
+      when .import_role?
+        [import_role_body]
+      else
+        [] of YAML::Any
+      end
+    end
+
+    private def include_tasks_body(file : String, loop : Array(String)? = nil) : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg include tasks")
+      body[YAML::Any.new("ansible.builtin.include_tasks")] = YAML::Any.new(file)
+      body[YAML::Any.new("loop")] = YAML::Any.new(loop.map { |item| YAML::Any.new(item) }) if loop
+      YAML::Any.new(body)
+    end
+
+    private def include_role_body(name : String, tasks_from : String? = nil,
+                                  vars : Hash(String, String)? = nil,
+                                  loop : Array(String)? = nil) : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg include role")
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("name")] = YAML::Any.new(name)
+      args[YAML::Any.new("tasks_from")] = YAML::Any.new(tasks_from) if tasks_from
+      body[YAML::Any.new("ansible.builtin.include_role")] = YAML::Any.new(args)
+      if vars
+        body[YAML::Any.new("vars")] = YAML::Any.new(
+          vars.to_h { |key, value| {YAML::Any.new(key), YAML::Any.new(value)} })
+      end
+      body[YAML::Any.new("loop")] = YAML::Any.new(loop.map { |item| YAML::Any.new(item) }) if loop
+      YAML::Any.new(body)
+    end
+
+    private def import_role_body : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg import role")
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("name")] = YAML::Any.new(Fixtures::ROLE_PATH)
+      args[YAML::Any.new("tasks_from")] = YAML::Any.new("inner")
+      body[YAML::Any.new("import_role")] = YAML::Any.new(args)
+      YAML::Any.new(body)
+    end
+
+    # The v2 play's non-task wiring: the shaped notifier/retry/include
+    # tasks and the handler section.
+    private def apply_scenario_conditions(play : Hash(YAML::Any, YAML::Any),
+                                          task_bodies : Array(YAML::Any),
+                                          tasks : Array(GeneratedTask), index : Int32,
+                                          basename : String) : Nil
+      shape = @handler_shapes[index]? || HandlerShape::Off
+      task_bodies << notifier_body unless shape.off?
+      task_bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
+      task_bodies.concat(include_task_bodies(@include_shapes[index]? || IncludeShape::Off, basename))
+      play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
+      apply_scenario_handlers(play, tasks, shape)
+    end
+
+    # The delegate play var when any scenario task uses the templated
+    # delegate_to spelling.
+    private def apply_delegate_vars(play : Hash(YAML::Any, YAML::Any),
+                                    tasks : Array(GeneratedTask)) : Nil
+      return unless tasks.any? { |task| task.delegate_to.try(&.includes?("{{")) }
+
+      play[YAML::Any.new("vars")] = YAML::Any.new(
+        {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
+    end
+
+    # The play-level `import_playbook` directive needs a second top-level
+    # item, which a task list cannot express.
+    private def import_playbook_items(shape : IncludeShape) : Array(YAML::Any)
+      return [] of YAML::Any unless shape.import_playbook?
+
+      [YAML::Any.new({YAML::Any.new("ansible.builtin.import_playbook") => YAML::Any.new(Fixtures::CHILD_PLAYBOOK)})]
+    end
+
+    # The playbook-relative include needs its child files next to the
+    # generated playbook; every backend copies the sibling directory along
+    # with the playbook.
+    private def write_include_layout(basename : String, shape : IncludeShape) : Nil
+      return unless shape.relative?
+
+      dir = PlaybookBuilder.include_dir(File.join(@out_dir, "#{basename}.yml"))
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.yml"), <<-YAML)
+        ---
+        - name: Kpg relative include a
+          ansible.builtin.debug:
+            msg: kpg-relative-a
+        - name: Kpg relative include b
+          ansible.builtin.include_tasks: b.yml
+        YAML
+      File.write(File.join(dir, "b.yml"), <<-YAML)
+        ---
+        - name: Kpg relative include b task
+          ansible.builtin.debug:
+            msg: kpg-relative-b
+        YAML
     end
 
     # The retry shapes' play tasks. The command fixtures are deterministic:

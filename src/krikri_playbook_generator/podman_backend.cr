@@ -738,6 +738,13 @@ module KrikriPlaybookGenerator
       basename = File.basename(playbook_path)
       result = Cmd.run("podman", ["cp", playbook_path, "#{name}:/work/#{basename}"], timeout: 120.0)
       raise PodmanProvisionError.new("podman cp #{basename.inspect} into #{name} failed: #{result.stderr}") unless Cmd.success?(result)
+
+      # A playbook-relative include needs its child files beside it.
+      include_dir = PlaybookBuilder.include_dir(playbook_path)
+      return unless Dir.exists?(include_dir)
+
+      copied = Cmd.run("podman", ["cp", include_dir, "#{name}:/work/"], timeout: 120.0)
+      raise PodmanProvisionError.new("podman cp #{File.basename(include_dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
     end
 
     private def exec_engine(name : String, engine_cmd : String, playbook_path : String,

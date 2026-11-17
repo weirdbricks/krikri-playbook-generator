@@ -5,6 +5,7 @@ require "./play_keywords"
 require "./block_shapes"
 require "./handler_shapes"
 require "./retry_shapes"
+require "./include_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -69,6 +70,8 @@ module KrikriPlaybookGenerator
     property? retries_given : Bool
     property limits : Array(String)
     property? limits_given : Bool
+    property includes : Array(String)
+    property? includes_given : Bool
     property? gather_facts : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
@@ -101,6 +104,7 @@ module KrikriPlaybookGenerator
                    @handlers = HandlerShapes::KINDS, @handlers_given = false,
                    @retries = RetryShapes::KINDS, @retries_given = false,
                    @limits = ["off"], @limits_given = false, @gather_facts = false,
+                   @includes = IncludeShapes::KINDS, @includes_given = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -201,6 +205,10 @@ module KrikriPlaybookGenerator
           opts.limits_given = true
         end
         dsl.on("--gather-facts", "generate plays with gather_facts: true, so implicit fact gathering is exercised (pair with --limit)") { opts.gather_facts = true }
+        dsl.on("--includes LIST", "include/import forms: relative, role-vars, role-inner, loop-tasks, loop-role, import-playbook, import-role (comma-separated; `none` turns it off)") do |v|
+          opts.includes = parse_includes(v)
+          opts.includes_given = true
+        end
         dsl.on("--retries LIST", "retry shapes: retried, exhausted, delegated or delegated-fact (comma-separated; `none` turns it off)") do |v|
           opts.retries = parse_retries(v)
           opts.retries_given = true
@@ -380,6 +388,7 @@ module KrikriPlaybookGenerator
       check_block_target!(opts)
       check_handler_target!(opts)
       check_retry_target!(opts)
+      check_include_target!(opts)
       check_limit_target!(opts)
       return unless opts.supported_community?
 
@@ -446,6 +455,22 @@ module KrikriPlaybookGenerator
       if opts.gather_facts? && !opts.command.generate?
         raise InvalidOptionsError.new("--gather-facts is only valid with generate (the playbook carries gather_facts)")
       end
+    end
+
+    # Include forms are playbook structure, so generate-only.
+    private def self.check_include_target!(opts : Options) : Nil
+      return unless opts.includes_given?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new("--includes is only valid with generate (the playbook carries the include forms)")
+    end
+
+    private def self.parse_includes(value : String) : Array(String)
+      shapes = IncludeShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --includes value #{value.inspect} (expected: #{IncludeShapes::KINDS.join(", ")}, none)")
     end
 
     private def self.parse_limits(value : String) : Array(String)

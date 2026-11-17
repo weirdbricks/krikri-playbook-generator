@@ -882,6 +882,15 @@ module KrikriPlaybookGenerator
                              "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                              playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise MicrovmProvisionError.new("playbook upload to #{vm.ip} failed: #{copy.stderr}") unless copy.rc == 0
+      include_dir = PlaybookBuilder.include_dir(playbook_path)
+      if Dir.exists?(include_dir)
+        copied = Cmd.run("scp", ["-r", "-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
+                                 "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                                 include_dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
+        unless copied.rc == 0
+          raise MicrovmProvisionError.new("include upload to #{vm.ip} failed: #{copied.stderr}")
+        end
+      end
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
                                  HostInventory.render(hosts, include_unreachable) + "KPG_INVENTORY_EOF\n", 60.0)
       unless inventory.rc == 0

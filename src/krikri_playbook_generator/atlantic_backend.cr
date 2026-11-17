@@ -597,6 +597,12 @@ module KrikriPlaybookGenerator
       copy = Cmd.run("scp", ["-i", vm.ssh_key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                              playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise AtlanticProvisionError.new("playbook upload failed: #{copy.stderr}") unless copy.rc == 0
+      include_dir = PlaybookBuilder.include_dir(playbook_path)
+      if Dir.exists?(include_dir)
+        copied = Cmd.run("scp", ["-r", "-i", vm.ssh_key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+                                 "-o", "UserKnownHostsFile=/dev/null", include_dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
+        raise AtlanticProvisionError.new("include upload failed: #{copied.stderr}") unless copied.rc == 0
+      end
 
       env = @env_for.try(&.call(playbook_path)) || {} of String => String
       ansible = exec_engine(vm, "ansible-playbook", basename, env)

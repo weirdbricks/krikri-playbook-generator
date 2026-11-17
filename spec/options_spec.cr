@@ -542,6 +542,17 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--gather-facts"))
     end
 
+    it "parses the --includes axis and refuses unknown or non-generate use" do
+      assert_equal(%w[relative], Options.parse(["generate", "--includes", "relative"]).includes)
+      assert(Options.parse(["generate", "--includes", "none"]).includes.empty?)
+      assert_equal(IncludeShapes::KINDS, Options.parse(["generate"]).includes)
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--includes", "sometimes"]) }
+      assert((err.message || "").includes?("sometimes"))
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--includes", "relative"]) }
+      assert((err.message || "").includes?("generate"))
+    end
+
     it "allows only one host count on Atlantic (one VM per profile)" do
       opts = Options.parse(["run", "--run-on-atlantic", "--hosts", "2"])
       assert_equal([2], opts.hosts)

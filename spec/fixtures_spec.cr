@@ -152,6 +152,26 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "seeds the include/import fixtures (task files, nested role tasks, child play)" do
+      with_seeded_fixtures do |fixture_root|
+        [
+          Fixtures::TASKS_FILE_2,
+          Fixtures::RELATIVE_ENTRY,
+          Fixtures::RELATIVE_CHILD,
+          Fixtures::CHILD_PLAYBOOK,
+        ].each do |path|
+          local = path.sub(Fixtures::FIXTURE_ROOT, fixture_root)
+          assert File.file?(local), "#{path} was not seeded"
+          assert(YAML.parse(File.read(local)).as_a?, "#{path} is not a YAML sequence")
+        end
+
+        role_tasks = File.join(fixture_root, "roles", Fixtures::ROLE_NAME, "tasks")
+        %w[main inner nested].each do |name|
+          assert File.file?(File.join(role_tasks, "#{name}.yml")), "#{name}.yml missing"
+        end
+      end
+    end
+
     it "seeds the retry fixtures: the third run succeeds, the never-run does not" do
       with_seeded_fixtures do |fixture_root|
         work = File.join(fixture_root, "..", "work")
