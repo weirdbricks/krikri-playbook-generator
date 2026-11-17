@@ -323,6 +323,95 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "adds an always-changing notifier and a failing handler for the failing shape" do
+      dir = File.tempname("kpg-spec")
+      settings = [] of PlaySetting?
+      path = PlaybookBuilder.new(dir, nil, settings, [] of BlockShape, [HandlerShape::Failing])
+        .build([sample_task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      notifier = play["tasks"].as_a.last
+      assert_equal("Kpg notifier", notifier["name"].as_s)
+      assert_equal(true, notifier["changed_when"].as_bool)
+      assert_equal(KrikriPlaybookGenerator::HANDLER_NAME, notifier["notify"].as_s)
+
+      handler = play["handlers"].as_a.first
+      assert_equal("/bin/false", handler["ansible.builtin.command"]["cmd"].as_s)
+      assert_nil(handler["ignore_errors"]?)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("failing", meta["handlers"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "ignores the same failure in the ignoring shape" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape, [HandlerShape::Ignoring])
+        .build([sample_task]).first
+
+      handler = YAML.parse(File.read(path)).as_a.first["handlers"].as_a.first
+      assert_equal("/bin/false", handler["ansible.builtin.command"]["cmd"].as_s)
+      assert_equal(true, handler["ignore_errors"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "delegates the handler in the delegated shape" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape, [HandlerShape::Delegated])
+        .build([sample_task]).first
+
+      handler = YAML.parse(File.read(path)).as_a.first["handlers"].as_a.first
+      assert_equal("target2", handler["delegate_to"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "chains the first handler to a second one in the chained shape" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape, [HandlerShape::Chained])
+        .build([sample_task]).first
+
+      handlers = YAML.parse(File.read(path)).as_a.first["handlers"].as_a
+      assert_equal(2, handlers.size)
+      assert_equal(KrikriPlaybookGenerator::HANDLER_NAME, handlers[0]["name"].as_s)
+      assert_equal(KrikriPlaybookGenerator::SECOND_HANDLER_NAME, handlers[0]["notify"].as_s)
+      assert_equal(KrikriPlaybookGenerator::SECOND_HANDLER_NAME, handlers[1]["name"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "leaves handlers and the notifier out when the handler axis is off" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape, [HandlerShape::Off])
+        .build([sample_task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_equal(1, play["tasks"].as_a.size)
+      assert_nil(play["handlers"]?)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("off", meta["handlers"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "applies a handler shape to a v2 multi-task playbook too" do
+      dir = File.tempname("kpg-spec")
+      tasks = [GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")}),
+               GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new("/tmp/kpg-work/out1.txt")})]
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape, [HandlerShape::Chained])
+        .build_scenarios([tasks]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_equal(3, play["tasks"].as_a.size)
+      assert_equal("Kpg notifier", play["tasks"].as_a.last["name"].as_s)
+      assert_equal(2, play["handlers"].as_a.size)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("chained", meta["handlers"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

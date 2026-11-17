@@ -3,6 +3,7 @@ require "./run_mode"
 require "./run_context"
 require "./play_keywords"
 require "./block_shapes"
+require "./handler_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -61,6 +62,8 @@ module KrikriPlaybookGenerator
     property? delegation_given : Bool
     property blocks : Array(String)
     property? blocks_given : Bool
+    property handlers : Array(String)
+    property? handlers_given : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
@@ -89,6 +92,7 @@ module KrikriPlaybookGenerator
                    @play_keywords = PlayKeywords::KINDS, @play_keywords_given = false,
                    @delegation = DelegationMode::Both, @delegation_given = false,
                    @blocks = BlockShapes::KINDS, @blocks_given = false,
+                   @handlers = HandlerShapes::KINDS, @handlers_given = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -183,6 +187,10 @@ module KrikriPlaybookGenerator
         dsl.on("--delegation MODE", "delegate_to spelling for generated tasks: off, literal, templated (a play var) or both (default, drawn per task)") do |v|
           opts.delegation = parse_delegation(v)
           opts.delegation_given = true
+        end
+        dsl.on("--handlers LIST", "handler shapes: failing, ignoring, delegated or chained (comma-separated; `none` turns it off)") do |v|
+          opts.handlers = parse_handlers(v)
+          opts.handlers_given = true
         end
         dsl.on("--blocks LIST", "block shapes wrapping the generated task: rescue, always, skipped or undefined (comma-separated; `none` turns it off)") do |v|
           opts.blocks = parse_blocks(v)
@@ -335,6 +343,7 @@ module KrikriPlaybookGenerator
       check_play_keyword_target!(opts)
       check_delegation_target!(opts)
       check_block_target!(opts)
+      check_handler_target!(opts)
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
@@ -368,6 +377,22 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--blocks is only valid with generate (the playbook carries the block)")
+    end
+
+    # Handlers are playbook structure too, so generate-only.
+    private def self.check_handler_target!(opts : Options) : Nil
+      return unless opts.handlers_given?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new("--handlers is only valid with generate (the playbook carries the handlers)")
+    end
+
+    private def self.parse_handlers(value : String) : Array(String)
+      shapes = HandlerShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --handlers value #{value.inspect} (expected: #{HandlerShapes::KINDS.join(", ")}, none)")
     end
 
     private def self.parse_blocks(value : String) : Array(String)

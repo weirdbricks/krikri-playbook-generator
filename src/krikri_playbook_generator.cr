@@ -108,7 +108,9 @@ module KrikriPlaybookGenerator
       settings = tasks.map { |task| sampler.sample(task.chaos?) }
       block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
       shapes = tasks.map { block_sampler.sample }
-      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes).build(tasks)
+      handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
+      handlers = tasks.map { handler_sampler.sample }
+      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -133,7 +135,9 @@ module KrikriPlaybookGenerator
       settings = tasks.map { |task| sampler.sample(task.chaos?) }
       block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
       shapes = tasks.map { block_sampler.sample }
-      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes).build(tasks)
+      handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
+      handlers = tasks.map { handler_sampler.sample }
+      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -147,7 +151,10 @@ module KrikriPlaybookGenerator
     Log.info("generate", "building #{scenarios.size} playbook(s) into #{opts.out_dir}")
     sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
     settings = scenarios.map { |tasks| sampler.sample(tasks.any?(&.chaos?)) }
-    PlaybookBuilder.new(opts.out_dir, opts.seed, settings).build_scenarios(scenarios)
+    handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
+    handlers = scenarios.map { handler_sampler.sample }
+    PlaybookBuilder.new(opts.out_dir, opts.seed, settings,
+      block_shapes: [] of BlockShape, handler_shapes: handlers).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32

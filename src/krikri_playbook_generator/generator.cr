@@ -11,6 +11,8 @@ module KrikriPlaybookGenerator
   # ansible-lint's name[casing] rule requires it, and the playbooks are meant
   # to be lint-clean so a lint run only ever reports krikri's own behaviour.
   HANDLER_NAME = "Kpg handler"
+  # The second link of the chained handler shape.
+  SECOND_HANDLER_NAME = "Kpg second handler"
 
   enum ChaosKind
     Typo

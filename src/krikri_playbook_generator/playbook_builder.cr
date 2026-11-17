@@ -2,6 +2,7 @@ require "json"
 require "./generator"
 require "./play_keywords"
 require "./block_shapes"
+require "./handler_shapes"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -36,7 +37,8 @@ module KrikriPlaybookGenerator
 
     def initialize(@out_dir : String, @seed : Int32? = nil,
                    @play_settings : Array(PlaySetting?) = [] of PlaySetting?,
-                   @block_shapes : Array(BlockShape) = [] of BlockShape)
+                   @block_shapes : Array(BlockShape) = [] of BlockShape,
+                   @handler_shapes : Array(HandlerShape) = [] of HandlerShape)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -206,9 +208,12 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
+      shape = @handler_shapes[index]? || HandlerShape::Off
       apply_play_vars(play, task, @block_shapes[index]? || BlockShape::None)
-      play[YAML::Any.new("tasks")] = YAML::Any.new(
-        block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None))
+      bodies = block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None)
+      bodies << notifier_body unless shape.off?
+      play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
+      apply_handlers(play, shape)
 
       yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
@@ -237,6 +242,7 @@ module KrikriPlaybookGenerator
           json.field "delegate_to", task.delegate_to
           json.field "delegate_facts", task.delegate_facts? if task.delegate_to
           json.field "block", (@block_shapes[index]? || BlockShape::None).label
+          json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
         end
       end
     end
@@ -284,15 +290,10 @@ module KrikriPlaybookGenerator
         play[YAML::Any.new("vars")] = YAML::Any.new(
           {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
       end
+      shape = @handler_shapes[index]? || HandlerShape::Off
+      task_bodies << notifier_body unless shape.off?
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
-      if tasks.any? { |task| task.notify && task.notify_allowed? }
-        handler = {} of YAML::Any => YAML::Any
-        handler[YAML::Any.new("name")] = YAML::Any.new(HANDLER_NAME)
-        handler_args = {} of YAML::Any => YAML::Any
-        handler_args[YAML::Any.new("msg")] = YAML::Any.new(HANDLER_MESSAGE)
-        handler[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(handler_args)
-        play[YAML::Any.new("handlers")] = YAML::Any.new([YAML::Any.new(handler)])
-      end
+      apply_scenario_handlers(play, tasks, shape)
 
       yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
@@ -312,6 +313,7 @@ module KrikriPlaybookGenerator
           json.field "collection", tasks.first.collection
           json.field "chaos", tasks.any?(&.chaos?)
           play_setting_json(json, @play_settings[index]?)
+          json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "mutations" do
             json.array do
               tasks.each_with_index do |task, task_index|
@@ -450,6 +452,86 @@ module KrikriPlaybookGenerator
       args[YAML::Any.new("msg")] = YAML::Any.new(message)
       body[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(args)
       YAML::Any.new(body)
+    end
+
+    # Always-changed, always-ignored task whose only job is to notify the
+    # shaped handler: a module that happens to report no change would leave
+    # the handler unexercised.
+    private def notifier_body : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg notifier")
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("cmd")] = YAML::Any.new("/bin/true")
+      body[YAML::Any.new("ansible.builtin.command")] = YAML::Any.new(args)
+      body[YAML::Any.new("changed_when")] = YAML::Any.new(true)
+      body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
+      body[YAML::Any.new("notify")] = YAML::Any.new(HANDLER_NAME)
+      YAML::Any.new(body)
+    end
+
+    # The handler section of a multi-task playbook: the shaped handlers when
+    # the axis is on, otherwise the single debug handler a task's `notify:`
+    # needs (the pre-axis behavior).
+    private def apply_scenario_handlers(play : Hash(YAML::Any, YAML::Any),
+                                        tasks : Array(GeneratedTask), shape : HandlerShape) : Nil
+      unless shape.off?
+        apply_handlers(play, shape)
+        return
+      end
+      return unless tasks.any? { |task| task.notify && task.notify_allowed? }
+
+      handler = {} of YAML::Any => YAML::Any
+      handler[YAML::Any.new("name")] = YAML::Any.new(HANDLER_NAME)
+      handler_args = {} of YAML::Any => YAML::Any
+      handler_args[YAML::Any.new("msg")] = YAML::Any.new(HANDLER_MESSAGE)
+      handler[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(handler_args)
+      play[YAML::Any.new("handlers")] = YAML::Any.new([YAML::Any.new(handler)])
+    end
+
+    private def apply_handlers(play : Hash(YAML::Any, YAML::Any), shape : HandlerShape) : Nil
+      handlers = handler_bodies(shape)
+      return if handlers.empty?
+
+      play[YAML::Any.new("handlers")] = YAML::Any.new(handlers)
+    end
+
+    private def handler_bodies(shape : HandlerShape) : Array(YAML::Any)
+      case shape
+      when .failing?   then [failing_handler_body(false)]
+      when .ignoring?  then [failing_handler_body(true)]
+      when .delegated? then [delegated_handler_body]
+      when .chained?   then [chained_first_handler_body, second_handler_body]
+      else                  [] of YAML::Any
+      end
+    end
+
+    private def failing_handler_body(ignore_errors : Bool) : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new(HANDLER_NAME)
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("cmd")] = YAML::Any.new(FAILURE_COMMAND)
+      body[YAML::Any.new("ansible.builtin.command")] = YAML::Any.new(args)
+      body[YAML::Any.new("changed_when")] = YAML::Any.new(false)
+      body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true) if ignore_errors
+      YAML::Any.new(body)
+    end
+
+    private def delegated_handler_body : YAML::Any
+      body = debug_body(HANDLER_NAME, "kpg-delegated-handler")
+      raws = body.as_h
+      raws[YAML::Any.new("delegate_to")] = YAML::Any.new(Generator::DELEGATE_HOST)
+      YAML::Any.new(raws)
+    end
+
+    private def chained_first_handler_body : YAML::Any
+      body = debug_body(HANDLER_NAME, "kpg-handler-a")
+      raws = body.as_h
+      raws[YAML::Any.new("notify")] = YAML::Any.new(SECOND_HANDLER_NAME)
+      YAML::Any.new(raws)
+    end
+
+    private def second_handler_body : YAML::Any
+      debug_body(SECOND_HANDLER_NAME, "kpg-handler-b")
     end
 
     private def delegate_fields(body : Hash(YAML::Any, YAML::Any), task : GeneratedTask) : Nil
