@@ -4,7 +4,9 @@ require "./cmd"
 require "./log"
 require "./podman_backend"
 require "./atlantic_backend"
+require "./microvm_backend"
 require "./masks"
+require "./host_state"
 require "./fixtures"
 require "./versions"
 
@@ -22,6 +24,16 @@ module KrikriPlaybookGenerator
   # after applying ByteDiff::MASKS (the single, explicitly justified mask
   # list) to both sides. The old PLAY RECAP counter comparison is kept as
   # an extra `recap_divergent` field.
+  #
+  # Podman and microVM runs also compare HOST STATE (HostState): each
+  # engine's host is snapshotted before and after its run, and the two
+  # before/after deltas are diffed, so a task that prints the same result
+  # but leaves a different file mode, owner, leftover file, package or
+  # service is still a divergence (`state_divergent`). Only deltas are
+  # compared because the two engine hosts start from different images
+  # (README/AGENTS.md). The local and Atlantic backends do not capture
+  # state: locally the engines share one live host, so a delta cannot be
+  # attributed per engine.
   #
   # Two backends:
   #
@@ -61,8 +73,11 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # The host-state snapshots around each engine's run (nil on backends
+    # without the state oracle: local and Atlantic).
     record EngineRun, engine : String, rc : Int32, recap : Recap?, stdout : String, stderr : String,
-      timed_out : Bool = false
+      timed_out : Bool = false, state_before : HostState::Snapshot? = nil,
+      state_after : HostState::Snapshot? = nil
 
     # `module_name` is the playbook's primary module (the first task's;
     # for a v2 multi-task playbook, `module_names` carries every task's
@@ -81,9 +96,14 @@ module KrikriPlaybookGenerator
       getter krikri : EngineRun
       getter meta : MetaInfo?
       getter error : String?
+      @state_diff : String?
+      @state_divergent : Bool
 
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil)
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
+        diff = compute_state_diff
+        @state_diff = diff
+        @state_divergent = !diff.nil?
       end
 
       UNRESOLVED      = /couldn't resolve module\/action '[^']+'/
@@ -122,7 +142,52 @@ module KrikriPlaybookGenerator
       def divergent? : Bool
         return false if @error
 
-        !masked_identical?
+        !masked_identical? || @state_divergent
+      end
+
+      # What each engine changed on its own host, from the snapshots taken
+      # before and after its run (nil when they were not captured).
+      def ansible_state_changes : Array(String)?
+        state_changes(ansible)
+      end
+
+      def krikri_state_changes : Array(String)?
+        state_changes(krikri)
+      end
+
+      # Unified diff of the two engines' change lists; nil when both changed
+      # the same thing (or no snapshots were taken).
+      def state_diff : String?
+        @state_diff
+      end
+
+      # A state difference the stdout/stderr comparison cannot see: same
+      # printed result, different files/modes/owners/packages/services.
+      def state_divergent? : Bool
+        return false if @error
+
+        @state_divergent
+      end
+
+      def state_signature : String?
+        state_diff.try { |diff| HostState.signature(diff) }
+      end
+
+      private def state_changes(run : EngineRun) : Array(String)?
+        before = run.state_before
+        after = run.state_after
+        return unless before && after
+
+        HostState.changes(before, after)
+      end
+
+      private def compute_state_diff : String?
+        a = state_changes(ansible)
+        k = state_changes(krikri)
+        return unless a && k
+
+        diff = HostState.diff(a, k)
+        diff.empty? ? nil : diff
       end
 
       # The old counter-only comparison, kept as an extra results field.
@@ -466,6 +531,12 @@ module KrikriPlaybookGenerator
       EngineRun.new(engine, result.rc, Recap.parse(result.stdout), result.stdout, result.stderr, timed_out)
     end
 
+    private def to_engine_run(engine : String, observation : HostState::Observation) : EngineRun
+      run = to_engine_run(engine, observation.result)
+      EngineRun.new(run.engine, run.rc, run.recap, run.stdout, run.stderr, run.timed_out,
+        observation.before, observation.after)
+    end
+
     # Runs up to `parallel` playbooks at once (--podman-parallel), each still
     # in its own fresh container pair. Cmd.run yields while podman works, so
     # the pairs overlap without threads. Results come back in batch order,
@@ -655,6 +726,9 @@ module KrikriPlaybookGenerator
           json.field "signature", result.signature
           json.field "ansible_failed", result.ansible_failed?
           json.field "ansible_error", result.ansible_error_line
+          json.field "state_divergent", result.state_divergent?
+          json.field "state_signature", result.state_signature
+          json.field "state_diff", result.state_diff
           json.field "diff" do
             json.object do
               json.field "masked", result.masked_diff
@@ -712,6 +786,17 @@ module KrikriPlaybookGenerator
         end
         json.field "stdout", engine_run.stdout
         json.field "stderr", engine_run.stderr
+        if after = engine_run.state_after
+          json.field "state_after", after.canonical
+          json.field "state_digest", after.digest
+        else
+          json.field "state_after", nil
+          json.field "state_digest", nil
+        end
+        changes = if before = engine_run.state_before
+                    engine_run.state_after.try { |after_state| HostState.changes(before, after_state) }
+                  end
+        json.field "state_changes", changes
       end
     end
   end

@@ -168,6 +168,23 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `ansible-playbook --check` with exactly the mutation the generator
   recorded (a `mutually exclusive` error matching a real
   `ViolateConstraint` mutation).
+- `src/krikri_playbook_generator/host_state.cr` — `HostState`. **Implemented**:
+  the state half of the oracle. `SNAPSHOT_SCRIPT` (GNU find/`sha256sum`,
+  LC_ALL=C sorts, no timestamps) lists `/etc`, `/tmp/kpg-work`,
+  `/var/spool/cron` and `/root` with type/uid/gid/mode/size plus a sha256
+  for files under 1 MiB, the boot id, dpkg/rpm package versions, enabled
+  systemd units and listening sockets from `/proc/net/*`; containers and
+  VMs both run it as root, so no extra tooling is needed. `Snapshot.parse`
+  tolerates a truncated capture; `canonical` is the deterministic stored
+  form and `changes` turns a before/after pair into one sorted line per
+  added/removed/changed file, hash, package, unit or port (plus
+  `boot rebooted`). Only changes are compared: the real and krikri images
+  start from different baselines (`/root/.ansible`, pip caches), so
+  comparing absolute state would flag the images themselves.
+  `EXCLUDED_PATHS` (`/etc/hostname`, `/etc/hosts`, `/etc/resolv.conf`,
+  `/etc/machine-id`) are per-host files each container/VM regenerates for
+  itself; excluding them is the documented blind spot, same discipline as
+  `ByteDiff::MASKS` (a module that edits one is invisible to this oracle).
 - `src/krikri_playbook_generator/runner.cr` — `Runner`. **Implemented
   (v0.0.8, rewritten for byte parity)**: the comparison is now
   byte-for-byte — raw stdout, stderr and rc from both engines under the
@@ -185,7 +202,19 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   sidecar — Triage no longer needs the sidecars. `recap_divergent?` (the
   old counter-only comparison) is kept as an extra field. `Recap` now
   also parses `ignored=N` (needed to detect happy-path failures hidden by
-  `ignore_errors`). Backends: local (`--check` by default unless
+  `ignore_errors`). Podman and microVM runs also compare HOST STATE via
+  `HostState` (`host_state.cr`): each engine's host is snapshotted before
+  and after its run (file tree under `/etc`, `/tmp/kpg-work`,
+  `/var/spool/cron` and `/root` with type/uid/gid/mode/size and a
+  sha256 for files under 1 MiB, boot id, package list, enabled units,
+  listening ports), and the two before/after DELTAS are diffed — only
+  deltas, because the real and krikri images' absolute state differs by
+  construction. A delta mismatch is `state_divergent` with its own
+  `state_signature` (`state:`-prefixed) and `state_diff`; per engine
+  results.jsonl keeps `state_after`, `state_digest` and `state_changes`.
+  Local and Atlantic runs capture no state (locally the two engines share
+  one live host, so a delta cannot be attributed to one engine).
+  Backends: local (`--check` by default unless
   `--allow-mutation`; engines wrapped in `timeout`; fixtures seeded
   best-effort on the host), podman (`--run-on-podman`, fresh container
   pair per playbook via committed template images; REAL by default,
@@ -329,14 +358,27 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   (attempted/failed/succeeded/success rate), excluding chaos, errored,
   `expect_failure` and `not_applicable` modules; `not_applicable_modules`
   reports the exclusions so they stay visible. `rates` gives per-module
-  byte-identical counts.
+  byte-identical counts (`masked_identical`, so a state-only divergence
+  does not lower the byte rate).
+  `report` only groups playbooks whose OUTPUT diverged
+  (`output_divergent?`, i.e. not `masked_identical`); `state_report`
+  groups state-only ones by their `state:`-prefixed `HostState` signature,
+  so a playbook that differs on both is counted once (as an output
+  finding) and one root cause never appears twice. State-only findings
+  list their `state_diff` lines. The CLI prints them as their own
+  `== State divergences ... ==` section and they still exit 2.
   Malformed lines and legacy lines missing `module` are skipped, a
   missing `results.jsonl` raises. `ResultLine` also keeps each line's
-  masked diff (from results.jsonl's `diff.masked`) and error text;
+  masked diff (from results.jsonl's `diff.masked`) and error text, plus
+  the state fields (`state_divergent`, recomputed `state_signature`,
+  `state_diff`); a legacy line without `masked_identical` is treated as
+  output-divergent.
   `report_json` renders the whole report as ONE JSON object (`report
-  --json`): results_dir, total/errored/divergent counts, findings in the
+  --json`): results_dir, total/errored/divergent/state_divergent counts,
+  findings and `state_findings` in the
   same grouping/order as `report` (each with playbooks and an example
-  carrying chaos/mutations/masked_diff/ansible_error), errors,
+  carrying chaos/mutations/masked_diff/state_diff/ansible_error and a
+  `kind` of `output` or `state`), errors,
   not_applicable, happy_coverage, rates.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the four
   subcommands (`generate`, `run`, `report`, `modules`), plus `--check`
@@ -369,7 +411,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + diff signature (with count,
-  mutations, example playbook and repro command), the generator-quality
+  mutations, example playbook and repro command), the state-only
+  divergences (state signature, example and the changed state lines),
+  the generator-quality
   section (batch happy-path success rate, per-module failures on real
   ansible with first error line, expected-failure and not-applicable
   exclusions), and per-module byte-identical rates. `Command::Generate` fuses the
@@ -498,6 +542,13 @@ Documented deliberately, not silently:
   the happy path genuinely cannot run (not a missing package) belong
   in `module_overrides.yml` as `not_applicable: true`, never as a
   silent exclusion.
+- The state oracle only runs on the podman and microVM backends. Local
+  runs share one live host between the two engines, so a before/after
+  delta cannot be attributed to one engine (and snapshotting the user's
+  `$HOME` is not something a cheap `--check` batch should do); Atlantic
+  reuses a per-profile VM across playbooks, so its state is not
+  per-playbook attributable either. Widening it means giving those
+  backends per-engine isolation first.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is now BUILT (`--tasks-per-playbook N`) — but still one play per
   playbook (no multi-PLAY playbooks, no role plays), and the batch-level
@@ -518,7 +569,8 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `x || default` or `x.as(T)` after a `refute_nil` check. One spec file per
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
-`playbook_builder_spec.cr`, `runner_spec.cr`, `podman_backend_spec.cr`,
+`playbook_builder_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
+`podman_backend_spec.cr`,
 `triage_spec.cr`, `versions_spec.cr` (fakes the command runner as a Proc). `schema_spec.cr` shells out to
 the real, locally-installed `ansible-doc`/`python3` — no fakes, since
 tracking whatever ansible-core is actually installed is the entire point —
@@ -559,7 +611,14 @@ signature grouping/dedup/sort, quality/rate/`happy_coverage` behavior and
 the `not_applicable` exclusions precisely and
 fast — the real pipeline is what the `generate`→`run`→`report` chain
 itself exercises live (verified manually; no spec drives the full CLI
-chain end to end yet). `masks_spec.cr` unit-tests the mask list, the
+chain end to end yet). `triage_spec.cr` also covers the state-only
+findings, the "counted once" rule and legacy lines without
+`masked_identical`. `host_state_spec.cr` builds hand-written snapshot
+fixtures and covers parsing/canonicalization (including a truncated
+capture), the change list (mode, owner-visible fields, leftover file,
+hash/content, package, unit, port and reboot), delta-vs-delta diffing,
+signature stability and the snapshot script's roots/exclusions.
+`masks_spec.cr` unit-tests the mask list, the
 LCS diff and signature stability. `generator_spec.cr` also covers the
 Jinja kind (the templated value must be equivalent to the baseline
 value), the `empty_dict` override, the mutually-exclusive-safe fills, and

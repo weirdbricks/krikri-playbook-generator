@@ -2,6 +2,7 @@ require "digest"
 require "./cmd"
 require "./dependencies"
 require "./fixtures"
+require "./host_state"
 require "./log"
 
 module KrikriPlaybookGenerator
@@ -321,7 +322,12 @@ module KrikriPlaybookGenerator
     # ANSIBLE_NOCOLOR=1, the caching/gathering env vars stripped, stdin
     # </dev/null, and a per-engine `timeout` so a hang is its own result
     # (rc 124) instead of wedging the batch.
-    def run_playbook(playbook_path : String, profile : Profile = Profile::Debian) : {ansible: Cmd::Result, krikri: Cmd::Result}
+    #
+    # Each engine's host is also snapshotted before and after its run, so
+    # Runner can compare what the two engines actually changed (the state
+    # oracle); the pair is isolated per playbook, so the before/after delta
+    # belongs to that engine alone.
+    def run_playbook(playbook_path : String, profile : Profile = Profile::Debian) : {ansible: HostState::Observation, krikri: HostState::Observation}
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       # Per-profile images: a mixed batch provisions both templates, and a
@@ -344,14 +350,30 @@ module KrikriPlaybookGenerator
         copy_playbook(playbook_path, real)
         copy_playbook(playbook_path, krikri)
 
-        {ansible: exec_engine(real, "ansible-playbook", playbook_path),
-         krikri:  exec_engine(krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", playbook_path)}
+        {ansible: observe(real, "ansible-playbook", playbook_path),
+         krikri:  observe(krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", playbook_path)}
       ensure
         unless created.empty?
           Cmd.run("podman", ["rm", "-f"] + created, timeout: 180.0)
           created.each { |name| @started_names.delete(name) }
         end
       end
+    end
+
+    private def observe(name : String, engine_cmd : String, playbook_path : String) : HostState::Observation
+      before = snapshot_state(name)
+      result = exec_engine(name, engine_cmd, playbook_path)
+      HostState::Observation.new(result, before, snapshot_state(name))
+    end
+
+    # Best-effort: a failed snapshot costs the state half of the oracle for
+    # this playbook, never the playbook's stdout comparison.
+    private def snapshot_state(name : String) : HostState::Snapshot?
+      result = Cmd.run("podman", ["exec", "-i", name, "sh", "-s"], input: HostState::SNAPSHOT_SCRIPT, timeout: 180.0)
+      return HostState::Snapshot.parse(result.stdout) if Cmd.success?(result)
+
+      Log.info("podman", "warning: state snapshot failed in #{name}: #{result.stderr.lines.last?}")
+      nil
     end
 
     # Whatever actually started gets removed, even if provisioning failed

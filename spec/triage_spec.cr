@@ -10,21 +10,26 @@ module KrikriPlaybookGenerator
                      signature : String? = nil, chaos : Bool = false,
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
-                     error : String? = nil, masked_diff : String = "") : String
+                     error : String? = nil, masked_diff : String = "",
+                     masked_identical : Bool? = nil, state_divergent : Bool = false,
+                     state_diff : String = "") : String
       playbook = File.join(dir, "#{name}.yml")
       File.write(playbook, "---\n")
 
       result = {
-        "playbook"       => playbook,
-        "module"         => module_name,
-        "chaos"          => chaos,
-        "divergent"      => divergent,
-        "signature"      => signature,
-        "ansible_failed" => ansible_failed,
-        "ansible_error"  => ansible_error,
-        "mutations"      => mutations.map { |(option, kind)| {"option" => option, "kind" => kind} },
-        "error"          => error,
-        "diff"           => {"masked" => masked_diff, "raw" => ""},
+        "playbook"         => playbook,
+        "module"           => module_name,
+        "chaos"            => chaos,
+        "divergent"        => divergent,
+        "masked_identical" => masked_identical.nil? ? !divergent : masked_identical,
+        "state_divergent"  => state_divergent,
+        "state_diff"       => state_diff.empty? ? nil : state_diff,
+        "signature"        => signature,
+        "ansible_failed"   => ansible_failed,
+        "ansible_error"    => ansible_error,
+        "mutations"        => mutations.map { |(option, kind)| {"option" => option, "kind" => kind} },
+        "error"            => error,
+        "diff"             => {"masked" => masked_diff, "raw" => ""},
       }
       File.open(File.join(dir, "results.jsonl"), "a") { |file| file.puts(result.to_json) }
       playbook
@@ -332,6 +337,99 @@ module KrikriPlaybookGenerator
       assert(finding["example"]["ansible_error"].raw.nil?)
       assert_equal("", finding["example"]["masked_diff"].as_s)
       assert_equal(0, report["errors"].as_a.size)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "reports a state-only divergence separately and keeps it out of the byte-identical rate" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      state_diff = "-file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        state_divergent: true, state_diff: state_diff)
+
+      triage = Triage.new(dir)
+      assert_empty(triage.report)
+      state = triage.state_report
+      assert_equal(1, state.size)
+      assert_equal("copy", state.first.module_name)
+      signature = state.first.signature
+      refute_nil(signature)
+      assert(signature.as(String).starts_with?("state:"))
+      assert_equal(state_diff, state.first.example.state_diff)
+
+      rate = triage.rates.first
+      assert_equal(1, rate.identical)
+      assert_equal(1, rate.total)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "counts a playbook that diverges on both output and state once (as an output finding)" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, masked_identical: false,
+        signature: "abc123", state_divergent: true,
+        state_diff: "-file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n",
+        masked_diff: "stdout:\n--- a\n+++ b\n")
+
+      triage = Triage.new(dir)
+      assert_equal(1, triage.report.size)
+      assert_empty(triage.state_report)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "groups state-only divergences by their state signature" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      first = "-file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      second = "-file\tadded\tf\t0\t0\t644\t9\t/tmp/kpg-work/other\n"
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        state_divergent: true, state_diff: first)
+      write_result(dir, "b", "copy", divergent: true, masked_identical: true,
+        state_divergent: true, state_diff: second)
+
+      state = Triage.new(dir).state_report
+      assert_equal(1, state.size)
+      assert_equal(2, state.first.count)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "renders state findings and the state divergence count in the JSON report" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      state_diff = "-file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        state_divergent: true, state_diff: state_diff)
+
+      report = JSON.parse(Triage.new(dir).report_json)
+      assert_equal(1, report["state_divergent"].as_i)
+      assert_equal(0, report["findings"].as_a.size)
+      findings = report["state_findings"].as_a
+      assert_equal(1, findings.size)
+      assert_equal("state", findings.first["kind"].as_s)
+      assert_equal(state_diff, findings.first["example"]["state_diff"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "treats a legacy divergent line without masked_identical as an output finding" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      File.open(File.join(dir, "results.jsonl"), "a") do |file|
+        file.puts({
+          "playbook"  => File.join(dir, "a.yml"),
+          "module"    => "copy",
+          "divergent" => true,
+          "signature" => "abc",
+          "diff"      => {"masked" => "stdout:\n--- a\n+++ b\n", "raw" => ""},
+        }.to_json)
+      end
+
+      assert_equal(1, Triage.new(dir).report.size)
+      assert_empty(Triage.new(dir).state_report)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

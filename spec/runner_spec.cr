@@ -147,6 +147,56 @@ module KrikriPlaybookGenerator
       refute(result.raw_identical?)
       assert_equal("podman died", result.error)
     end
+
+    def snapshot(files : String, leftover : Bool = false) : HostState::Snapshot
+      extra = leftover ? "f\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n" : ""
+      text = "#boot\nboot-1\n#files\n#{files}#{extra}#hashes\n#packages\n#units\n#ports\n"
+      HostState::Snapshot.parse(text) || raise("unparseable fixture snapshot")
+    end
+
+    def stateful_run(before_files : String, after_files : String, leftover : Bool) : Runner::EngineRun
+      Runner::EngineRun.new("x", 0, nil, "same", "", false,
+        snapshot(before_files), snapshot(after_files, leftover))
+    end
+
+    it "is divergent when the engines printed the same thing but left a different host state" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        stateful_run(files, files, leftover: true),
+        stateful_run(files, files, leftover: false), nil)
+
+      assert(result.masked_identical?)
+      assert(result.state_divergent?)
+      assert(result.divergent?)
+      diff = result.state_diff
+      refute_nil(diff)
+      assert(diff.as(String).includes?("/tmp/kpg-work/leftover"))
+      signature = result.state_signature
+      refute_nil(signature)
+      assert(signature.as(String).starts_with?("state:"))
+    end
+
+    it "is not state-divergent when both engines changed the host the same way" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        stateful_run(files, files, leftover: true),
+        stateful_run(files, files, leftover: true), nil)
+
+      refute(result.state_divergent?)
+      refute(result.divergent?)
+      assert_nil(result.state_diff)
+      assert_nil(result.state_signature)
+    end
+
+    it "leaves the state oracle out when a snapshot was not captured" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      no_state = Runner::EngineRun.new("x", 0, nil, "same", "")
+      result = Runner::PlaybookResult.new("p.yml",
+        stateful_run(files, files, leftover: true), no_state, nil)
+
+      refute(result.state_divergent?)
+      refute(result.divergent?)
+    end
   end
 
   describe Runner do

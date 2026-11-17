@@ -28,14 +28,9 @@ module KrikriPlaybookGenerator
     in Command::Report
       triage = Triage.new(opts.results_dir)
       findings = triage.report
-      print_report(triage, json: opts.json?, findings: findings)
-      if !findings.empty?
-        DIVERGENT_EXIT
-      elsif happy_gate_failed?(triage, opts.min_happy_success)
-        1
-      else
-        0
-      end
+      state_findings = triage.state_report
+      print_report(triage, json: opts.json?, findings: findings, state_findings: state_findings)
+      report_exit_code(triage, findings, state_findings, opts.min_happy_success)
     in Command::Modules
       print_module_scope(json: opts.json?, opts: opts)
     end
@@ -186,16 +181,19 @@ module KrikriPlaybookGenerator
     end
   end
 
-  private def self.print_report(triage : Triage, json : Bool, findings : Array(Triage::Finding)? = nil) : Nil
+  private def self.print_report(triage : Triage, json : Bool, findings : Array(Triage::Finding)? = nil,
+                                state_findings : Array(Triage::Finding)? = nil) : Nil
     if json
       puts triage.report_json
     else
-      print_full_report(triage, findings)
+      print_full_report(triage, findings, state_findings)
     end
   end
 
-  private def self.print_full_report(triage : Triage, findings : Array(Triage::Finding)? = nil) : Nil
+  private def self.print_full_report(triage : Triage, findings : Array(Triage::Finding)? = nil,
+                                     state_findings : Array(Triage::Finding)? = nil) : Nil
     print_divergences(findings || triage.report)
+    print_state_divergences(state_findings || triage.state_report)
     print_quality(triage.quality, triage.expected_failures, triage.happy_coverage, triage.not_applicable_modules)
     print_rates(triage.rates)
   end
@@ -217,6 +215,15 @@ module KrikriPlaybookGenerator
     true
   end
 
+  # Divergences (output or state-only) exit 2; a batch whose own happy-path
+  # coverage is too poor exits 1, keeping the two failures distinguishable.
+  private def self.report_exit_code(triage : Triage, findings : Array(Triage::Finding),
+                                    state_findings : Array(Triage::Finding), minimum : Float64?) : Int32
+    return DIVERGENT_EXIT if !findings.empty? || !state_findings.empty?
+
+    happy_gate_failed?(triage, minimum) ? 1 : 0
+  end
+
   private def self.print_divergences(findings : Array(Triage::Finding)) : Nil
     puts "== Divergences (grouped by module + diff signature) =="
     if findings.empty?
@@ -234,6 +241,26 @@ module KrikriPlaybookGenerator
       puts "  example: #{example}"
       puts "  repro: #{Triage.repro_command(example, [finding.module_name])}"
     end
+  end
+
+  private def self.print_state_divergences(findings : Array(Triage::Finding)) : Nil
+    return if findings.empty?
+
+    puts "== State divergences (same printed result, different host state) =="
+    findings.each do |finding|
+      label = finding.signature ? "state signature #{finding.signature}" : "no signature"
+      puts "#{finding.module_name} (#{label}): #{finding.count} state-only playbook(s)"
+      example = finding.example
+      puts "  example: #{example.playbook}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name])}"
+      print_state_diff(example.state_diff)
+    end
+  end
+
+  private def self.print_state_diff(diff : String) : Nil
+    changed = diff.lines.select { |line| line.starts_with?('-') || line.starts_with?('+') }
+    changed.first(10).each { |line| puts "  #{line}" }
+    puts "  ... #{changed.size - 10} more changed line(s)" if changed.size > 10
   end
 
   private def self.print_quality(quality : Array(Triage::Quality), expected_failures : Array(String),

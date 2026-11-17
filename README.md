@@ -90,6 +90,9 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
   ansible success don't merge — so N playbooks hit
   by the same root cause dedupe into one finding, sorted by descending
   count, each with an example playbook and a copy-paste repro command),
+   a state-divergence section for playbooks whose printed result matched
+   but whose host state did not (state signature, example and the changed
+   state lines),
    a generator-quality section (per module, how many happy-path playbooks
    failed on real ansible — wasted coverage — and the first error line,
    plus the batch-level happy-path success rate and the modules excluded as
@@ -112,6 +115,24 @@ deliberately minimal, every entry carrying a justification comment:
    nonces).
 
 Nothing else is masked — any remaining difference is the finding.
+
+## Host state
+
+Printing the same thing is not the whole comparison. On the podman and
+microVM backends each engine's host is also snapshotted before and after
+its run (file tree under `/etc`, `/tmp/kpg-work`, `/var/spool/cron` and
+`/root` with type/uid/gid/mode/size plus a sha256 for files under 1 MiB,
+boot id, package versions, enabled systemd units, listening ports), and
+the two before/after **deltas** are compared. Only deltas: the real and
+krikri images start from different baselines, so comparing absolute
+state would report the images themselves. A delta mismatch is a state
+divergence even when stdout/stderr match exactly — `state_divergent`,
+`state_signature` and `state_diff` in results.jsonl, plus each engine's
+`state_after`, `state_digest` and `state_changes`. The report lists
+state-only divergences in their own section (a playbook that differs on
+both output and state is counted once, as an output finding). Local and
+Atlantic runs have no per-engine isolated host, so they do not compare
+state.
 
 See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for the full proposal,
 open questions, and rationale for a separate repo.
@@ -211,7 +232,8 @@ found". A batch with no happy-path playbooks passes the gate.
 stdout instead of the human report — `results_dir`, `total`/`errored`/
 `divergent` counts, `findings` grouped by module + diff signature (each
 with its playbooks and an example carrying chaos/mutations, the masked
-diff and ansible's first error), `errors`, `not_applicable` (modules a
+diff and ansible's first error), `state_divergent`/`state_findings` for
+state-only divergences (kind `state`, with the state diff), `errors`, `not_applicable` (modules a
 single-task local playbook cannot exercise), `happy_coverage` (attempted/
 failed/succeeded/`success_percent`), and per-module `rates`. Exit code is
 unchanged (0 none, 2 divergences, 1 gate/failure); warnings stay on stderr.

@@ -176,9 +176,9 @@ module KrikriPlaybookGenerator
       backend.provision(PodmanBackend::Profile::Rpm)
       begin
         outcome = backend.run_playbook(playbook_path, PodmanBackend::Profile::Debian)
-        assert_equal(0, outcome[:ansible].rc)
-        assert(outcome[:ansible].stdout.includes?("ignored=0"),
-          "the Debian playbook was not run on the Debian image:\n#{outcome[:ansible].stdout}")
+        assert_equal(0, outcome[:ansible].result.rc)
+        assert(outcome[:ansible].result.stdout.includes?("ignored=0"),
+          "the Debian playbook was not run on the Debian image:\n#{outcome[:ansible].result.stdout}")
       ensure
         backend.teardown
       end
@@ -201,10 +201,10 @@ module KrikriPlaybookGenerator
       backend.provision
       begin
         outcome = backend.run_playbook(playbook_path)
-        assert_equal(0, outcome[:ansible].rc)
-        assert_equal(0, outcome[:krikri].rc)
-        assert(outcome[:ansible].stdout.includes?("PLAY RECAP"))
-        assert(outcome[:krikri].stdout.includes?("PLAY RECAP"))
+        assert_equal(0, outcome[:ansible].result.rc)
+        assert_equal(0, outcome[:krikri].result.rc)
+        assert(outcome[:ansible].result.stdout.includes?("PLAY RECAP"))
+        assert(outcome[:krikri].result.stdout.includes?("PLAY RECAP"))
       ensure
         backend.teardown
       end
@@ -233,8 +233,8 @@ module KrikriPlaybookGenerator
         "the second provision must hit the image cache (teardown keeps the committed images)")
       begin
         outcome = cached.run_playbook(playbook_path)
-        assert_equal(0, outcome[:ansible].rc)
-        assert_equal(0, outcome[:krikri].rc)
+        assert_equal(0, outcome[:ansible].result.rc)
+        assert_equal(0, outcome[:krikri].result.rc)
       ensure
         cached.teardown
       end

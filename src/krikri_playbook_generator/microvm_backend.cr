@@ -3,6 +3,7 @@ require "file_utils"
 require "./cmd"
 require "./dependencies"
 require "./fixtures"
+require "./host_state"
 require "./log"
 
 module KrikriPlaybookGenerator
@@ -415,7 +416,11 @@ module KrikriPlaybookGenerator
     rescue File::Error
     end
 
-    def run_playbook(playbook_path : String, os : String) : {ansible: Cmd::Result, krikri: Cmd::Result}
+    # Each VM is also snapshotted before and after its engine's run, so
+    # Runner can compare what the two engines actually changed (the state
+    # oracle); the pair's overlays are per playbook, so the before/after
+    # delta belongs to that engine alone.
+    def run_playbook(playbook_path : String, os : String) : {ansible: HostState::Observation, krikri: HostState::Observation}
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
 
       lease = acquire_slot
@@ -424,8 +429,8 @@ module KrikriPlaybookGenerator
         begin
           pair.vms.each { |host| prep_vm(host, playbook_path) }
           basename = File.basename(playbook_path)
-          ansible = exec_engine(pair.ansible, "ansible-playbook", basename)
-          krikri = exec_engine(pair.krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", basename)
+          ansible = observe(pair.ansible, "ansible-playbook", basename)
+          krikri = observe(pair.krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", basename)
           {ansible: ansible, krikri: krikri}
         ensure
           stop_pair(pair)
@@ -433,6 +438,22 @@ module KrikriPlaybookGenerator
       ensure
         lease.release
       end
+    end
+
+    private def observe(vm : Vm, binary : String, basename : String) : HostState::Observation
+      before = snapshot_state(vm)
+      result = exec_engine(vm, binary, basename)
+      HostState::Observation.new(result, before, snapshot_state(vm))
+    end
+
+    # Best-effort: a failed snapshot costs the state half of the oracle for
+    # this playbook, never the playbook's stdout comparison.
+    private def snapshot_state(vm : Vm) : HostState::Snapshot?
+      result = run_script(vm, HostState::SNAPSHOT_SCRIPT, 180.0)
+      return HostState::Snapshot.parse(result.stdout) if Cmd.success?(result)
+
+      Log.info("microvm", "warning: state snapshot failed on #{vm.ip}: #{result.stderr.lines.last?}")
+      nil
     end
 
     # Anything a killed run left behind is removed; a VM whose owning pid is

@@ -1,5 +1,6 @@
 require "json"
 require "./masks"
+require "./host_state"
 require "./microvm_backend"
 require "./overrides"
 
@@ -28,9 +29,17 @@ module KrikriPlaybookGenerator
     record MutationEntry, option : String, kind : String
     record ResultLine, playbook : String, module_name : String, chaos : Bool,
       divergent : Bool, signature : String?, ansible_failed : Bool, ansible_error : String?,
-      mutations : Array(MutationEntry), error : String?, masked_diff : String do
+      mutations : Array(MutationEntry), error : String?, masked_diff : String,
+      masked_identical : Bool, state_divergent : Bool, state_signature : String?,
+      state_diff : String do
       def errored? : Bool
         !error.nil?
+      end
+
+      # The playbook differs on printed output (the byte-for-byte engine
+      # comparison), not just on host state.
+      def output_divergent? : Bool
+        divergent && !masked_identical
       end
     end
     record Finding, module_name : String, signature : String?, playbooks : Array(String),
@@ -65,13 +74,38 @@ module KrikriPlaybookGenerator
       findings_from(result_lines)
     end
 
+    # State-only findings: the engines printed the same thing but left the
+    # host in a different state. Kept apart from the stdout findings so a
+    # playbook that differs on both is counted once (in `report`), not
+    # twice.
+    def state_report : Array(Finding)
+      state_findings_from(result_lines)
+    end
+
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
       groups = {} of {String, String?} => Array(ResultLine)
 
       lines.each do |line|
-        next unless line.divergent
+        next unless line.output_divergent?
 
         key = {line.module_name, line.signature}
+        (groups[key] ||= [] of ResultLine) << line
+      end
+
+      groups.map do |(module_name, signature), entries|
+        playbooks = entries.map(&.playbook).uniq!
+        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
+      end.sort_by! { |finding| -finding.count }
+    end
+
+    def state_findings_from(lines : Array(ResultLine)) : Array(Finding)
+      groups = {} of {String, String?} => Array(ResultLine)
+
+      lines.each do |line|
+        next unless line.state_divergent
+        next if line.output_divergent? || line.errored?
+
+        key = {line.module_name, line.state_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
@@ -93,9 +127,15 @@ module KrikriPlaybookGenerator
           json.field "total", lines.size
           json.field "errored", lines.count(&.errored?)
           json.field "divergent", lines.count(&.divergent)
+          json.field "state_divergent", lines.count(&.state_divergent)
           json.field "findings" do
             json.array do
               findings_from(lines).each { |finding| finding_json(json, finding) }
+            end
+          end
+          json.field "state_findings" do
+            json.array do
+              state_findings_from(lines).each { |finding| finding_json(json, finding) }
             end
           end
           json.field "errors" do
@@ -129,6 +169,7 @@ module KrikriPlaybookGenerator
     private def finding_json(json : JSON::Builder, finding : Finding) : Nil
       json.object do
         json.field "module", finding.module_name
+        json.field "kind", finding.signature.try(&.starts_with?("state:")) ? "state" : "output"
         if signature = finding.signature
           json.field "signature", signature
         else
@@ -154,6 +195,7 @@ module KrikriPlaybookGenerator
               end
             end
             json.field "masked_diff", example.masked_diff
+            json.field "state_diff", example.state_diff.empty? ? nil : example.state_diff
             if error = example.ansible_error
               json.field "ansible_error", error
             else
@@ -249,7 +291,7 @@ module KrikriPlaybookGenerator
       end
 
       groups.map do |module_name, entries|
-        Rate.new(module_name, entries.count { |line| !line.divergent }, entries.size)
+        Rate.new(module_name, entries.count(&.masked_identical), entries.size)
       end.sort_by!(&.module_name)
     end
 
@@ -304,18 +346,43 @@ module KrikriPlaybookGenerator
       errored = error_field ? !error_field.raw.nil? : false
 
       masked_diff = parse_masked_diff(parsed)
+      divergent = parsed["divergent"]?.try(&.as_bool?) || false
+      masked_identical, state_divergent, state_signature, state_diff = parse_state_fields(parsed, divergent)
 
       ResultLine.new(
         playbook, module_name,
         parsed["chaos"]?.try(&.as_bool?) || false,
-        parsed["divergent"]?.try(&.as_bool?) || false,
+        divergent,
         result_signature(masked_diff, parsed),
         parsed["ansible_failed"]?.try(&.as_bool?) || false,
         parsed["ansible_error"]?.try(&.as_s?),
         mutations,
         errored ? error_field.try(&.as_s?) : nil,
-        masked_diff
+        masked_diff,
+        masked_identical,
+        state_divergent,
+        state_signature,
+        state_diff
       )
+    end
+
+    private def parse_state_fields(parsed : Hash(String, JSON::Any),
+                                   divergent : Bool) : {Bool, Bool, String?, String}
+      # Legacy lines predate the state oracle, so their divergence can only
+      # have come from the printed output.
+      masked_identical = parsed["masked_identical"]?.try(&.as_bool?) || !divergent
+      state_divergent = parsed["state_divergent"]?.try(&.as_bool?) || false
+      state_diff = parsed["state_diff"]?.try(&.as_s?) || ""
+      {masked_identical, state_divergent, parse_state_signature(state_diff, parsed), state_diff}
+    end
+
+    # Recompute a state signature from the stored diff, same reasoning as
+    # result_signature; the stored one is the fallback when there is no diff.
+    private def parse_state_signature(state_diff : String, parsed : Hash(String, JSON::Any)) : String?
+      stored = parsed["state_signature"]?.try(&.as_s?)
+      return stored if state_diff.empty?
+
+      HostState.signature(state_diff) || stored
     end
 
     # Recompute the signature from the stored masked diff rather than
