@@ -1,4 +1,5 @@
 require "./cmd"
+require "./run_mode"
 require "./version"
 
 module KrikriPlaybookGenerator
@@ -25,14 +26,16 @@ module KrikriPlaybookGenerator
     end
 
     def self.write(results_dir : String, version : String, krikri_bin : String,
-                   ansible_playbook_bin : String, control : Bool, check : Bool, started : Time,
+                   ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
+                   second_run : Bool, duration : Time::Span, started : Time,
                    runner : CommandRunner = DEFAULT_RUNNER) : Nil
       File.write(File.join(results_dir, "versions.txt"),
-        render(version, started, krikri_bin, ansible_playbook_bin, control, check, runner))
+        render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, duration, runner))
     end
 
     def self.render(version : String, started : Time, krikri_bin : String,
-                    ansible_playbook_bin : String, control : Bool, check : Bool,
+                    ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
+                    second_run : Bool, duration : Time::Span,
                     runner : CommandRunner) : String
       binary = Path[krikri_bin].expand(home: true).to_s
       checkout = File.dirname(File.dirname(binary))
@@ -48,9 +51,14 @@ module KrikriPlaybookGenerator
         "krikri commit subject: #{flattened(runner, "git", subject_args)}",
         "ansible-playbook: #{flattened(runner, ansible_playbook_bin, ["--version"])}",
         "control: #{control}",
+        "modes: #{modes.map(&.label).join(",")}",
+        "idempotency: #{second_run}",
+        "batch duration: #{duration.total_seconds.round(1)}s",
       ]
 
-      lines << "check: true" if check
+      # krikri-role-triager uses "check: true" to tell a check-mode repro
+      # from a real one; a mixed-mode batch is not a check run.
+      lines << "check: true" if modes == [RunMode::Check]
       lines << STALE_WARNING if stale?(binary, checkout, runner)
       lines.join("\n") + "\n"
     end

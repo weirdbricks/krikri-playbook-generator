@@ -214,6 +214,21 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   results.jsonl keeps `state_after`, `state_digest` and `state_changes`.
   Local and Atlantic runs capture no state (locally the two engines share
   one live host, so a delta cannot be attributed to one engine).
+  Every playbook is compared once per MODE (`RunMode::Check` and
+  `RunMode::Real`): both by default on an isolated backend, check-only
+  locally unless `--allow-mutation`, always real on Atlantic. Each
+  (playbook, mode) gets its own fresh host/pair, so real-mode state can
+  never leak into the check row; each row records its `mode` in
+  results.jsonl, and Triage groups by module + mode + run + signature so a
+  check-mode-only divergence is reported once, not twice. When the first
+  run of a (playbook, mode) succeeded on BOTH engines
+  (`HostState.succeeded?`), the backends run it a SECOND time on the same
+  host/pair: the idempotency pass, whose comparison is its own row with
+  `run: 2` so first-run findings stay attributable. `--no-second-run`
+  disables it; local does the same on its shared host, while Atlantic
+  skips it (playbooks share one VM per profile). `Runner.in_parallel` is
+  generic over the block's result so the mode matrix can return several
+  rows per playbook.
   Backends: local (`--check` by default unless
   `--allow-mutation`; engines wrapped in `timeout`; fixtures seeded
   best-effort on the host), podman (`--run-on-podman`, fresh container
@@ -247,9 +262,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   krikri-role-triager, which splits each line on the first `": "`. One
   `key: value` line each: tool version, run start (RFC3339 UTC), krikri
   binary path/mtime/`--version`/git commit (+ ` (dirty)`)/commit subject,
-  ansible-playbook version, `control`, and `check: true` when the run is
-  in check mode (how krikri-role-triager tells a `--check` repro run from
-  a real one). Plus, only when the krikri
+  ansible-playbook version, `control`, `modes:` (the mode matrix, e.g.
+  `check,real`), `idempotency:` (whether the second-run pass was on) and
+  `batch duration:`. `check: true` appears only when the batch ran check
+  mode and nothing else, keeping the old contract for
+  krikri-role-triager (how it tells a `--check` repro run from a real
+  one) while a mixed-mode batch is no longer mislabeled. Plus, only when
+  the krikri
   binary's mtime is older than the committer date of the checkout's last
   commit touching `src lib plugins scripts shard.yml shard.lock
   build.sh`, the exact line `warning: krikri binary is older than its
@@ -341,7 +360,7 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   (v0.0.8, rewritten)**: reads `results.jsonl` only (module/chaos/
   mutations are now embedded in each line by `Runner`, so sidecars aren't
   needed) and produces three sections. `report` groups divergent
-  playbooks by `{module, signature}` — the stable root-cause hash
+  playbooks by `{module, mode, run, signature}` — the stable root-cause hash
   `ByteDiff#signature` computes from the masked diff, keyed on the
   ansible side's first `-` line (krikri's first `+` line only when there
   is no `-` line at all, prefixed `ansible:`/`krikri:` so the two kinds
@@ -356,6 +375,7 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   plus the first error line — happy-path failures on the reference engine
   are wasted coverage. `happy_coverage` is the batch-level version
   (attempted/failed/succeeded/success rate), excluding chaos, errored,
+  second-run rows (`run > 1`: repeatability, not runnability),
   `expect_failure` and `not_applicable` modules; `not_applicable_modules`
   reports the exclusions so they stay visible. `rates` gives per-module
   byte-identical counts (`masked_identical`, so a state-only divergence
@@ -377,14 +397,22 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   --json`): results_dir, total/errored/divergent/state_divergent counts,
   findings and `state_findings` in the
   same grouping/order as `report` (each with playbooks and an example
-  carrying chaos/mutations/masked_diff/state_diff/ansible_error and a
-  `kind` of `output` or `state`), errors,
-  not_applicable, happy_coverage, rates.
+  carrying mode/run/chaos/mutations/masked_diff/state_diff/ansible_error
+  and a `kind` of `output` or `state`), a `batch` object (modes,
+  duration, second-run flag read back from versions.txt), errors,
+  not_applicable, happy_coverage, rates. The human report starts with the
+  same `== Batch ==` line, and `Triage.repro_command` pins the finding's
+  `--modes` (plus `--no-second-run` for a run-1 row) so a repro reruns
+  exactly that comparison.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the four
   subcommands (`generate`, `run`, `report`, `modules`), plus `--check`
-  (run the engines with `--check` - podman runs are real by default,
-  local runs already default to `--check --diff`; conflicts with
-  `--run-on-atlantic` and `--allow-mutation`), `--keep-going`,
+  (run only the check-mode half; conflicts with `--run-on-atlantic` and
+  `--allow-mutation`), `--modes check|real|both` (the mode matrix;
+  default both on isolated backends, check locally unless
+  `--allow-mutation`; `Options.effective_modes` refuses real mode
+  locally without `--allow-mutation` and check mode on Atlantic),
+  `--no-second-run` (skip the idempotency pass, on by default),
+  `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
   recorded with rc 124), `--json` (valid only with `report` or `modules`;
   error

@@ -8,6 +8,7 @@ module KrikriPlaybookGenerator
   describe Triage do
     def write_result(dir : String, name : String, module_name : String, divergent : Bool,
                      signature : String? = nil, chaos : Bool = false,
+                     mode : String = "real", run : Int32 = 1,
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
                      error : String? = nil, masked_diff : String = "",
@@ -19,6 +20,8 @@ module KrikriPlaybookGenerator
       result = {
         "playbook"         => playbook,
         "module"           => module_name,
+        "mode"             => mode,
+        "run"              => run,
         "chaos"            => chaos,
         "divergent"        => divergent,
         "masked_identical" => masked_identical.nil? ? !divergent : masked_identical,
@@ -70,6 +73,21 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "groups the same playbook separately per mode and run" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, signature: "abc", mode: "check", run: 1)
+      write_result(dir, "b", "copy", divergent: true, signature: "abc", mode: "real", run: 1)
+      write_result(dir, "c", "copy", divergent: true, signature: "abc", mode: "real", run: 2)
+
+      findings = Triage.new(dir).report
+      assert_equal(3, findings.size)
+      assert_equal(%w[check real real], findings.map { |finding| finding.example.mode }.sort!)
+      assert_equal([1, 1, 2], findings.map { |finding| finding.example.run }.sort!)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "sorts findings by descending divergence count" do
       dir = File.tempname("kpg-spec-triage")
       Dir.mkdir_p(dir)
@@ -103,6 +121,17 @@ module KrikriPlaybookGenerator
       command = Triage.repro_command("/tmp/playbooks/000001-copy-happy.yml", ["copy"])
       assert(command.includes?("run /tmp/playbooks/000001-copy-happy.yml"))
       assert(command.includes?("--run-on-podman"))
+      assert(command.includes?("--no-second-run"))
+    end
+
+    it "pins the repro to the finding's mode and keeps both runs for a run-2 finding" do
+      check = Triage.repro_command("/tmp/p.yml", ["copy"], "check", 1)
+      assert(check.includes?("--modes check"))
+      assert(check.includes?("--no-second-run"))
+
+      second = Triage.repro_command("/tmp/p.yml", ["copy"], "real", 2)
+      assert(second.includes?("--modes real"))
+      refute(second.includes?("--no-second-run"))
     end
 
     it "points a service module's repro at the backend that can host it" do
@@ -127,6 +156,21 @@ module KrikriPlaybookGenerator
       assert_equal(1, copy.failed)
       assert_equal(2, copy.total)
       assert(copy.example_error.includes?("could not find src"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps second-run rows out of the quality and happy-coverage metrics" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: false, run: 1)
+      write_result(dir, "b", "copy", divergent: false, run: 2,
+        ansible_failed: true, ansible_error: "fatal: second run")
+
+      triage = Triage.new(dir)
+      assert_empty(triage.quality)
+      assert_equal(1, triage.happy_coverage.attempted)
+      assert_equal(0, triage.happy_coverage.failed)
     ensure
       FileUtils.rm_rf(dir) if dir
     end
@@ -286,6 +330,8 @@ module KrikriPlaybookGenerator
 
       example = copy["example"]
       assert_equal(playbook_a, example["playbook"].as_s)
+      assert_equal("real", example["mode"].as_s)
+      assert_equal(1, example["run"].as_i)
       assert_equal(true, example["chaos"].as_bool)
       assert_equal([{"option" => "mode", "kind" => "WrongType"}],
         example["mutations"].as_a.map { |entry| {"option" => entry["option"].as_s, "kind" => entry["kind"].as_s} })
@@ -411,6 +457,28 @@ module KrikriPlaybookGenerator
       assert_equal(1, findings.size)
       assert_equal("state", findings.first["kind"].as_s)
       assert_equal(state_diff, findings.first["example"]["state_diff"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "reads the batch modes, duration and idempotency flag from versions.txt" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "apt", divergent: false)
+      File.write(File.join(dir, "versions.txt"), <<-TEXT)
+        tool: krikri-playbook-generator 0.0.8
+        modes: check,real
+        idempotency: true
+        batch duration: 41.2s
+        TEXT
+
+      info = Triage.new(dir).batch_info
+      assert_equal(%w[check real], info[:modes])
+      assert_equal(true, info[:second_run])
+      assert_equal("41.2s", info[:duration])
+      report = JSON.parse(Triage.new(dir).report_json)
+      assert_equal(%w[check real], report["batch"]["modes"].as_a.map(&.as_s))
+      assert_equal(true, report["batch"]["second_run"].as_bool)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

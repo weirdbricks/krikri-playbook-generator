@@ -1,4 +1,5 @@
 require "option_parser"
+require "./run_mode"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -52,6 +53,9 @@ module KrikriPlaybookGenerator
     property min_happy_success : Float64?
     property tasks_per_playbook : Int32
     property? seed_given : Bool
+    property modes : Array(RunMode)
+    property? modes_given : Bool
+    property? second_run : Bool
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
                    @supported_community = false, @scope_from_krikri = false,
@@ -64,7 +68,8 @@ module KrikriPlaybookGenerator
                    @keep_going = false, @engine_timeout = 120, @control = false,
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
                    @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
-                   @microvm_parallel = 1,
+                   @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
+                   @modes_given = false, @second_run = true,
                    @microvm_dir = "/home/labros/.local/share/krikri-playbook-generator/microvm")
     end
 
@@ -115,6 +120,13 @@ module KrikriPlaybookGenerator
         dsl.on("--engine-timeout N", "per-engine timeout in seconds; a hung engine is recorded with rc 124 (default: 120)") { |v| opts.engine_timeout = parse_int(v, "--engine-timeout") }
         dsl.on("--min-happy-success PCT", "exit 1 when the happy-path success rate is below PCT (report, or generate with a run backend)") { |v| opts.min_happy_success = parse_float(v, "--min-happy-success") }
         dsl.on("--json", "print the report as a single JSON object on stdout (report, modules)") { opts.json = true }
+        dsl.on("--modes LIST", "which run modes to compare: check, real or both (default: both on isolated backends, check locally)") do |v|
+          modes = RunMode.parse_list(v)
+          raise InvalidOptionsError.new("unknown --modes value #{v.inspect} (expected: check, real, both)") unless modes
+          opts.modes = modes
+          opts.modes_given = true
+        end
+        dsl.on("--no-second-run", "skip the second-run idempotency pass (the default runs a successful playbook twice on the same host)") { opts.second_run = false }
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
       end
       parser.parse(rest)
@@ -138,11 +150,33 @@ module KrikriPlaybookGenerator
       opts
     end
 
-    # The Runner's check-mode wiring: --check forces check mode on (podman
-    # runs are real by default), local runs stay --check --diff unless
-    # --allow-mutation, and atlantic runs are always real.
-    def self.check_mode(opts : Options) : Bool
-      opts.check? || (!opts.run_on_podman? && !opts.run_on_atlantic? && !opts.run_on_microvm? && !opts.run_on_mixed? && !opts.allow_mutation?)
+    # The modes Runner actually compares. Both is the default on an
+    # isolated backend because a module can be correct in one mode and
+    # wrong in the other; local runs stay check-only unless
+    # --allow-mutation is explicit (real modules mutate *this* machine),
+    # and Atlantic runs are always real.
+    def self.effective_modes(opts : Options) : Array(RunMode)
+      modes = opts.modes_given? ? opts.modes : default_modes(opts)
+      modes = [RunMode::Check] if opts.check? && !opts.modes_given?
+      if opts.run_on_atlantic? && modes.includes?(RunMode::Check)
+        raise InvalidOptionsError.new("check mode is not available on --run-on-atlantic (Atlantic runs are deliberately real)")
+      end
+      if local_run?(opts) && modes.includes?(RunMode::Real) && !opts.allow_mutation?
+        raise InvalidOptionsError.new("real mode on the local backend needs --allow-mutation (happy-path tasks would mutate this machine)")
+      end
+      modes.uniq
+    end
+
+    private def self.default_modes(opts : Options) : Array(RunMode)
+      return [RunMode::Real] if opts.run_on_atlantic?
+      return [RunMode::Check] if local_run?(opts) && !opts.allow_mutation?
+      return [RunMode::Real] if local_run?(opts)
+
+      [RunMode::Check, RunMode::Real]
+    end
+
+    private def self.local_run?(opts : Options) : Bool
+      !opts.run_on_podman? && !opts.run_on_atlantic? && !opts.run_on_microvm? && !opts.run_on_mixed?
     end
 
     private def self.check_conflicts!(opts : Options) : Nil

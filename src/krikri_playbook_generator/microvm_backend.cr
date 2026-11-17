@@ -420,8 +420,15 @@ module KrikriPlaybookGenerator
     # Runner can compare what the two engines actually changed (the state
     # oracle); the pair's overlays are per playbook, so the before/after
     # delta belongs to that engine alone.
-    def run_playbook(playbook_path : String, os : String) : {ansible: HostState::Observation, krikri: HostState::Observation}
+    #
+    # Every call boots a fresh pair, so the mode matrix (check vs real)
+    # simply calls this once per mode. `second_run` re-runs the playbook on
+    # the SAME pair after the first run succeeded on both engines (the
+    # idempotency pass); each pass is returned separately.
+    def run_playbook(playbook_path : String, os : String,
+                     check : Bool? = nil, second_run : Bool = false) : Array(HostState::Comparison)
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
+      effective_check = check.nil? ? @check_mode : check
 
       lease = acquire_slot
       begin
@@ -429,9 +436,14 @@ module KrikriPlaybookGenerator
         begin
           pair.vms.each { |host| prep_vm(host, playbook_path) }
           basename = File.basename(playbook_path)
-          ansible = observe(pair.ansible, "ansible-playbook", basename)
-          krikri = observe(pair.krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", basename)
-          {ansible: ansible, krikri: krikri}
+          krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
+          runs = [] of HostState::Comparison
+          runs << comparison(pair, basename, krikri_engine, effective_check)
+          if second_run && HostState.succeeded?(runs.first[:ansible]) &&
+             HostState.succeeded?(runs.first[:krikri])
+            runs << comparison(pair, basename, krikri_engine, effective_check)
+          end
+          runs
         ensure
           stop_pair(pair)
         end
@@ -440,9 +452,16 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def observe(vm : Vm, binary : String, basename : String) : HostState::Observation
+    private def comparison(pair : Pair, basename : String, krikri_engine : String,
+                           check : Bool) : HostState::Comparison
+      {ansible: observe(pair.ansible, "ansible-playbook", basename, check),
+       krikri:  observe(pair.krikri, krikri_engine, basename, check)}
+    end
+
+    private def observe(vm : Vm, binary : String, basename : String,
+                        check : Bool) : HostState::Observation
       before = snapshot_state(vm)
-      result = exec_engine(vm, binary, basename)
+      result = exec_engine(vm, binary, basename, check)
       HostState::Observation.new(result, before, snapshot_state(vm))
     end
 
@@ -852,8 +871,9 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def exec_engine(vm : Vm, binary : String, basename : String) : Cmd::Result
-      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, @check_mode)
+    private def exec_engine(vm : Vm, binary : String, basename : String,
+                            check : Bool = @check_mode) : Cmd::Result
+      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check)
       result = Cmd.run("timeout", [(@engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
         timeout: @engine_timeout + 150.0)
       if result.rc == 255

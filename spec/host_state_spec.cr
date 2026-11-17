@@ -103,5 +103,14 @@ module KrikriPlaybookGenerator
       assert_includes(script, "%{NAME}\\t%{VERSION}-%{RELEASE}\\n")
       assert_includes(script, "\\( -path /etc/hostname")
     end
+
+    it "only calls a run successful when it neither failed nor timed out" do
+      ok = HostState::Observation.new(Cmd::Result.new(0, "ok", ""))
+      assert(HostState.succeeded?(ok))
+      refute(HostState.succeeded?(HostState::Observation.new(Cmd::Result.new(2, "ok", ""))))
+      refute(HostState.succeeded?(HostState::Observation.new(Cmd::Result.new(0, "ok", "", true))))
+      refute(HostState.succeeded?(HostState::Observation.new(
+        Cmd::Result.new(0, "fatal: [target]: FAILED! => boom", ""))))
+    end
   end
 end

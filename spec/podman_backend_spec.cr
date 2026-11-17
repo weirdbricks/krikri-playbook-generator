@@ -175,7 +175,7 @@ module KrikriPlaybookGenerator
       backend.provision(PodmanBackend::Profile::Debian)
       backend.provision(PodmanBackend::Profile::Rpm)
       begin
-        outcome = backend.run_playbook(playbook_path, PodmanBackend::Profile::Debian)
+        outcome = backend.run_playbook(playbook_path, PodmanBackend::Profile::Debian).first
         assert_equal(0, outcome[:ansible].result.rc)
         assert(outcome[:ansible].result.stdout.includes?("ignored=0"),
           "the Debian playbook was not run on the Debian image:\n#{outcome[:ansible].result.stdout}")
@@ -200,11 +200,16 @@ module KrikriPlaybookGenerator
       backend = PodmanBackend.new(krikri_bin)
       backend.provision
       begin
-        outcome = backend.run_playbook(playbook_path)
-        assert_equal(0, outcome[:ansible].result.rc)
-        assert_equal(0, outcome[:krikri].result.rc)
-        assert(outcome[:ansible].result.stdout.includes?("PLAY RECAP"))
-        assert(outcome[:krikri].result.stdout.includes?("PLAY RECAP"))
+        # the second-run pass reuses the SAME pair: a debug task succeeds
+        # on both engines, so both runs must come back
+        runs = backend.run_playbook(playbook_path, second_run: true)
+        assert_equal(2, runs.size)
+        runs.each do |outcome|
+          assert_equal(0, outcome[:ansible].result.rc)
+          assert_equal(0, outcome[:krikri].result.rc)
+          assert(outcome[:ansible].result.stdout.includes?("PLAY RECAP"))
+          assert(outcome[:krikri].result.stdout.includes?("PLAY RECAP"))
+        end
       ensure
         backend.teardown
       end
@@ -232,7 +237,7 @@ module KrikriPlaybookGenerator
       assert(cached.cache_hit?(PodmanBackend::Profile::Debian),
         "the second provision must hit the image cache (teardown keeps the committed images)")
       begin
-        outcome = cached.run_playbook(playbook_path)
+        outcome = cached.run_playbook(playbook_path).first
         assert_equal(0, outcome[:ansible].result.rc)
         assert_equal(0, outcome[:krikri].result.rc)
       ensure

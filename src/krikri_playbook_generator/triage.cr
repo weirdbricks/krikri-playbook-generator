@@ -1,6 +1,7 @@
 require "json"
 require "./masks"
 require "./host_state"
+require "./run_mode"
 require "./microvm_backend"
 require "./overrides"
 
@@ -27,11 +28,11 @@ module KrikriPlaybookGenerator
   # - `rates`: per-module byte-identical rate over all compared playbooks.
   class Triage
     record MutationEntry, option : String, kind : String
-    record ResultLine, playbook : String, module_name : String, chaos : Bool,
-      divergent : Bool, signature : String?, ansible_failed : Bool, ansible_error : String?,
-      mutations : Array(MutationEntry), error : String?, masked_diff : String,
-      masked_identical : Bool, state_divergent : Bool, state_signature : String?,
-      state_diff : String do
+    record ResultLine, playbook : String, module_name : String, mode : String, run : Int32,
+      chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
+      ansible_error : String?, mutations : Array(MutationEntry), error : String?,
+      masked_diff : String, masked_identical : Bool, state_divergent : Bool,
+      state_signature : String?, state_diff : String do
       def errored? : Bool
         !error.nil?
       end
@@ -83,33 +84,33 @@ module KrikriPlaybookGenerator
     end
 
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.output_divergent?
 
-        key = {line.module_name, line.signature}
+        key = {line.module_name, line.mode, line.run, line.signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, signature), entries|
+      groups.map do |(module_name, _mode, _run, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def state_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.state_divergent
         next if line.output_divergent? || line.errored?
 
-        key = {line.module_name, line.state_signature}
+        key = {line.module_name, line.mode, line.run, line.state_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, signature), entries|
+      groups.map do |(module_name, _mode, _run, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
@@ -128,6 +129,14 @@ module KrikriPlaybookGenerator
           json.field "errored", lines.count(&.errored?)
           json.field "divergent", lines.count(&.divergent)
           json.field "state_divergent", lines.count(&.state_divergent)
+          info = batch_info
+          json.field "batch" do
+            json.object do
+              json.field "modes", info[:modes]
+              json.field "duration", info[:duration]
+              json.field "second_run", info[:second_run]
+            end
+          end
           json.field "findings" do
             json.array do
               findings_from(lines).each { |finding| finding_json(json, finding) }
@@ -183,6 +192,8 @@ module KrikriPlaybookGenerator
           example = finding.example
           json.object do
             json.field "playbook", example.playbook
+            json.field "mode", example.mode
+            json.field "run", example.run
             json.field "chaos", example.chaos
             json.field "mutations" do
               json.array do
@@ -228,6 +239,7 @@ module KrikriPlaybookGenerator
 
       lines.each do |line|
         next if line.chaos || line.errored?
+        next if line.run > 1
         next if @overrides.expect_failure?(line.module_name)
         next if @overrides.not_applicable?(line.module_name)
         next unless line.ansible_failed
@@ -237,7 +249,7 @@ module KrikriPlaybookGenerator
 
       groups.map do |module_name, entries|
         total = lines.count do |line|
-          !line.chaos && !line.errored? && line.module_name == module_name
+          !line.chaos && !line.errored? && line.run == 1 && line.module_name == module_name
         end
         Quality.new(module_name, entries.size, total, entries.first.ansible_error || "unknown error")
       end.sort_by! { |quality| -quality.failed }
@@ -254,6 +266,9 @@ module KrikriPlaybookGenerator
       failed = 0
       lines.each do |line|
         next if line.chaos || line.errored?
+        # A second-run row re-runs an already counted playbook: it measures
+        # idempotency, not whether the reference engine can run the task.
+        next if line.run > 1
         next if @overrides.expect_failure?(line.module_name)
         next if @overrides.not_applicable?(line.module_name)
 
@@ -275,6 +290,28 @@ module KrikriPlaybookGenerator
     # reason, and reported so the exclusion stays visible.
     def not_applicable_modules : Array(String)
       result_lines.map(&.module_name).uniq!.select { |name| @overrides.not_applicable?(name) }.sort!
+    end
+
+    # Provenance written next to results.jsonl by Runner: which mode matrix
+    # the batch covered, whether the second-run pass was on, and how long
+    # the batch took (so the cost of both is visible in the report).
+    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool)
+      path = File.join(@results_dir, "versions.txt")
+      modes = [] of String
+      duration = nil
+      second_run = false
+      if File.exists?(path)
+        File.each_line(path) do |line|
+          key, value = line.split(": ", 2)
+          next unless value
+          case key
+          when "modes"          then modes = value.split(',').map(&.strip)
+          when "batch duration" then duration = value.strip
+          when "idempotency"    then second_run = value.strip == "true"
+          end
+        end
+      end
+      {modes: modes, duration: duration, second_run: second_run}
     end
 
     def rates : Array(Rate)
@@ -300,9 +337,13 @@ module KrikriPlaybookGenerator
     # backend must be one that can host the playbook's module at all - a
     # database or container module needs the microVM path, and sending it to
     # podman would "reproduce" nowhere.
-    def self.repro_command(playbook_path : String, module_names : Array(String) = [] of String) : String
+    def self.repro_command(playbook_path : String, module_names : Array(String) = [] of String,
+                           mode : String? = nil, run : Int32 = 1) : String
       backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
-      "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
+      command = "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
+      command += " --modes #{mode}" if mode && mode.in?(%w[check real])
+      command += " --no-second-run" if run <= 1
+      command
     end
 
     private def result_lines : Array(ResultLine)
@@ -351,6 +392,8 @@ module KrikriPlaybookGenerator
 
       ResultLine.new(
         playbook, module_name,
+        parsed["mode"]?.try(&.as_s?) || RunMode::Real.label,
+        parsed["run"]?.try(&.as_i?) || 1,
         parsed["chaos"]?.try(&.as_bool?) || false,
         divergent,
         result_signature(masked_diff, parsed),

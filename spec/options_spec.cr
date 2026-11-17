@@ -78,14 +78,39 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--check"))
     end
 
-    it "derives Runner check mode: --check forces it on, podman stays real by default, local stays --check unless --allow-mutation" do
-      assert(Options.check_mode(Options.parse(["run"])))
-      assert(Options.check_mode(Options.parse(["run", "--check"])))
-      refute(Options.check_mode(Options.parse(["run", "--run-on-podman"])))
-      assert(Options.check_mode(Options.parse(["run", "--run-on-podman", "--check"])))
-      refute(Options.check_mode(Options.parse(["run", "--allow-mutation"])))
-      refute(Options.check_mode(Options.parse(["run", "--run-on-podman", "--allow-mutation"])))
-      refute(Options.check_mode(Options.parse(["run", "--run-on-atlantic"])))
+    it "compares both modes by default on an isolated backend and check only on local" do
+      assert_equal([RunMode::Check], Options.effective_modes(Options.parse(["run"])))
+      assert_equal([RunMode::Check], Options.effective_modes(Options.parse(["run", "--check"])))
+      assert_equal([RunMode::Check, RunMode::Real], Options.effective_modes(Options.parse(["run", "--run-on-podman"])))
+      assert_equal([RunMode::Check], Options.effective_modes(Options.parse(["run", "--run-on-podman", "--check"])))
+      assert_equal([RunMode::Check, RunMode::Real], Options.effective_modes(Options.parse(["run", "--run-on-microvm"])))
+      assert_equal([RunMode::Real], Options.effective_modes(Options.parse(["run", "--run-on-atlantic"])))
+    end
+
+    it "keeps local real mode behind --allow-mutation" do
+      assert_equal([RunMode::Real], Options.effective_modes(Options.parse(["run", "--allow-mutation"])))
+      assert_equal([RunMode::Check, RunMode::Real],
+        Options.effective_modes(Options.parse(["run", "--allow-mutation", "--modes", "both"])))
+      err = assert_raises(InvalidOptionsError) { Options.effective_modes(Options.parse(["run", "--modes", "real"])) }
+      assert((err.message || "").includes?("--allow-mutation"))
+    end
+
+    it "parses --modes and refuses check mode on Atlantic" do
+      assert_equal([RunMode::Check], Options.effective_modes(Options.parse(["run", "--run-on-podman", "--modes", "check"])))
+      assert_equal([RunMode::Real], Options.effective_modes(Options.parse(["run", "--run-on-podman", "--modes", "real"])))
+      assert_equal([RunMode::Check, RunMode::Real], Options.effective_modes(Options.parse(["run", "--run-on-podman", "--modes", "both"])))
+      err = assert_raises(InvalidOptionsError) { Options.effective_modes(Options.parse(["run", "--run-on-atlantic", "--modes", "both"])) }
+      assert((err.message || "").includes?("check"))
+    end
+
+    it "raises on an unknown --modes value, naming it" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--modes", "dry"]) }
+      assert((err.message || "").includes?("dry"))
+    end
+
+    it "runs the second-run idempotency pass by default and lets --no-second-run turn it off" do
+      assert(Options.parse(["run"]).second_run?)
+      refute(Options.parse(["run", "--no-second-run"]).second_run?)
     end
 
     it "parses --refresh-podman-templates with --run-on-podman and refuses it without" do
@@ -136,7 +161,8 @@ module KrikriPlaybookGenerator
       opts = Options.parse(["run", "--run-on-mixed", "--podman-parallel", "2"])
       assert(opts.run_on_mixed?)
       assert_equal(2, opts.podman_parallel)
-      refute(Options.check_mode(opts))
+      assert_equal([RunMode::Check, RunMode::Real],
+        Options.effective_modes(opts))
     end
 
     it "allows --control with a microvm backend" do

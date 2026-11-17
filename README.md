@@ -46,7 +46,12 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    play-level handler (v2). One playbook's tasks always share a host
    profile (Ubuntu vs Rocky), so a profile with fewer than N modules
    yields a shorter playbook rather than a mix no single host can run.
-4. **runner** — two backends, neither the default. **Local** runs each
+4. **runner** — two backends, neither the default. Every playbook is
+  compared once per **mode** (`--check` and real) so a module that is
+  right in one and wrong in the other cannot hide; each mode gets a
+  fresh host pair, and a playbook whose first run succeeded on both
+  engines is run a second time on the same host (the idempotency pass,
+  `--no-second-run` to skip it). **Local** runs each
   playbook against both engines on this machine (`-i localhost, -c
   local`), `--check --diff` unless `--allow-mutation` is passed, so
   happy-path tasks (real modules — apt, user, ...) can't mutate *this*
@@ -96,11 +101,15 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    a generator-quality section (per module, how many happy-path playbooks
    failed on real ansible — wasted coverage — and the first error line,
    plus the batch-level happy-path success rate and the modules excluded as
-   `not_applicable`), and per-module byte-identical rates.
+   `not_applicable`), per-module byte-identical rates, and a batch header
+   stating the modes covered, whether the second-run pass ran, and the
+   batch wall time.
 
 ## Byte comparison
 
-results.jsonl stores, per playbook: `masked_identical`, `raw_identical`,
+results.jsonl has one row per comparison: `playbook`, the `mode`
+(`check` or `real`), the `run` number (1, or 2 for the idempotency pass),
+`masked_identical`, `raw_identical`,
 `recap_divergent` (the old counter-only comparison, kept as an extra
 field), a stable `signature`, the masked and unmasked diffs, and per
 engine `rc`/`timed_out`/`recap`/raw `stdout`/`stderr`. The mask list
@@ -115,6 +124,31 @@ deliberately minimal, every entry carrying a justification comment:
    nonces).
 
 Nothing else is masked — any remaining difference is the finding.
+
+## Modes and idempotency
+
+Each playbook is compared once per mode: a `--check` run and a real one.
+Divergence in one half alone is the common case, so the default matrix on
+an isolated backend (podman, microVM, mixed) is **both**; local runs stay
+check-only unless `--allow-mutation` is explicit (real modules would
+mutate *this* machine), and Atlantic runs are always real.
+`--modes check|real|both` narrows or widens it. Every (playbook, mode)
+gets its own fresh host/pair, so real-mode state can never leak into the
+check row. Triage groups findings by module + mode + run + signature, so
+a check-mode-only divergence is reported once, not twice.
+
+Idempotency is the second axis: a playbook whose first run succeeded on
+both engines is executed again on the same host pair, and the second
+run's output, recap and state delta are compared engine-vs-engine. That
+row carries `run: 2`, so first-run findings stay attributable; the pass
+is skipped after a failed first run and on Atlantic (its playbooks share
+one VM per profile). Second-run rows are excluded from the happy-path
+coverage metric: they measure repeatability, not whether the reference
+engine can run the task at all.
+
+Both axes cost runtime, so the cost is visible: the report's `Batch`
+section prints the modes, the idempotency flag and wall time, and
+`versions.txt` records `modes:`, `idempotency:` and `batch duration:`.
 
 ## Host state
 
@@ -230,9 +264,10 @@ found". A batch with no happy-path playbooks passes the gate.
 `report` works on any results directory, including one produced by
 `generate --run-on-podman`. Add `--json` to print ONE JSON object on
 stdout instead of the human report — `results_dir`, `total`/`errored`/
-`divergent` counts, `findings` grouped by module + diff signature (each
-with its playbooks and an example carrying chaos/mutations, the masked
-diff and ansible's first error), `state_divergent`/`state_findings` for
+`divergent` counts, a `batch` object (modes, duration, second-run flag),
+`findings` grouped by module + mode + run + diff signature (each
+with its playbooks and an example carrying mode/run, chaos/mutations, the
+masked diff and ansible's first error), `state_divergent`/`state_findings` for
 state-only divergences (kind `state`, with the state diff), `errors`, `not_applicable` (modules a
 single-task local playbook cannot exercise), `happy_coverage` (attempted/
 failed/succeeded/`success_percent`), and per-module `rates`. Exit code is
@@ -241,9 +276,9 @@ unchanged (0 none, 2 divergences, 1 gate/failure); warnings stay on stderr.
 Every `run` also writes `versions.txt` next to `results.jsonl` — a
 best-effort provenance record (tool version, run start time, krikri
 binary path/mtime/`--version`/git commit + subject, ansible-playbook
-version, control flag) parsed by krikri-role-triager, including a
-warning line when the krikri binary is older than its checkout's last
-commit touching build inputs.
+version, control flag, modes, idempotency flag, batch duration) parsed
+by krikri-role-triager, including a warning line when the krikri binary
+is older than its checkout's last commit touching build inputs.
 
 Without `--run-on-podman`, `run` executes locally and defaults to Ansible
 `--check` mode (no real host mutation) since happy-path tasks are real
@@ -251,7 +286,10 @@ modules that would otherwise install packages, create users, etc. on the
 machine running this tool; pass `--allow-mutation` to run for real
 without podman, once you have your own disposable host to point it at.
 `--run-on-podman` also works on `run` alone, to re-run an
-already-generated `--out` directory.
+already-generated `--out` directory. `--modes` chooses the mode matrix
+and `--no-second-run` skips the idempotency pass; Triage's repro command
+pins `--modes` (and `--no-second-run` for a run-1 finding) so it
+reproduces exactly the row it reports.
 
 ## Status
 

@@ -213,18 +213,25 @@ module KrikriPlaybookGenerator
       # PodmanBackend gets its own opt-in integration spec below.
       results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin).run
 
-      assert_equal(1, results.size)
+      # the default local run is one check-mode pass plus the second-run
+      # idempotency pass, since a debug task succeeds on both engines
+      assert_equal(2, results.size)
       result = results.first
       assert_equal(playbook_path, result.playbook)
+      assert_equal(RunMode::Check, result.mode)
+      assert_equal(1, result.run)
+      assert_equal(2, results.last.run)
       assert_equal(0, result.ansible.rc)
       assert_equal(0, result.krikri.rc)
       meta = result.meta
       refute_nil(meta)
       assert_equal("debug", meta.as(Runner::MetaInfo).module_name)
       lines = File.read_lines(File.join(results_dir, "results.jsonl"))
-      assert_equal(1, lines.size)
+      assert_equal(2, lines.size)
       parsed = JSON.parse(lines.first)
       assert_equal(playbook_path, parsed["playbook"].as_s)
+      assert_equal("check", parsed["mode"].as_s)
+      assert_equal(1, parsed["run"].as_i)
       assert(parsed["ansible"]["recap"].as_h.has_key?("ok"))
       assert(parsed["ansible"].as_h.has_key?("timed_out"))
       assert(parsed.as_h.has_key?("masked_identical"))
@@ -239,7 +246,9 @@ module KrikriPlaybookGenerator
       assert(versions.any?(&.starts_with?("ansible-playbook: ")))
       # the local default is check mode, so the run is recorded as a check run
       assert(versions.includes?("check: true"))
-      assert(versions.last == "check: true" || versions.last == Versions::STALE_WARNING)
+      assert(versions.includes?("modes: check"))
+      assert(versions.includes?("idempotency: true"))
+      assert(versions.any?(&.starts_with?("batch duration: ")))
     ensure
       FileUtils.rm_rf(playbook_dir) if playbook_dir
       FileUtils.rm_rf(results_dir) if results_dir
@@ -257,13 +266,52 @@ module KrikriPlaybookGenerator
       krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
       results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin).run
 
-      assert_equal(1, results.size)
+      assert_equal(2, results.size)
       meta = results.first.meta
       refute_nil(meta)
       assert_equal(["debug", "stat"], meta.as(Runner::MetaInfo).module_names)
       parsed = JSON.parse(File.read_lines(File.join(results_dir, "results.jsonl")).first)
       assert_equal(%w[debug stat], parsed["modules"].as_a.map(&.as_s))
       assert_equal("debug", parsed["module"].as_s)
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
+    it "compares every requested mode as its own row" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      task = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("mode matrix")})
+      playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin,
+        modes: [RunMode::Check, RunMode::Real], second_run: false).run
+
+      assert_equal(2, results.size)
+      assert_equal([RunMode::Check, RunMode::Real], results.map(&.mode))
+      assert_equal([1, 1], results.map(&.run))
+      parsed = File.read_lines(File.join(results_dir, "results.jsonl")).map { |line| JSON.parse(line) }
+      assert_equal(%w[check real], parsed.map { |entry| entry["mode"].as_s })
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
+    it "skips the second-run idempotency pass when the first run failed on an engine" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      task = GeneratedTask.new("fail", "ansible.builtin", {"msg" => YAML::Any.new("boom")})
+      playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin).run
+
+      assert_equal(1, results.size)
+      assert_equal(1, results.first.run)
+      assert_equal(1, File.read_lines(File.join(results_dir, "results.jsonl")).size)
     ensure
       FileUtils.rm_rf(playbook_dir) if playbook_dir
       FileUtils.rm_rf(results_dir) if results_dir

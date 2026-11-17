@@ -7,6 +7,7 @@ require "./atlantic_backend"
 require "./microvm_backend"
 require "./masks"
 require "./host_state"
+require "./run_mode"
 require "./fixtures"
 require "./versions"
 
@@ -96,10 +97,15 @@ module KrikriPlaybookGenerator
       getter krikri : EngineRun
       getter meta : MetaInfo?
       getter error : String?
+      # Which half of the mode matrix this row compares, and whether it is
+      # the first run or the second-run idempotency pass.
+      getter mode : RunMode
+      getter run : Int32
       @state_diff : String?
       @state_divergent : Bool
 
-      def initialize(@playbook, @ansible, @krikri, @meta, @error = nil)
+      def initialize(@playbook, @ansible, @krikri, @meta, @error = nil,
+                     @mode = RunMode::Real, @run = 1)
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
         diff = compute_state_diff
         @state_diff = diff
@@ -120,9 +126,10 @@ module KrikriPlaybookGenerator
         "reference ansible is missing a python library (harness gap, not krikri; add it to the rpm/deb real package lists in data/module_dependencies.yml): #{lib_line.try(&.strip)}" if lib_line
       end
 
-      def self.errored(playbook : String, meta : MetaInfo?, message : String) : PlaybookResult
+      def self.errored(playbook : String, meta : MetaInfo?, message : String,
+                       mode : RunMode = RunMode::Real, run : Int32 = 1) : PlaybookResult
         failed = EngineRun.new("ansible", -1, nil, "", "", false)
-        PlaybookResult.new(playbook, failed, failed, meta, message)
+        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run)
       end
 
       def raw_identical? : Bool
@@ -259,13 +266,14 @@ module KrikriPlaybookGenerator
     end
 
     @completed : Atomic(Int32) = Atomic.new(0)
+    @planned : Int32 = 0
 
     def initialize(@playbook_paths : Array(String), @results_dir : String, @atlantic_hosts : Int32 = 22,
                    @ansible_playbook_bin : String = "ansible-playbook",
                    @krikri_bin : String = "/home/labros/git_work/krikri/bin/krikri-playbook",
-                   @check_mode : Bool = true, @run_on_podman : Bool = false,
+                   @modes : Array(RunMode) = [RunMode::Check], @run_on_podman : Bool = false,
                    @run_on_atlantic : Bool = false, @run_on_microvm : Bool = false,
-                   @run_on_mixed : Bool = false,
+                   @run_on_mixed : Bool = false, @second_run : Bool = true,
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120,
                    @control : Bool = false, @refresh_podman_templates : Bool = false,
                    @podman_parallel : Int32 = 1, @microvm_dir : String = MicrovmBackend::DEFAULT_DIR,
@@ -278,8 +286,8 @@ module KrikriPlaybookGenerator
       Log.info("runner", message, color: Log::BLUE)
     end
 
-    # One line per finished playbook, so a long batch shows where it is:
-    #   12:34:56 [runner] playbook 5/60 complete: 000004-file-chaos.yml (DIVERGENT)
+    # One line per finished comparison, so a long batch shows where it is:
+    #   12:34:56 [runner] comparison 5/12 complete: 000004-file-chaos.yml (check, run 1) (DIVERGENT)
     private def progress(result : PlaybookResult) : PlaybookResult
       done = @completed.add(1) + 1
       verdict = if result.error
@@ -289,8 +297,17 @@ module KrikriPlaybookGenerator
                 else
                   Log.paint(Log::GREEN, "ok")
                 end
-      log("playbook #{done}/#{@playbook_paths.size} complete: " \
-          "#{File.basename(result.playbook)} (#{verdict})")
+      log("comparison #{done}/#{@planned} complete: " \
+          "#{File.basename(result.playbook)} (#{result.mode.label}, run #{result.run}) (#{verdict})")
+      result
+    end
+
+    # The second-run row is logged without the planned counter: whether it
+    # runs depends on the first run succeeding on both engines.
+    private def log_second_run(result : PlaybookResult) : PlaybookResult
+      verdict = result.divergent? ? Log.paint(Log::YELLOW, "DIVERGENT") : Log.paint(Log::GREEN, "ok")
+      log("second run complete: #{File.basename(result.playbook)} " \
+          "(#{result.mode.label}) (#{verdict})")
       result
     end
 
@@ -309,8 +326,9 @@ module KrikriPlaybookGenerator
         raise PodmanProvisionError.new("--run-on-mixed was requested but `podman` isn't on PATH")
       end
 
-      log("starting #{@playbook_paths.size} playbook(s) " \
-          "(backend=#{backend_label}, results=#{@results_dir})")
+      @planned = @playbook_paths.size * @modes.size
+      log("starting #{@playbook_paths.size} playbook(s) x #{@modes.map(&.label).join("+")} " \
+          "mode(s) (backend=#{backend_label}, results=#{@results_dir})")
       Dir.mkdir_p(@results_dir)
       results = Log.phase("runner", "executing #{@playbook_paths.size} playbook(s) (#{backend_label})") do
         if @run_on_atlantic
@@ -329,7 +347,8 @@ module KrikriPlaybookGenerator
       write_results(results)
       write_versions(started)
       divergent = results.count(&.divergent?)
-      log("batch complete: #{results.size} playbook(s), " \
+      log("batch complete in #{(Time.utc - started).total_seconds.round(1)}s: " \
+          "#{results.size} comparison(s), " \
           "#{Log.paint(Log::YELLOW, divergent.to_s)} divergent, " \
           "#{Log.paint(Log::RED, results.count(&.error).to_s)} errored")
       results
@@ -377,7 +396,7 @@ module KrikriPlaybookGenerator
       return [] of PlaybookResult if paths.empty?
       MicrovmBackend.cleanup_stale(@microvm_dir)
       backend = MicrovmBackend.new(@krikri_bin, @engine_timeout, @microvm_dir,
-        control: @control, check_mode: @check_mode)
+        control: @control)
       profiles = Hash(String, Array(String)).new do |hash, os|
         hash[os] = [] of String
       end
@@ -389,14 +408,16 @@ module KrikriPlaybookGenerator
         profiles.each_key { |os| backend.provision(os) }
         log("microvm: running #{paths.size} playbook(s) " \
             "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
-        Runner.in_parallel(paths, @microvm_parallel) do |path|
-          guarded(path) do
-            os = MicrovmBackend.profile_for(load_meta(path).try(&.module_names) || [] of String)
-            outcome = backend.run_playbook(path, os)
-            progress(PlaybookResult.new(path, to_engine_run("ansible", outcome[:ansible]),
-              to_engine_run("krikri", outcome[:krikri]), load_meta(path)))
+        profiles.flat_map do |os, batch|
+          Runner.in_parallel(batch, @microvm_parallel) do |path|
+            @modes.flat_map do |mode|
+              guarded_results(path, mode) do
+                runs = backend.run_playbook(path, os, check: mode.check?, second_run: @second_run)
+                comparison_results(path, mode, runs)
+              end
+            end
           end
-        end
+        end.flatten
       ensure
         backend.teardown
       end
@@ -407,6 +428,9 @@ module KrikriPlaybookGenerator
     # modules are a caller bug - refuse rather than silently running them
     # somewhere that can't satisfy their happy path.
     private def run_via_atlantic : Array(PlaybookResult)
+      if @second_run
+        log("atlantic: skipping the second-run idempotency pass (playbooks share one VM per profile)")
+      end
       groups = Hash(String, Array(String)).new
       @playbook_paths.each do |path|
         # doc's own `module` field (and therefore the meta sidecar) is the
@@ -422,7 +446,7 @@ module KrikriPlaybookGenerator
       backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts,
         on_playbook_done: ->(path : String) {
           done = @completed.add(1) + 1
-          log("playbook #{done}/#{@playbook_paths.size} complete: #{File.basename(path)}")
+          log("comparison #{done}/#{@planned} complete: #{File.basename(path)} (real, run 1)")
         })
       backend.run_groups(groups).map do |entry|
         meta = load_meta(entry[:playbook])
@@ -430,11 +454,11 @@ module KrikriPlaybookGenerator
         # of engine failures - record it as an errored result instead
         if entry[:ansible].rc == -1 && entry[:krikri].rc == -1 &&
            entry[:ansible].stderr.includes?("profile provisioning failed")
-          PlaybookResult.errored(entry[:playbook], meta, entry[:ansible].stderr)
+          PlaybookResult.errored(entry[:playbook], meta, entry[:ansible].stderr, RunMode::Real, 1)
         else
           PlaybookResult.new(entry[:playbook],
             to_engine_run("ansible", entry[:ansible]),
-            to_engine_run("krikri", entry[:krikri]), meta)
+            to_engine_run("krikri", entry[:krikri]), meta, mode: RunMode::Real, run: 1)
         end
       end
     end
@@ -450,7 +474,7 @@ module KrikriPlaybookGenerator
         end
       end.flatten
       backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, fqcns.uniq,
-        refresh_templates: @refresh_podman_templates, check_mode: @check_mode)
+        refresh_templates: @refresh_podman_templates)
       begin
         # rpm-family modules need the Rocky template pair; everything else
         # stays on Debian. A mixed batch provisions both templates and runs
@@ -467,9 +491,14 @@ module KrikriPlaybookGenerator
             "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
         profiles.flat_map do |profile, batch|
           Runner.in_parallel(batch, @podman_parallel) do |path|
-            guarded(path) { progress(run_playbook_via_podman(backend, path, profile)) }
+            @modes.flat_map do |mode|
+              guarded_results(path, mode) do
+                runs = backend.run_playbook(path, profile, check: mode.check?, second_run: @second_run)
+                comparison_results(path, mode, runs)
+              end
+            end
           end
-        end
+        end.flatten
       ensure
         backend.teardown
         report_leaks
@@ -489,12 +518,6 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def run_playbook_via_podman(backend : PodmanBackend, path : String, profile : PodmanBackend::Profile) : PlaybookResult
-      outcome = backend.run_playbook(path, profile)
-      PlaybookResult.new(path, to_engine_run("ansible", outcome[:ansible]),
-        to_engine_run("krikri", outcome[:krikri]), load_meta(path))
-    end
-
     private def run_locally : Array(PlaybookResult)
       supported = Dependencies.load.supported
       @playbook_paths.each do |path|
@@ -510,20 +533,34 @@ module KrikriPlaybookGenerator
         end
       end
       Fixtures.seed_local
-      @playbook_paths.map { |path| guarded(path) { progress(run_playbook_locally(path)) } }
+      @playbook_paths.flat_map do |path|
+        @modes.flat_map do |mode|
+          guarded_results(path, mode) do
+            comparison_results(path, mode, run_playbook_locally(path, mode))
+          end
+        end
+      end
     end
 
-    private def run_playbook_locally(path : String) : PlaybookResult
-      PlaybookResult.new(path, run_engine_locally(path, "ansible", @ansible_playbook_bin),
-        run_engine_locally(path, "krikri", @krikri_bin), load_meta(path))
+    private def run_playbook_locally(path : String, mode : RunMode) : Array(HostState::Comparison)
+      runs = [local_comparison(path, mode)]
+      if @second_run && HostState.succeeded?(runs.first[:ansible]) && HostState.succeeded?(runs.first[:krikri])
+        runs << local_comparison(path, mode)
+      end
+      runs
     end
 
-    private def run_engine_locally(path : String, engine : String, bin : String) : EngineRun
+    private def local_comparison(path : String, mode : RunMode) : HostState::Comparison
+      {ansible: HostState::Observation.new(run_engine_locally(path, "ansible", @ansible_playbook_bin, mode)),
+       krikri:  HostState::Observation.new(run_engine_locally(path, "krikri", @krikri_bin, mode))}
+    end
+
+    private def run_engine_locally(path : String, engine : String, bin : String, mode : RunMode) : Cmd::Result
       args = [@engine_timeout.to_s, bin, "-i", "localhost,", "-c", "local"]
-      args.concat(["--check", "--diff"]) if @check_mode
+      args.concat(["--check", "--diff"]) if mode.check?
       args << path
 
-      to_engine_run(engine, Cmd.run("timeout", args, timeout: @engine_timeout + 30.0))
+      Cmd.run("timeout", args, timeout: @engine_timeout + 30.0)
     end
 
     private def to_engine_run(engine : String, result : Cmd::Result) : EngineRun
@@ -537,20 +574,37 @@ module KrikriPlaybookGenerator
         observation.before, observation.after)
     end
 
+    # Turns one mode's comparison passes into result rows: the first pass is
+    # the planned comparison, a second pass (idempotency) is its own row so
+    # a first-run finding stays attributable to the first run.
+    private def comparison_results(path : String, mode : RunMode,
+                                   runs : Array(HostState::Comparison)) : Array(PlaybookResult)
+      results = [] of PlaybookResult
+      runs.each_with_index do |comparison, index|
+        run_number = index + 1
+        result = PlaybookResult.new(path,
+          to_engine_run("ansible", comparison[:ansible]),
+          to_engine_run("krikri", comparison[:krikri]), load_meta(path),
+          mode: mode, run: run_number)
+        results << (run_number == 1 ? progress(result) : log_second_run(result))
+      end
+      results
+    end
+
     # Runs up to `parallel` playbooks at once (--podman-parallel), each still
     # in its own fresh container pair. Cmd.run yields while podman works, so
     # the pairs overlap without threads. Results come back in batch order,
     # and a failure without --keep-going stops the workers from picking up
     # more playbooks and is re-raised only once they have all stopped, so the
     # backend's teardown still runs. Public for the specs.
-    def self.in_parallel(paths : Array(String), parallel : Int32, &block : String -> PlaybookResult) : Array(PlaybookResult)
+    def self.in_parallel(paths : Array(String), parallel : Int32, &block : String -> T) : Array(T) forall T
       limit = Math.min(Math.max(parallel, 1), paths.size)
       return paths.map { |path| block.call(path) } if limit <= 1
 
       queue = Channel(Int32).new(paths.size)
       paths.each_index { |index| queue.send(index) }
       queue.close
-      results = Array(PlaybookResult?).new(paths.size, nil)
+      results = Array(T?).new(paths.size, nil)
       failure : Exception? = nil
       done = Channel(Nil).new(limit)
       limit.times do
@@ -571,13 +625,14 @@ module KrikriPlaybookGenerator
       results.map { |result| result || raise "a playbook was scheduled but never ran" }
     end
 
-    private def guarded(path : String, &block : -> PlaybookResult) : PlaybookResult
+    private def guarded_results(path : String, mode : RunMode,
+                                &block : -> Array(PlaybookResult)) : Array(PlaybookResult)
       block.call
     rescue e : Exception
       raise e unless @keep_going
 
       STDERR.puts "warning: #{File.basename(path)}: #{e.message} - continuing (--keep-going)"
-      PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s)
+      [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1)]
     end
 
     private def report_leaks : Nil
@@ -708,7 +763,7 @@ module KrikriPlaybookGenerator
     # disk.
     private def write_versions(started : Time) : Nil
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
-        @control, @check_mode, started)
+        @control, @modes, @second_run, Time.utc - started, started)
     rescue e
       STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end
@@ -717,6 +772,8 @@ module KrikriPlaybookGenerator
       JSON.build do |json|
         json.object do
           json.field "playbook", result.playbook
+          json.field "mode", result.mode.label
+          json.field "run", result.run
           write_meta_fields(json, result)
           json.field "error", result.error
           json.field "divergent", result.divergent?

@@ -67,6 +67,10 @@ module KrikriPlaybookGenerator
     # compared on stdout/stderr, just without the state oracle).
     record Observation, result : Cmd::Result, before : Snapshot? = nil, after : Snapshot? = nil
 
+    # One comparison pass: each engine's run on its own isolated host (or
+    # the same pair again, for the second-run idempotency pass).
+    alias Comparison = NamedTuple(ansible: Observation, krikri: Observation)
+
     class Snapshot
       getter sections : Hash(String, Array(String))
 
@@ -119,6 +123,16 @@ module KrikriPlaybookGenerator
 
       name = line[1..]
       name if SECTIONS.includes?(name)
+    end
+
+    # Whether an engine run completed without failing. `ignore_errors`
+    # keeps rc at 0 and turns a failure into a fatal line plus an ignored
+    # counter, so all three signals matter.
+    def self.succeeded?(observation : Observation) : Bool
+      result = observation.result
+      return false unless result.rc.zero? && !result.timed_out
+
+      result.stdout.includes?("fatal:") || result.stderr.includes?("fatal:") ? false : true
     end
 
     # What one engine changed between the two snapshots, one canonical line

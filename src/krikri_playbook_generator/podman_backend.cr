@@ -327,7 +327,13 @@ module KrikriPlaybookGenerator
     # Runner can compare what the two engines actually changed (the state
     # oracle); the pair is isolated per playbook, so the before/after delta
     # belongs to that engine alone.
-    def run_playbook(playbook_path : String, profile : Profile = Profile::Debian) : {ansible: HostState::Observation, krikri: HostState::Observation}
+    #
+    # Every call gets a fresh pair, so the mode matrix (check vs real)
+    # simply calls this once per mode. `second_run` re-runs the playbook on
+    # the SAME pair after the first run succeeded on both engines (the
+    # idempotency pass); each pass is returned separately.
+    def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
+                     check : Bool? = nil, second_run : Bool = false) : Array(HostState::Comparison)
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       # Per-profile images: a mixed batch provisions both templates, and a
@@ -338,6 +344,8 @@ module KrikriPlaybookGenerator
       real = "kpg-real-#{@run_index}#{@suffix}"
       krikri = "kpg-krikri-#{@run_index}#{@suffix}"
       created = [] of String
+      effective_check = check.nil? ? @check_mode : check
+      krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
 
       begin
         start_from_image(real_image, real)
@@ -350,8 +358,13 @@ module KrikriPlaybookGenerator
         copy_playbook(playbook_path, real)
         copy_playbook(playbook_path, krikri)
 
-        {ansible: observe(real, "ansible-playbook", playbook_path),
-         krikri:  observe(krikri, @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook", playbook_path)}
+        runs = [] of HostState::Comparison
+        runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check)
+        if second_run && HostState.succeeded?(runs.first[:ansible]) &&
+           HostState.succeeded?(runs.first[:krikri])
+          runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check)
+        end
+        runs
       ensure
         unless created.empty?
           Cmd.run("podman", ["rm", "-f"] + created, timeout: 180.0)
@@ -360,9 +373,16 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def observe(name : String, engine_cmd : String, playbook_path : String) : HostState::Observation
+    private def comparison(real : String, krikri : String, playbook_path : String,
+                           krikri_engine : String, check : Bool) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check)}
+    end
+
+    private def observe(name : String, engine_cmd : String, playbook_path : String,
+                        check : Bool) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path)
+      result = exec_engine(name, engine_cmd, playbook_path, check)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -650,8 +670,9 @@ module KrikriPlaybookGenerator
       raise PodmanProvisionError.new("podman cp #{basename.inspect} into #{name} failed: #{result.stderr}") unless Cmd.success?(result)
     end
 
-    private def exec_engine(name : String, engine_cmd : String, playbook_path : String) : Cmd::Result
-      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout, @check_mode)
+    private def exec_engine(name : String, engine_cmd : String, playbook_path : String,
+                            check : Bool = @check_mode) : Cmd::Result
+      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout, check)
       Cmd.run("podman", ["exec", "-w", "/work", name, "bash", "-c", script], timeout: @engine_timeout + 60.0)
     end
 
