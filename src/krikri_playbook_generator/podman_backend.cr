@@ -741,10 +741,17 @@ module KrikriPlaybookGenerator
 
       # A playbook-relative include needs its child files beside it.
       include_dir = PlaybookBuilder.include_dir(playbook_path)
-      return unless Dir.exists?(include_dir)
+      if Dir.exists?(include_dir)
+        copied = Cmd.run("podman", ["cp", include_dir, "#{name}:/work/"], timeout: 120.0)
+        raise PodmanProvisionError.new("podman cp #{File.basename(include_dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
+      end
 
-      copied = Cmd.run("podman", ["cp", include_dir, "#{name}:/work/"], timeout: 120.0)
-      raise PodmanProvisionError.new("podman cp #{File.basename(include_dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
+      # A playbook-adjacent plugin row needs its loader directories in the
+      # playbook's working directory, which is where both engines search.
+      PlaybookBuilder.plugin_loader_dirs(playbook_path).each do |dir|
+        copied = Cmd.run("podman", ["cp", dir, "#{name}:/work/"], timeout: 120.0)
+        raise PodmanProvisionError.new("podman cp #{File.basename(dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
+      end
     end
 
     private def exec_engine(name : String, engine_cmd : String, playbook_path : String,

@@ -50,6 +50,7 @@ refuzz MODULE COUNT="10" OUT="playbooks/refuzz" RESULTS="~/scratch/kpg-refuzz" R
     {{BIN}} generate --modules {{MODULE}} --seed 7 --count {{COUNT}} --chaos-percentage 3 \
       --delegation both --blocks rescue,always --handlers failing,ignoring,chained \
       --retries retried,exhausted,delegated --includes relative,role-inner,loop-tasks \
+      --plugin-discovery relative,env,config --strategy-plugins \
       --gather-facts --out {{OUT}} --results-dir {{RESULTS}} {{RUN_ARGS}}
     {{BIN}} report {{RESULTS}}
 

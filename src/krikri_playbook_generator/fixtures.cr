@@ -1,5 +1,6 @@
 require "./cmd"
 require "./run_context"
+require "./plugin_shapes"
 
 module KrikriPlaybookGenerator
   # The fixture tree the generator's happy-path values point at, seeded
@@ -139,6 +140,172 @@ module KrikriPlaybookGenerator
     RETRY_SCRIPT       = "#{FIXTURE_ROOT}/retry.sh"
     RETRY_NEVER_SCRIPT = "#{FIXTURE_ROOT}/retry-never.sh"
     RETRY_COUNTER      = "#{WORK_ROOT}/retry.count"
+
+    # Custom plugins for the extension-API axes: lookup (#25), strategy
+    # (#26) and filter/expression (#27). The sources are Crystal constants
+    # rather than files because the same bytes must be both seeded into
+    # every isolated host and written playbook-adjacently for a
+    # `--plugin-discovery relative` row, and the two copies must never
+    # drift apart.
+    PLUGIN_ROOT         = "#{FIXTURE_ROOT}/plugins"
+    LOOKUP_PLUGIN_DIR   = "#{PLUGIN_ROOT}/lookup_plugins"
+    FILTER_PLUGIN_DIR   = "#{PLUGIN_ROOT}/filter_plugins"
+    STRATEGY_PLUGIN_DIR = "#{PLUGIN_ROOT}/strategy_plugins"
+    CFG_DIR             = "#{FIXTURE_ROOT}/cfg"
+    PLUGIN_CONFIG       = "#{CFG_DIR}/kpg-plugins.cfg"
+
+    LOOKUP_LIST        = "kpg_list"
+    LOOKUP_NONE        = "kpg_none"
+    LOOKUP_UNDEFINED   = "kpg_undefined"
+    LOOKUP_RAISE       = "kpg_raise"
+    LOOKUP_SIDE_EFFECT = "kpg_sideeffect"
+    LOOKUP_UNKNOWN     = "kpg_bogus_lookup"
+    FILTER_PLUGIN_NAME = "kpg_multi"
+    CUSTOM_STRATEGY    = PluginShapes::CUSTOM_STRATEGY
+    SIDE_EFFECT_FILE   = "#{WORK_ROOT}/lookup-sideeffect.txt"
+
+    LOOKUP_LIST_SOURCE = <<-PY
+      from ansible.plugins.lookup import LookupBase
+
+
+      class LookupModule(LookupBase):
+          def run(self, terms, variables=None, **kwargs):
+              return ['kpg-a', 'kpg-b']
+      PY
+
+    LOOKUP_NONE_SOURCE = <<-PY
+      from ansible.plugins.lookup import LookupBase
+
+
+      class LookupModule(LookupBase):
+          def run(self, terms, variables=None, **kwargs):
+              return None
+      PY
+
+    LOOKUP_UNDEFINED_SOURCE = <<-PY
+      from ansible.plugins.lookup import LookupBase
+
+
+      class LookupModule(LookupBase):
+          def run(self, terms, variables=None, **kwargs):
+              return 'undefined'
+      PY
+
+    LOOKUP_RAISE_SOURCE = <<-PY
+      from ansible.errors import AnsibleError
+      from ansible.plugins.lookup import LookupBase
+
+
+      class LookupModule(LookupBase):
+          def run(self, terms, variables=None, **kwargs):
+              raise AnsibleError('kpg lookup exploded')
+      PY
+
+    LOOKUP_SIDE_EFFECT_SOURCE = <<-'PY'
+      from ansible.plugins.lookup import LookupBase
+
+
+      class LookupModule(LookupBase):
+          def run(self, terms, variables=None, **kwargs):
+              # A real lookup runs on the controller even in check mode, so
+              # writing unconditionally would show up as a check-mode
+              # mutation finding on both engines. The write is the probe
+              # only in real mode, where the state oracle compares it.
+              if not (variables or {}).get('ansible_check_mode'):
+                  with open('/tmp/kpg-work/lookup-sideeffect.txt', 'w') as handle:
+                      handle.write('kpg side effect\n')
+              return ['kpg-sideeffect']
+      PY
+
+    FILTER_SOURCE = <<-PY
+      def kpg_multi(*args):
+          return '|'.join(str(arg) for arg in args)
+
+
+      class FilterModule(object):
+          def filters(self):
+              return {'kpg_multi': kpg_multi}
+      PY
+
+    STRATEGY_SOURCE = <<-PY
+      from __future__ import annotations
+
+      from ansible.plugins.strategy.linear import StrategyModule as LinearStrategy
+      from ansible.utils.display import Display
+
+      display = Display()
+
+
+      class StrategyModule(LinearStrategy):
+          """A third-party strategy: prints its own markers around the linear
+          run, so an engine that loads it runs visible code and an engine that
+          substitutes linear does not."""
+
+          def run(self, iterator, play_context):
+              display.display('kpg-custom-strategy: begin')
+              result = super(StrategyModule, self).run(iterator, play_context)
+              display.display('kpg-custom-strategy: end')
+              return result
+      PY
+
+    # Keyed by loader directory (PluginShapes::DIRS values) so lookup and
+    # filter plugins can never be seeded into each other's directory.
+    PLUGIN_SOURCES = {
+      "lookup_plugins" => {"kpg_list.py" => LOOKUP_LIST_SOURCE, "kpg_none.py" => LOOKUP_NONE_SOURCE,
+                           "kpg_undefined.py" => LOOKUP_UNDEFINED_SOURCE, "kpg_raise.py" => LOOKUP_RAISE_SOURCE,
+                           "kpg_sideeffect.py" => LOOKUP_SIDE_EFFECT_SOURCE},
+      "filter_plugins"   => {"kpg_filters.py" => FILTER_SOURCE},
+      "strategy_plugins" => {"kpg_custom.py" => STRATEGY_SOURCE},
+    }
+
+    # The plugin sources for one plugin kind (PluginShapes::*_KIND).
+    def self.plugin_sources(kind : String) : Hash(String, String)
+      PLUGIN_SOURCES[PluginShapes::DIRS[kind]]? || {} of String => String
+    end
+
+    def self.plugin_dir(kind : String) : String
+      "#{PLUGIN_ROOT}/#{PluginShapes::DIRS[kind]}"
+    end
+
+    # The environment a plugin row exports. Playbook-adjacent discovery
+    # exports nothing: the files travel with the playbook instead (every
+    # isolated backend copies them next to it).
+    def self.plugin_env(discovery : PluginDiscovery, kinds : Array(String)) : Hash(String, String)
+      return {} of String => String if kinds.empty?
+
+      case discovery
+      when .relative?
+        {} of String => String
+      when .env?
+        kinds.to_h { |kind| {PluginShapes::ENV_KEYS[kind], plugin_dir(kind)} }
+      else
+        {"ANSIBLE_CONFIG" => PLUGIN_CONFIG}
+      end
+    end
+
+    # Shell that writes every plugin source plus the ansible.cfg variant
+    # into the fixture root. Generated from PLUGIN_SOURCES so a
+    # relative-discovery playbook and a seeded host carry identical bytes.
+    def self.plugin_seed_script : String
+      String.build do |io|
+        PLUGIN_SOURCES.each do |dir_name, sources|
+          dir = "#{PLUGIN_ROOT}/#{dir_name}"
+          io << "mkdir -p #{dir}\n"
+          sources.each do |name, source|
+            io << "cat > #{dir}/#{name} <<'KPG_PLUGIN_EOF'\n"
+            io << source << '\n'
+            io << "KPG_PLUGIN_EOF\n"
+          end
+        end
+        io << "mkdir -p #{CFG_DIR}\n"
+        io << "cat > #{PLUGIN_CONFIG} <<'KPG_PLUGIN_CFG_EOF'\n"
+        io << "[defaults]\n"
+        PluginShapes::DIRS.each do |kind, dir_name|
+          io << "#{dir_name} = #{plugin_dir(kind)}\n"
+        end
+        io << "KPG_PLUGIN_CFG_EOF\n"
+      end
+    end
 
     # A destination whose parent directory is root-owned and read-only: on
     # the nonroot profile a write proves the identity axis (real ansible
@@ -371,6 +538,7 @@ module KrikriPlaybookGenerator
       KPG_ROLE_HANDLERS_EOF
       chmod 0755 #{FIXTURE_ROOT}/script.sh #{RETRY_SCRIPT} #{RETRY_NEVER_SCRIPT}
       chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt #{TASKS_FILE} #{BINARY_FILE} #{NO_NEWLINE_FILE} #{RICH_TEMPLATE}
+      #{plugin_seed_script}
       BASH
 
     # Best-effort for local (non-podman) runs: the local backend defaults to

@@ -173,6 +173,13 @@ checklist before closing the issue.
   writable root, so find/stat traversal has an ordering shape). The same
   script seeds them in both containers/goldens, and they are offered
   through `SOURCE_FILES` and the copy/template/slurp/stat/find pools.
+  It also owns the extension-API plugin assets:
+  `plugins/{lookup,filter,strategy}_plugins/` (`kpg_list`, `kpg_none`,
+  `kpg_undefined`, `kpg_raise`, `kpg_sideeffect`, `kpg_filters`,
+  `kpg_custom`) plus `cfg/kpg-plugins.cfg`, all generated from
+  `PLUGIN_SOURCES` so the seeded host and a playbook-adjacent row carry
+  the same bytes; `plugin_env(discovery, kinds)` is the env map a
+  discovery row exports.
   It also seeds the destination STATE production playbooks meet:
   `UNUSUAL_FILES` (0444/0400/0440 locked files in the writable work root,
   where both engines can still replace them by atomic rename, so the
@@ -255,6 +262,35 @@ checklist before closing the issue.
   `ansible.builtin.import_playbook` item pointing at
   `Fixtures::CHILD_PLAYBOOK`; `import-role` uses the short `import_role`
   spelling. Recorded as `includes` in the sidecar.
+- `src/krikri_playbook_generator/plugin_shapes.cr` — `PluginDiscovery`,
+  `LookupShape`/`LookupShapes`/`LookupShapeSampler`,
+  `ExpressionShape`/`ExpressionShapes`/`ExpressionShapeSampler` and
+  `PluginDiscoverySampler`. **Implemented**: the extension-API
+  axes. `--lookups list,query,none,undefined,raise,vars,module-arg,
+  side-effect,unknown` (default all, `none` off) renders one lookup plugin
+  through a play variable and both `debug: var:` and `debug: msg:`; the
+  failing shapes (`none`, `undefined`, `raise`, `unknown`) are marked
+  `structural_failure` because ansible rejects a lookup that does not
+  return a list, while krikri currently accepts it - the production class
+  that started this work. `--expressions regex-search,regex-replace,chain,
+  positional,statement,empty-render,star-args` (default all) probes
+  multi-backreference regex calls, filter chains, a filter with several
+  positional arguments, `{% %}` statement blocks, an empty render and a
+  `*args` splice through `var:` and `msg:` (and a module argument for the
+  splice). `--plugin-discovery relative,env,config` picks how the seeded
+  plugin files are found: `relative` (the default) writes them beside the
+  playbook as `<playbook>-plugins/{lookup,filter,strategy}_plugins`, and
+  every isolated backend copies those loader directories into the
+  playbook's working directory; `env` exports
+  `ANSIBLE_{LOOKUP,FILTER,STRATEGY}_PLUGINS`; `config` exports
+  `ANSIBLE_CONFIG` pointing at the seeded `kpg-plugins.cfg`. The sidecar
+  records the shapes, the chosen path and the environment as `plugins`.
+  `--strategy-plugins` (opt-in) appends `Fixtures::CUSTOM_STRATEGY` to
+  the `--play-keywords strategy` pool, so such a row installs
+  `strategy_plugins/kpg_custom.py`; both the play key and
+  `ANSIBLE_STRATEGY` spellings are compared. It is opt-in because krikri
+  accepts a third-party strategy but runs it as linear (its own
+  KNOWN_MISSING), so every row naming the plugin is an expected finding.
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -305,6 +341,13 @@ checklist before closing the issue.
   `ansible-playbook --check` with exactly the mutation the generator
   recorded (a `mutually exclusive` error matching a real
   `ViolateConstraint` mutation).
+  The plugin axes add their own probe tasks and a sibling
+  `<playbook>-plugins/` layout (see `plugin_shapes.cr`); the sidecar's
+  `plugins` object records the lookup/expression shape, whether the custom
+  strategy was drawn, the discovery path and the environment it needs, and
+  `PlaybookBuilder.plugin_loader_dirs` is what every backend copies into
+  the playbook's working directory (local runs export the same directories
+  as `ANSIBLE_*_PLUGINS` instead, since they have no copy step).
 - `src/krikri_playbook_generator/host_state.cr` — `HostState`. **Implemented**:
   the state half of the oracle. `SNAPSHOT_SCRIPT` (GNU find/`sha256sum`,
   LC_ALL=C sorts, no timestamps) lists `/etc`, `/tmp/kpg-work`,
@@ -423,6 +466,9 @@ checklist before closing the issue.
   because an inherited `ANSIBLE_GATHERING=smart` plus a populated cache
   silently skips implicit gathering on the real engine and would turn a
   machine-local cache into a finding.
+  A plugin row's env discovery (`ANSIBLE_*_PLUGINS` / `ANSIBLE_CONFIG`)
+  comes from the sidecar's `plugins.env` and is merged with the play env
+  below, so results.jsonl and the repro command carry it too.
   A playbook's env-var play keyword (ANSIBLE_STRATEGY/ANSIBLE_FORKS) is
   read from its sidecar `play.env` and exported identically for both
   engines by every backend (podman/microVM/Atlantic command construction,
@@ -672,8 +718,11 @@ checklist before closing the issue.
   (`none` disables it); `--delegation off|literal|templated|both` is the
   delegate_to axis; `--blocks LIST` wraps single-task playbooks in a
   block shape; `--handlers LIST` picks the handler shape; `--retries LIST`
-  picks the retry shape; `--includes LIST` picks the include/import form.
-  All six are generate-only.
+  picks the retry shape; `--includes LIST` picks the include/import form;
+  `--lookups LIST` picks the lookup-plugin shape and `--expressions LIST`
+  the filter/expression shape, `--plugin-discovery LIST` where those
+  plugin files are found and `--strategy-plugins` adds the custom strategy
+  to the strategy pool (all generate-only).
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -837,6 +886,16 @@ Documented deliberately, not silently:
   the happy path genuinely cannot run (not a missing package) belong
   in `module_overrides.yml` as `not_applicable: true`, never as a
   silent exclusion.
+- A lookup shape whose reference-side run fails by design (`--lookups
+  none`,`undefined`,`raise`,`unknown`) is a `structural_failure` for the
+  same reason: ansible rejects a lookup that returns a non-list or does
+  not exist, so that failure is the comparison under test. The default
+  `--plugin-discovery` is `relative` (playbook-adjacent) because both
+  engines support it; `env` and `config` are opt-in, and a `config` row is
+  an expected finding while krikri locates `ansible.cfg` without reading
+  its INI values. Third-party strategy plugins are compared too: krikri
+  accepts them but runs linear (see krikri's KNOWN_MISSING), so a row
+  whose plugin prints its own markers is an expected finding.
 - A playbook whose SHAPE deliberately fails (rescued forced failure,
   undefined block condition, failing/ignoring handler, never-satisfied
   retry) is marked `structural_failure` in the sidecar and excluded from

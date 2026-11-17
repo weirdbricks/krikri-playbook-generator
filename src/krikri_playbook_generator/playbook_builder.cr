@@ -1,10 +1,12 @@
 require "json"
+require "file_utils"
 require "./generator"
 require "./play_keywords"
 require "./block_shapes"
 require "./handler_shapes"
 require "./retry_shapes"
 require "./include_shapes"
+require "./plugin_shapes"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -35,6 +37,36 @@ module KrikriPlaybookGenerator
       playbook_path.sub(/\.yml\z/, "") + "-inc"
     end
 
+    # The sibling directory a playbook-adjacent plugin row writes next to
+    # the playbook. Each backend copies its loader directories into the
+    # playbook's working directory, which is where ansible and krikri both
+    # look for `lookup_plugins/`, `filter_plugins/` and `strategy_plugins/`.
+    def self.plugins_dir(playbook_path : String) : String
+      playbook_path.sub(/\.yml\z/, "") + "-plugins"
+    end
+
+    # The loader directories of one playbook's plugin layout that actually
+    # exist (only the kinds the row needs are written).
+    def self.plugin_loader_dirs(playbook_path : String) : Array(String)
+      dir = plugins_dir(playbook_path)
+      return [] of String unless Dir.exists?(dir)
+
+      dirs = [] of String
+      PluginShapes::DIRS.each_value do |name|
+        path = File.join(dir, name)
+        dirs << path if Dir.exists?(path)
+      end
+      dirs
+    end
+
+    # The play-level variables the lookup and expression shapes render;
+    # each is probed through both `debug: var:` and `debug: msg:`.
+    LOOKUP_VALUE_VARIABLE     = "kpg_lookup_value"
+    LOOKUP_TASK_VARIABLE      = "kpg_lookup_task_value"
+    EXPRESSION_VALUE_VARIABLE = "kpg_expr_value"
+    STATEMENT_IF_VARIABLE     = "kpg_stmt_if"
+    STATEMENT_FOR_VARIABLE    = "kpg_stmt_for"
+
     # The forced-failure task a block shape adds: a real command that exits
     # non-zero, so the failure path is deterministic and comes from the
     # playbook's own structure rather than from a chaos mutation.
@@ -43,6 +75,24 @@ module KrikriPlaybookGenerator
     # Skipped shape defines it false, the Undefined shape never defines it.
     BLOCK_GATE = "kpg_block_gate"
 
+    # The plugin axes resolved for one playbook row: the sampled lookup and
+    # expression shapes, where the plugin files are discovered, and whether
+    # the row's play setting names the custom strategy plugin.
+    record PluginAxes,
+      lookup : LookupShape,
+      expression : ExpressionShape,
+      discovery : PluginDiscovery,
+      strategy : Bool do
+      # The plugin types whose files this row must install.
+      def kinds : Array(String)
+        kinds = [] of String
+        kinds << PluginShapes::LOOKUP_KIND unless lookup.off?
+        kinds << PluginShapes::FILTER_KIND if expression.custom_filter?
+        kinds << PluginShapes::STRATEGY_KIND if strategy
+        kinds
+      end
+    end
+
     def initialize(@out_dir : String, @seed : Int32? = nil,
                    @play_settings : Array(PlaySetting?) = [] of PlaySetting?,
                    @block_shapes : Array(BlockShape) = [] of BlockShape,
@@ -50,7 +100,10 @@ module KrikriPlaybookGenerator
                    @retry_shapes : Array(RetryShape) = [] of RetryShape,
                    @gather_facts : Bool = false,
                    @include_shapes : Array(IncludeShape) = [] of IncludeShape,
-                   @profiles : Array(Array(String)) = [] of Array(String))
+                   @profiles : Array(Array(String)) = [] of Array(String),
+                   @lookup_shapes : Array(LookupShape) = [] of LookupShape,
+                   @expression_shapes : Array(ExpressionShape) = [] of ExpressionShape,
+                   @plugin_discovery : Array(PluginDiscovery?) = [] of PluginDiscovery?)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -199,6 +252,7 @@ module KrikriPlaybookGenerator
       meta_path = File.join(@out_dir, "#{basename}.meta.json")
 
       write_include_layout(basename, @include_shapes[index]? || IncludeShape::Off)
+      write_plugin_layout(basename, plugin_axes(index))
       File.write(playbook_path, "#{seed_comment}#{playbook_yaml(task, index, basename)}")
       File.write(meta_path, metadata_json(task, playbook_path, index))
 
@@ -223,12 +277,14 @@ module KrikriPlaybookGenerator
       apply_play_setting(play, @play_settings[index]?)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(true) if @gather_facts
       shape = @handler_shapes[index]? || HandlerShape::Off
-      apply_play_vars(play, task, @block_shapes[index]? || BlockShape::None)
+      axes = plugin_axes(index)
+      apply_play_vars(play, task, @block_shapes[index]? || BlockShape::None, axes)
       bodies = block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None)
       bodies << notifier_body unless shape.off?
       bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
       include_shape = @include_shapes[index]? || IncludeShape::Off
       bodies.concat(include_task_bodies(include_shape, basename))
+      bodies.concat(plugin_task_bodies(axes))
       play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
       apply_handlers(play, shape)
 
@@ -266,6 +322,7 @@ module KrikriPlaybookGenerator
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
+          plugin_json(json, index)
           json.field "structural_failure", structural_failure?(index)
           json.field "profiles", playbook_profiles(index)
         end
@@ -288,8 +345,9 @@ module KrikriPlaybookGenerator
       block = @block_shapes[index]? || BlockShape::None
       handlers = @handler_shapes[index]? || HandlerShape::Off
       retries = @retry_shapes[index]? || RetryShape::Off
+      lookup = @lookup_shapes[index]? || LookupShape::Off
       block.rescue? || block.undefined? || handlers.failing? ||
-        handlers.ignoring? || retries.exhausted?
+        handlers.ignoring? || retries.exhausted? || lookup.failing?
     end
 
     private def choice_sources_json(json : JSON::Builder, task : GeneratedTask) : Nil
@@ -303,6 +361,7 @@ module KrikriPlaybookGenerator
       meta_path = File.join(@out_dir, "#{basename}.meta.json")
 
       write_include_layout(basename, @include_shapes[index]? || IncludeShape::Off)
+      write_plugin_layout(basename, plugin_axes(index))
       File.write(playbook_path, "#{seed_comment}#{scenario_yaml(tasks, index, basename)}")
       File.write(meta_path, scenario_metadata_json(tasks, playbook_path, index))
 
@@ -332,7 +391,7 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
-      apply_delegate_vars(play, tasks)
+      apply_delegate_vars(play, tasks, plugin_axes(index))
       apply_scenario_conditions(play, task_bodies, tasks, index, basename)
 
       document = [YAML::Any.new(play)]
@@ -358,6 +417,7 @@ module KrikriPlaybookGenerator
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
+          plugin_json(json, index)
           json.field "structural_failure", structural_failure?(index)
           json.field "profiles", playbook_profiles(index)
           json.field "mutations" do
@@ -448,12 +508,13 @@ module KrikriPlaybookGenerator
     # delegation) and/or the block gate (the Skipped shape). Both are
     # defined by the playbook itself so no row inherits them from outside.
     private def apply_play_vars(play : Hash(YAML::Any, YAML::Any), task : GeneratedTask,
-                                shape : BlockShape) : Nil
+                                shape : BlockShape, axes : PluginAxes) : Nil
       vars = {} of YAML::Any => YAML::Any
       if task.delegate_to.try(&.includes?("{{"))
         vars[YAML::Any.new(Generator::DELEGATE_VARIABLE)] = YAML::Any.new(Generator::DELEGATE_HOST)
       end
       vars[YAML::Any.new(BLOCK_GATE)] = YAML::Any.new(false) if shape.skipped?
+      plugin_play_vars(axes, vars)
       return if vars.empty?
 
       play[YAML::Any.new("vars")] = YAML::Any.new(vars)
@@ -492,12 +553,199 @@ module KrikriPlaybookGenerator
     end
 
     private def debug_body(name : String, message : String) : YAML::Any
+      debug_task_body(name, "msg", message, ignore_errors: false)
+    end
+
+    # A debug task on one key (`msg` or `var`). `ignore_errors` keeps the
+    # rest of the row runnable when the probed value fails by design.
+    private def debug_task_body(name : String, key : String, value : String,
+                                ignore_errors : Bool = true) : YAML::Any
       body = {} of YAML::Any => YAML::Any
       body[YAML::Any.new("name")] = YAML::Any.new(name)
       args = {} of YAML::Any => YAML::Any
-      args[YAML::Any.new("msg")] = YAML::Any.new(message)
+      args[YAML::Any.new(key)] = YAML::Any.new(value)
       body[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(args)
+      body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true) if ignore_errors
       YAML::Any.new(body)
+    end
+
+    # A real module consuming a value the axis rendered, so the same
+    # expression is compared as a module argument as well as through
+    # `debug:`.
+    private def module_task_body(name : String, module_name : String,
+                                 args : Hash(String, String)) : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new(name)
+      module_args = {} of YAML::Any => YAML::Any
+      args.each { |key, value| module_args[YAML::Any.new(key)] = YAML::Any.new(value) }
+      body[YAML::Any.new(module_name)] = YAML::Any.new(module_args)
+      body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
+      YAML::Any.new(body)
+    end
+
+    # `debug: var:` and `debug: msg:` take different rendering paths, which
+    # is exactly where the production expression reports come from.
+    private def probe_pair(variable : String, label : String) : Array(YAML::Any)
+      [debug_task_body("Kpg #{label} var", "var", variable),
+       debug_task_body("Kpg #{label} msg", "msg", "{{ #{variable} }}")]
+    end
+
+    private def plugin_axes(index : Int32) : PluginAxes
+      lookup = @lookup_shapes[index]? || LookupShape::Off
+      expression = @expression_shapes[index]? || ExpressionShape::Off
+      setting = @play_settings[index]?
+      strategy = setting.try(&.keyword) == "strategy" && setting.try(&.value) == Fixtures::CUSTOM_STRATEGY
+      discovery = @plugin_discovery[index]? || PluginDiscovery::Relative
+      PluginAxes.new(lookup, expression, discovery, strategy)
+    end
+
+    private def plugin_env(axes : PluginAxes) : Hash(String, String)
+      Fixtures.plugin_env(axes.discovery, axes.kinds)
+    end
+
+    # The play variables the lookup and expression probes render; each one
+    # is defined by the playbook itself so no row depends on outside vars.
+    private def plugin_play_vars(axes : PluginAxes, vars : Hash(YAML::Any, YAML::Any)) : Nil
+      unless axes.lookup.off? || axes.lookup.vars?
+        vars[YAML::Any.new(LOOKUP_VALUE_VARIABLE)] = YAML::Any.new(lookup_expression(axes.lookup))
+      end
+
+      case axes.expression
+      when .off?
+      when .statement?
+        vars[YAML::Any.new(STATEMENT_IF_VARIABLE)] =
+          YAML::Any.new("{% if true %}kpg-true{% else %}kpg-false{% endif %}")
+        vars[YAML::Any.new(STATEMENT_FOR_VARIABLE)] =
+          YAML::Any.new("{% for item in [1, 2] %}{{ item }}{% endfor %}")
+      else
+        vars[YAML::Any.new(EXPRESSION_VALUE_VARIABLE)] = YAML::Any.new(expression_value(axes.expression))
+      end
+    end
+
+    private def plugin_task_bodies(axes : PluginAxes) : Array(YAML::Any)
+      bodies = [] of YAML::Any
+      bodies.concat(lookup_task_bodies(axes.lookup)) unless axes.lookup.off?
+      bodies.concat(expression_task_bodies(axes.expression)) unless axes.expression.off?
+      bodies
+    end
+
+    private def lookup_expression(shape : LookupShape) : String
+      name = case shape
+             when .none?        then Fixtures::LOOKUP_NONE
+             when .undefined?   then Fixtures::LOOKUP_UNDEFINED
+             when .raise?       then Fixtures::LOOKUP_RAISE
+             when .side_effect? then Fixtures::LOOKUP_SIDE_EFFECT
+             when .unknown?     then Fixtures::LOOKUP_UNKNOWN
+             else                    Fixtures::LOOKUP_LIST
+             end
+      shape.query? ? "{{ query('#{name}') }}" : "{{ lookup('#{name}') }}"
+    end
+
+    private def lookup_task_bodies(shape : LookupShape) : Array(YAML::Any)
+      return vars_probe_bodies if shape.vars?
+
+      bodies = probe_pair(LOOKUP_VALUE_VARIABLE, "lookup")
+      if shape.module_arg?
+        bodies << module_task_body("Kpg lookup module arg", "ansible.builtin.copy",
+          {"content" => "{{ #{LOOKUP_VALUE_VARIABLE} | join('-') }}",
+           "dest"    => "#{Fixtures::WORK_ROOT}/lookup-module-arg.txt"})
+      end
+      bodies
+    end
+
+    # The lookup result through a task-level `vars:` entry, probed by both
+    # tasks because each task has to carry the expression itself.
+    private def vars_probe_bodies : Array(YAML::Any)
+      value = "{{ lookup('#{Fixtures::LOOKUP_LIST}') }}"
+      vars = {YAML::Any.new(LOOKUP_TASK_VARIABLE) => YAML::Any.new(value)}
+      [{"Kpg lookup task vars var", "var", LOOKUP_TASK_VARIABLE},
+       {"Kpg lookup task vars msg", "msg", "{{ #{LOOKUP_TASK_VARIABLE} }}"}].map do |(name, key, probe)|
+        body = debug_task_body(name, key, probe)
+        raws = body.as_h
+        raws[YAML::Any.new("vars")] = YAML::Any.new(vars)
+        YAML::Any.new(raws)
+      end
+    end
+
+    private def expression_task_bodies(shape : ExpressionShape) : Array(YAML::Any)
+      case shape
+      when .statement?
+        [debug_task_body("Kpg statement msg",
+          "msg", "[{{ #{STATEMENT_IF_VARIABLE} }}][{{ #{STATEMENT_FOR_VARIABLE} }}]"),
+         debug_task_body("Kpg statement if var", "var", STATEMENT_IF_VARIABLE),
+         debug_task_body("Kpg statement for var", "var", STATEMENT_FOR_VARIABLE)]
+      when .empty_render?
+        [debug_task_body("Kpg empty var", "var", EXPRESSION_VALUE_VARIABLE),
+         debug_task_body("Kpg empty msg", "msg", "")]
+      when .star_args?
+        probe_pair(EXPRESSION_VALUE_VARIABLE, "star args") + [
+          module_task_body("Kpg star args module arg", "ansible.builtin.copy",
+            {"content" => expression_value(shape),
+             "dest"    => "#{Fixtures::WORK_ROOT}/expr-star-args.txt"}),
+        ]
+      else
+        probe_pair(EXPRESSION_VALUE_VARIABLE, shape.label)
+      end
+    end
+
+    # The value each expression shape renders. The syntax is deliberately
+    # production-shaped: multi-backreference regex calls, filter chains
+    # with several positional arguments, Jinja statement blocks and a
+    # `*args` splice (the forms krikri's template layer has diverged on).
+    private def expression_value(shape : ExpressionShape) : String
+      case shape
+      when .regex_search?
+        "{{ 'abc-123' | regex_search('([a-z]+)-(\\d+)', '\\2', '\\1') }}"
+      when .regex_replace?
+        "{{ 'abc-123' | regex_replace('([a-z]+)-(\\d+)', '\\2-\\1') }}"
+      when .chain?
+        "{{ 'b,a,c' | split(',') | map('upper') | select('ne', 'B') | list | join('|') }}"
+      when .positional?
+        "{{ 'x' | #{Fixtures::FILTER_PLUGIN_NAME}('a', 'b') }}"
+      when .star_args?
+        "{{ 'x' | #{Fixtures::FILTER_PLUGIN_NAME}(*['a', 'b']) }}"
+      when .empty_render?
+        "{{ '' }}"
+      else
+        "{{ 'kpg' }}"
+      end
+    end
+
+    # The plugin layout for a playbook-adjacent row: one loader directory
+    # per plugin type the row needs, next to the playbook. Every isolated
+    # backend copies these into the playbook's working directory.
+    private def write_plugin_layout(basename : String, axes : PluginAxes) : Nil
+      root = PlaybookBuilder.plugins_dir(File.join(@out_dir, "#{basename}.yml"))
+      FileUtils.rm_rf(root) if Dir.exists?(root)
+      return unless axes.discovery.relative?
+
+      kinds = axes.kinds
+      return if kinds.empty?
+
+      kinds.each do |kind|
+        dir = File.join(root, PluginShapes::DIRS[kind])
+        Dir.mkdir_p(dir)
+        Fixtures.plugin_sources(kind).each do |name, source|
+          File.write(File.join(dir, name), source + "\n")
+        end
+      end
+    end
+
+    private def plugin_json(json : JSON::Builder, index : Int32) : Nil
+      axes = plugin_axes(index)
+      json.field "plugins" do
+        json.object do
+          json.field "lookup", axes.lookup.label
+          json.field "expression", axes.expression.label
+          json.field "strategy", axes.strategy ? Fixtures::CUSTOM_STRATEGY : nil
+          json.field "discovery", axes.discovery.label
+          json.field "env" do
+            json.object do
+              plugin_env(axes).each { |name, value| json.field name, value }
+            end
+          end
+        end
+      end
     end
 
     # An include/import shape as extra play tasks. `import_playbook` is
@@ -567,18 +815,23 @@ module KrikriPlaybookGenerator
       task_bodies << notifier_body unless shape.off?
       task_bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
       task_bodies.concat(include_task_bodies(@include_shapes[index]? || IncludeShape::Off, basename))
+      task_bodies.concat(plugin_task_bodies(plugin_axes(index)))
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
       apply_scenario_handlers(play, tasks, shape)
     end
 
     # The delegate play var when any scenario task uses the templated
-    # delegate_to spelling.
+    # delegate_to spelling, plus the plugin axis' probe variables.
     private def apply_delegate_vars(play : Hash(YAML::Any, YAML::Any),
-                                    tasks : Array(GeneratedTask)) : Nil
-      return unless tasks.any? { |task| task.delegate_to.try(&.includes?("{{")) }
+                                    tasks : Array(GeneratedTask), axes : PluginAxes) : Nil
+      vars = {} of YAML::Any => YAML::Any
+      if tasks.any? { |task| task.delegate_to.try(&.includes?("{{")) }
+        vars[YAML::Any.new(Generator::DELEGATE_VARIABLE)] = YAML::Any.new(Generator::DELEGATE_HOST)
+      end
+      plugin_play_vars(axes, vars)
+      return if vars.empty?
 
-      play[YAML::Any.new("vars")] = YAML::Any.new(
-        {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
+      play[YAML::Any.new("vars")] = YAML::Any.new(vars)
     end
 
     # The play-level `import_playbook` directive needs a second top-level

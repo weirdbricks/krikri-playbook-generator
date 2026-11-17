@@ -6,6 +6,7 @@ require "./block_shapes"
 require "./handler_shapes"
 require "./retry_shapes"
 require "./include_shapes"
+require "./plugin_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -72,6 +73,13 @@ module KrikriPlaybookGenerator
     property? limits_given : Bool
     property includes : Array(String)
     property? includes_given : Bool
+    property lookups : Array(String)
+    property? lookups_given : Bool
+    property expressions : Array(String)
+    property? expressions_given : Bool
+    property plugin_discovery : Array(String)
+    property? plugin_discovery_given : Bool
+    property? strategy_plugins : Bool
     property? gather_facts : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
@@ -105,6 +113,10 @@ module KrikriPlaybookGenerator
                    @retries = RetryShapes::KINDS, @retries_given = false,
                    @limits = ["off"], @limits_given = false, @gather_facts = false,
                    @includes = IncludeShapes::KINDS, @includes_given = false,
+                   @lookups = LookupShapes::KINDS, @lookups_given = false,
+                   @expressions = ExpressionShapes::KINDS, @expressions_given = false,
+                   @plugin_discovery = ["relative"], @plugin_discovery_given = false,
+                   @strategy_plugins = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -208,6 +220,19 @@ module KrikriPlaybookGenerator
         dsl.on("--includes LIST", "include/import forms: relative, role-vars, role-inner, loop-tasks, loop-role, import-playbook, import-role (comma-separated; `none` turns it off)") do |v|
           opts.includes = parse_includes(v)
           opts.includes_given = true
+        end
+        dsl.on("--lookups LIST", "lookup-plugin shapes: #{LookupShapes::KINDS.join(", ")} (comma-separated; `none` turns it off)") do |v|
+          opts.lookups = parse_lookups(v)
+          opts.lookups_given = true
+        end
+        dsl.on("--expressions LIST", "filter/expression shapes: #{ExpressionShapes::KINDS.join(", ")} (comma-separated; `none` turns it off)") do |v|
+          opts.expressions = parse_expressions(v)
+          opts.expressions_given = true
+        end
+        dsl.on("--strategy-plugins", "draw the seeded third-party strategy plugin (kpg_custom) in the strategy pool: ansible runs its code, krikri substitutes linear, so every such row is an expected finding") { opts.strategy_plugins = true }
+        dsl.on("--plugin-discovery LIST", "where plugin files are found: relative (playbook-adjacent, the default), env (ANSIBLE_*_PLUGINS) or config (ansible.cfg via ANSIBLE_CONFIG)") do |v|
+          opts.plugin_discovery = parse_plugin_discovery(v)
+          opts.plugin_discovery_given = true
         end
         dsl.on("--retries LIST", "retry shapes: retried, exhausted, delegated or delegated-fact (comma-separated; `none` turns it off)") do |v|
           opts.retries = parse_retries(v)
@@ -389,6 +414,7 @@ module KrikriPlaybookGenerator
       check_handler_target!(opts)
       check_retry_target!(opts)
       check_include_target!(opts)
+      check_plugin_target!(opts)
       check_limit_target!(opts)
       return unless opts.supported_community?
 
@@ -463,6 +489,42 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--includes is only valid with generate (the playbook carries the include forms)")
+    end
+
+    # Lookup and expression probes, and the plugin discovery paths they
+    # rely on, are playbook structure: they only mean anything where
+    # playbooks are built.
+    private def self.check_plugin_target!(opts : Options) : Nil
+      return unless opts.lookups_given? || opts.expressions_given? || opts.plugin_discovery_given? ||
+                    opts.strategy_plugins?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new(
+        "--lookups/--expressions/--plugin-discovery/--strategy-plugins are only valid with generate (the playbook carries the probes)")
+    end
+
+    private def self.parse_lookups(value : String) : Array(String)
+      shapes = LookupShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --lookups value #{value.inspect} (expected: #{LookupShapes::KINDS.join(", ")}, none)")
+    end
+
+    private def self.parse_expressions(value : String) : Array(String)
+      shapes = ExpressionShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --expressions value #{value.inspect} (expected: #{ExpressionShapes::KINDS.join(", ")}, none)")
+    end
+
+    private def self.parse_plugin_discovery(value : String) : Array(String)
+      paths = PluginShapes.parse_list(value)
+      return paths if paths
+
+      raise InvalidOptionsError.new(
+        "unknown --plugin-discovery value #{value.inspect} (expected: #{PluginShapes::KINDS.join(", ")})")
     end
 
     private def self.parse_includes(value : String) : Array(String)

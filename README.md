@@ -337,6 +337,7 @@ The axis checklist (all of these, not just the reported one):
 | mode matrix | default `--modes check,real` (never `--check` alone) | a fix that only holds in one mode |
 | distro / package channel | the Debian and Rocky templates (`--run-on-podman`, `--run-on-mixed` for service modules) | apt vs dnf paths, the "other package formula" follow-ups |
 | play keywords | default `--play-keywords` (linear/free/serial/...) | a fix that assumes one strategy or no serial |
+| plugin loading | `--lookups`/`--expressions` (default all), `--plugin-discovery relative,env,config`, `--strategy-plugins` | a lookup returning null, a filter/expression rendered differently in `var:` vs `msg:`, a third-party strategy, or a plugin only found through the env/cfg path |
 
 krikri-loop's fix workflow should gate on this: after a KPG-derived fix,
 run the table above for the touched module (and its sibling module when

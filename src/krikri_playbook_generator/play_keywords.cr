@@ -100,7 +100,11 @@ module KrikriPlaybookGenerator
   # shifts the task-argument draws (an argument change would otherwise
   # change which keyword a seed picks, and vice versa).
   class PlaySettingSampler
-    def initialize(@seed : Int32, @kinds : Array(String) = PlayKeywords::KINDS)
+    # `strategy_values` is the strategy pool; `--strategy-plugins` appends
+    # the seeded third-party plugin, whose altered behavior only ansible
+    # runs (krikri substitutes linear), so it stays out of the default pool.
+    def initialize(@seed : Int32, @kinds : Array(String) = PlayKeywords::KINDS,
+                   @strategy_values : Array(String) = PlayKeywords::VALUES["strategy"])
       @rng = Random::PCG32.new(@seed.to_u64)
     end
 
@@ -114,7 +118,7 @@ module KrikriPlaybookGenerator
 
       kind = @kinds.sample(@rng)
       pool = chaos ? PlayKeywords::CHAOS_VALUES : PlayKeywords::VALUES
-      value = pool[kind].sample(@rng)
+      value = (kind == "strategy" ? @strategy_values : pool[kind]).sample(@rng)
       env_key = PlayKeywords::ENV_KEYS[kind]?
       # An env-capable keyword arrives through the env var half the time;
       # `forks` can only arrive that way.

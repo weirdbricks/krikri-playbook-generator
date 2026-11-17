@@ -767,7 +767,7 @@ module KrikriPlaybookGenerator
           @modes.flat_map do |mode|
             guarded_results(path, mode, user, umask, hosts, limit) do
               comparison_results(path, mode,
-                run_playbook_locally(path, mode, umask, hosts, play_env(path),
+                run_playbook_locally(path, mode, umask, hosts, local_play_env(path),
                   Options.limit_pattern(limit), limit != "off"),
                 user, umask, hosts, limit)
             end
@@ -916,6 +916,22 @@ module KrikriPlaybookGenerator
       load_meta(path).try(&.env) || {} of String => String
     end
 
+    # Local runs have no copy step, so the playbook-adjacent loader
+    # directories the builder wrote are exported through the same
+    # ANSIBLE_*_PLUGINS variables an env-discovery row uses. The isolated
+    # backends copy those directories into the playbook's working directory
+    # instead, where playbook-adjacent discovery works as-is.
+    private def local_play_env(path : String) : Hash(String, String)
+      env = play_env(path)
+      PlaybookBuilder.plugin_loader_dirs(path).each do |dir|
+        kind = PluginShapes::DIRS.find { |_name, loader_dir| loader_dir == File.basename(dir) }
+        next unless kind
+
+        env[PluginShapes::ENV_KEYS[kind[0]]] = dir
+      end
+      env
+    end
+
     private def load_meta(path : String) : MetaInfo?
       meta_path = path.sub(/\.yml$/, ".meta.json")
       return parse_meta(File.read(meta_path)) if File.exists?(meta_path)
@@ -1023,7 +1039,8 @@ module KrikriPlaybookGenerator
       module_names = [module_name] if !module_names || module_names.empty?
       module_names.unshift(module_name) unless module_names.includes?(module_name)
 
-      MetaInfo.new(module_name, chaos, mutations, module_names, parse_play_env(parsed),
+      MetaInfo.new(module_name, chaos, mutations, module_names,
+        parse_plugin_env(parsed).merge(parse_play_env(parsed)),
         parse_structural_failure(parsed), parse_profiles(parsed))
     rescue JSON::ParseException
       nil
@@ -1047,6 +1064,20 @@ module KrikriPlaybookGenerator
     private def parse_play_env(parsed : Hash(String, JSON::Any)) : Hash(String, String)
       env = {} of String => String
       parsed["play"]?.try(&.as_h?).try(&.["env"]?).try(&.as_h?).try do |entries|
+        entries.each do |name, value|
+          env[name] = value.as_s if value.as_s?
+        end
+      end
+      env
+    end
+
+    # The sidecar's `plugins.env` mapping: the environment a plugin row
+    # needs exported so both engines load the plugin the same way
+    # (ANSIBLE_*_PLUGINS or ANSIBLE_CONFIG). Empty for the playbook-adjacent
+    # discovery path, where the files travel with the playbook instead.
+    private def parse_plugin_env(parsed : Hash(String, JSON::Any)) : Hash(String, String)
+      env = {} of String => String
+      parsed["plugins"]?.try(&.as_h?).try(&.["env"]?).try(&.as_h?).try do |entries|
         entries.each do |name, value|
           env[name] = value.as_s if value.as_s?
         end

@@ -559,5 +559,40 @@ module KrikriPlaybookGenerator
       err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-atlantic", "--hosts", "1,2"]) }
       assert((err.message || "").includes?("--hosts"))
     end
+
+    it "parses the --lookups, --expressions and --plugin-discovery axes" do
+      opts = Options.parse(["generate", "--lookups", "list,none", "--expressions", "chain",
+                            "--plugin-discovery", "env"])
+      assert_equal(%w[list none], opts.lookups)
+      assert_equal(%w[chain], opts.expressions)
+      assert_equal(%w[env], opts.plugin_discovery)
+      assert(opts.lookups_given?)
+      assert(opts.expressions_given?)
+      assert(opts.plugin_discovery_given?)
+
+      assert(Options.parse(["generate", "--lookups", "none"]).lookups.empty?)
+      assert(Options.parse(["generate", "--expressions", "none"]).expressions.empty?)
+      assert_equal(LookupShapes::KINDS, Options.parse(["generate"]).lookups)
+      assert_equal(ExpressionShapes::KINDS, Options.parse(["generate"]).expressions)
+      assert_equal(%w[relative], Options.parse(["generate"]).plugin_discovery)
+    end
+
+    it "refuses unknown plugin axis values and non-generate use" do
+      %w[lookups expressions plugin-discovery].each do |flag|
+        err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--#{flag}", "telepathy"]) }
+        assert((err.message || "").includes?("telepathy"))
+      end
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--lookups", "list"]) }
+      assert((err.message || "").includes?("generate"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--strategy-plugins"]) }
+      assert((err.message || "").includes?("generate"))
+    end
+
+    it "parses --strategy-plugins as an opt-in axis" do
+      refute(Options.parse(["generate"]).strategy_plugins?)
+      assert(Options.parse(["generate", "--strategy-plugins"]).strategy_plugins?)
+    end
   end
 end

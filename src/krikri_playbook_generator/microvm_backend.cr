@@ -891,6 +891,12 @@ module KrikriPlaybookGenerator
           raise MicrovmProvisionError.new("include upload to #{vm.ip} failed: #{copied.stderr}")
         end
       end
+      PlaybookBuilder.plugin_loader_dirs(playbook_path).each do |dir|
+        copied = Cmd.run("scp", ["-r", "-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
+                                 "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                                 dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
+        raise MicrovmProvisionError.new("plugin upload to #{vm.ip} failed: #{copied.stderr}") unless copied.rc == 0
+      end
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
                                  HostInventory.render(hosts, include_unreachable) + "KPG_INVENTORY_EOF\n", 60.0)
       unless inventory.rc == 0

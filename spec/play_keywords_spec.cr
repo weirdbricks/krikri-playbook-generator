@@ -87,5 +87,15 @@ module KrikriPlaybookGenerator
       assert_nil(PlaySettingSampler.new(1, [] of String).sample(false))
       assert(PlaySettingSampler.new(1, [] of String).empty?)
     end
+
+    it "draws the custom strategy only when its pool is passed in" do
+      custom = PlaySettingSampler.new(3, ["strategy"], ["kpg_custom"])
+      Array.new(5) do
+        setting = custom.sample(false).as(PlaySetting)
+        assert_equal("strategy", setting.keyword)
+        assert_equal("kpg_custom", setting.value)
+      end
+      refute(PlayKeywords::VALUES["strategy"].includes?("kpg_custom"))
+    end
   end
 end

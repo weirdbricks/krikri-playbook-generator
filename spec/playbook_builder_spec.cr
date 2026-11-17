@@ -754,5 +754,122 @@ module KrikriPlaybookGenerator
     ensure
       FileUtils.rm_rf(dir) if dir
     end
+
+    it "writes a lookup shape's probes, play variable and adjacent plugin" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, lookup_shapes: [LookupShape::List]).build([sample_task]).first
+      play = YAML.parse(File.read(path)).as_a.first
+
+      value = play["vars"].as_h[YAML::Any.new(PlaybookBuilder::LOOKUP_VALUE_VARIABLE)].as_s
+      assert_equal("{{ lookup('kpg_list') }}", value)
+      names = play["tasks"].as_a.map(&.["name"].as_s)
+      assert(names.includes?("Kpg lookup var"))
+      assert(names.includes?("Kpg lookup msg"))
+
+      plugin = File.join(PlaybookBuilder.plugins_dir(path), "lookup_plugins", "kpg_list.py")
+      assert File.file?(plugin), "playbook-adjacent lookup plugin missing"
+      assert_equal(Fixtures::LOOKUP_LIST_SOURCE, File.read(plugin).chomp)
+
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("list", meta["plugins"]["lookup"].as_s)
+      assert_equal("relative", meta["plugins"]["discovery"].as_s)
+      assert_equal(0, meta["plugins"]["env"].as_h.size)
+      refute(meta["structural_failure"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "exports the lookup plugin directory through the environment when asked" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, lookup_shapes: [LookupShape::Undefined],
+        plugin_discovery: [PluginDiscovery::Env] of PluginDiscovery?).build([sample_task]).first
+
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal(Fixtures::LOOKUP_PLUGIN_DIR, meta["plugins"]["env"]["ANSIBLE_LOOKUP_PLUGINS"].as_s)
+      assert_equal("env", meta["plugins"]["discovery"].as_s)
+      refute(Dir.exists?(PlaybookBuilder.plugins_dir(path)))
+      assert(meta["structural_failure"].as_bool, "a shape whose reference run fails is a structural failure")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "installs the custom strategy plugin for a strategy row" do
+      dir = File.tempname("kpg-spec")
+      settings = [PlaySetting.new("strategy", Fixtures::CUSTOM_STRATEGY, "ANSIBLE_STRATEGY")] of PlaySetting?
+      path = PlaybookBuilder.new(dir, nil, settings).build([sample_task]).first
+
+      plugin = File.join(PlaybookBuilder.plugins_dir(path), "strategy_plugins", "kpg_custom.py")
+      assert File.file?(plugin), "playbook-adjacent strategy plugin missing"
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal(Fixtures::CUSTOM_STRATEGY, meta["plugins"]["strategy"].as_s)
+      assert_equal(Fixtures::CUSTOM_STRATEGY, meta["play"]["env"]["ANSIBLE_STRATEGY"].as_s)
+      assert_nil(YAML.parse(File.read(path)).as_a.first["strategy"]?)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "probes each expression shape through both debug var and msg" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, expression_shapes: [ExpressionShape::RegexSearch]).build([sample_task]).first
+      play = YAML.parse(File.read(path)).as_a.first
+
+      names = play["tasks"].as_a.map(&.["name"].as_s)
+      assert(names.includes?("Kpg regex-search var"))
+      assert(names.includes?("Kpg regex-search msg"))
+      value = play["vars"].as_h[YAML::Any.new(PlaybookBuilder::EXPRESSION_VALUE_VARIABLE)].as_s
+      assert(value.includes?("regex_search"))
+      assert(value.includes?("'\\2'"))
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      refute(meta["structural_failure"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "renders a statement block and a star-args splice, with the filter plugin installed" do
+      dir = File.tempname("kpg-spec")
+      statement = PlaybookBuilder.new(dir, expression_shapes: [ExpressionShape::Statement]).build([sample_task]).first
+      vars = YAML.parse(File.read(statement)).as_a.first["vars"].as_h
+      assert(vars[YAML::Any.new(PlaybookBuilder::STATEMENT_IF_VARIABLE)].as_s.includes?("{% if true %}"))
+      assert(vars[YAML::Any.new(PlaybookBuilder::STATEMENT_FOR_VARIABLE)].as_s.includes?("{% for item"))
+
+      star = PlaybookBuilder.new(dir, expression_shapes: [ExpressionShape::StarArgs]).build([sample_task]).first
+      plugin = File.join(PlaybookBuilder.plugins_dir(star), "filter_plugins", "kpg_filters.py")
+      assert File.file?(plugin), "playbook-adjacent filter plugin missing"
+      copy_task = YAML.parse(File.read(star)).as_a.first["tasks"].as_a.find do |task|
+        task["name"].as_s == "Kpg star args module arg"
+      end
+      refute_nil(copy_task)
+      content = copy_task.as(YAML::Any)["ansible.builtin.copy"]["content"].as_s
+      assert(content.includes?("*['a', 'b']"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "renders an empty render as an empty msg" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, expression_shapes: [ExpressionShape::EmptyRender]).build([sample_task]).first
+      empty_msg = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.find do |task|
+        task["name"].as_s == "Kpg empty msg"
+      end
+      refute_nil(empty_msg)
+      assert_equal("", empty_msg.as(YAML::Any)["ansible.builtin.debug"]["msg"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "adds the plugin probes to a multi-task playbook too" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir,
+        lookup_shapes: [LookupShape::Query],
+        expression_shapes: [ExpressionShape::Chain]).build_scenarios([[sample_task]]).first
+      play = YAML.parse(File.read(path)).as_a.first
+
+      assert(play["vars"].as_h.has_key?(YAML::Any.new(PlaybookBuilder::LOOKUP_VALUE_VARIABLE)))
+      names = play["tasks"].as_a.map(&.["name"].as_s)
+      assert(names.includes?("Kpg lookup msg"))
+      assert(names.includes?("Kpg chain var"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
   end
 end

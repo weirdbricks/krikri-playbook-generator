@@ -104,22 +104,43 @@ module KrikriPlaybookGenerator
       schemas.each do |schema|
         tasks.concat(generator.generate(schema, opts.count))
       end
-      Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
-      sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
-      settings = tasks.map { |task| sampler.sample(task.chaos?) }
-      block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
-      shapes = tasks.map { block_sampler.sample }
-      handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
-      handlers = tasks.map { handler_sampler.sample }
-      retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
-      retries = tasks.map { retry_sampler.sample }
-      include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
-      includes = tasks.map { include_sampler.sample }
-      profiles = tasks.map { |task| Dependencies.playbook_profiles([task.fqcn], Overrides.load) }
-      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-        opts.gather_facts?, includes, profiles).build(tasks)
+      playbooks = build_single_task_playbooks(opts, tasks)
     end
     run_generated(opts, playbooks)
+  end
+
+  # One playbook per generated task: sample every per-playbook axis with
+  # the batch seed and assemble them. Shared by a plain single-task batch
+  # and the `--tasks-per-playbook` fallback so the two never drift.
+  private def self.build_single_task_playbooks(opts : Options,
+                                               tasks : Array(GeneratedTask)) : Array(String)
+    Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
+    settings = sample_play_settings(opts, tasks)
+    block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
+    shapes = tasks.map { block_sampler.sample }
+    handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
+    handlers = tasks.map { handler_sampler.sample }
+    retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
+    retries = tasks.map { retry_sampler.sample }
+    include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
+    includes = tasks.map { include_sampler.sample }
+    lookup_sampler = LookupShapeSampler.new(opts.seed, opts.lookups)
+    lookups = tasks.map { lookup_sampler.sample }
+    expression_sampler = ExpressionShapeSampler.new(opts.seed, opts.expressions)
+    expressions = tasks.map { expression_sampler.sample }
+    discovery_sampler = PluginDiscoverySampler.new(opts.seed, opts.plugin_discovery)
+    discoveries = tasks.map { discovery_sampler.sample }
+    profiles = tasks.map { |task| Dependencies.playbook_profiles([task.fqcn], Overrides.load) }
+    PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
+      opts.gather_facts?, includes, profiles, lookups, expressions, discoveries).build(tasks)
+  end
+
+  private def self.sample_play_settings(opts : Options,
+                                        tasks : Array(GeneratedTask)) : Array(PlaySetting?)
+    strategy_values = PlayKeywords::VALUES["strategy"]
+    strategy_values += [Fixtures::CUSTOM_STRATEGY] if opts.strategy_plugins?
+    sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords, strategy_values)
+    tasks.map { |task| sampler.sample(task.chaos?) }
   end
 
   # v2 multi-task generation: `--tasks-per-playbook N` (N >= 2) assembles
@@ -137,20 +158,7 @@ module KrikriPlaybookGenerator
                            "--tasks-per-playbook needs at least 2 - falling back to single-task playbooks")
       tasks = [] of GeneratedTask
       schemas.each { |schema| tasks.concat(generator.generate(schema, opts.count)) }
-      Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
-      sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
-      settings = tasks.map { |task| sampler.sample(task.chaos?) }
-      block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
-      shapes = tasks.map { block_sampler.sample }
-      handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
-      handlers = tasks.map { handler_sampler.sample }
-      retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
-      retries = tasks.map { retry_sampler.sample }
-      include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
-      includes = tasks.map { include_sampler.sample }
-      profiles = tasks.map { |task| Dependencies.playbook_profiles([task.fqcn], Overrides.load) }
-      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
-        opts.gather_facts?, includes, profiles).build(tasks)
+      return build_single_task_playbooks(opts, tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -162,7 +170,9 @@ module KrikriPlaybookGenerator
     end
     scenarios = generator.generate_scenarios(schemas, per_playbook, opts.count)
     Log.info("generate", "building #{scenarios.size} playbook(s) into #{opts.out_dir}")
-    sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
+    strategy_values = PlayKeywords::VALUES["strategy"]
+    strategy_values += [Fixtures::CUSTOM_STRATEGY] if opts.strategy_plugins?
+    sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords, strategy_values)
     settings = scenarios.map { |tasks| sampler.sample(tasks.any?(&.chaos?)) }
     handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
     handlers = scenarios.map { handler_sampler.sample }
@@ -170,13 +180,21 @@ module KrikriPlaybookGenerator
     retries = scenarios.map { retry_sampler.sample }
     include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
     includes = scenarios.map { include_sampler.sample }
+    lookup_sampler = LookupShapeSampler.new(opts.seed, opts.lookups)
+    lookups = scenarios.map { lookup_sampler.sample }
+    expression_sampler = ExpressionShapeSampler.new(opts.seed, opts.expressions)
+    expressions = scenarios.map { expression_sampler.sample }
+    discovery_sampler = PluginDiscoverySampler.new(opts.seed, opts.plugin_discovery)
+    discoveries = scenarios.map { discovery_sampler.sample }
     profiles = scenarios.map do |tasks|
       Dependencies.playbook_profiles(tasks.map(&.fqcn), Overrides.load)
     end
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings,
       block_shapes: [] of BlockShape, handler_shapes: handlers,
       retry_shapes: retries, gather_facts: opts.gather_facts?,
-      include_shapes: includes, profiles: profiles).build_scenarios(scenarios)
+      include_shapes: includes, profiles: profiles,
+      lookup_shapes: lookups, expression_shapes: expressions,
+      plugin_discovery: discoveries).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32

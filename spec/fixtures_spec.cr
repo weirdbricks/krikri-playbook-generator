@@ -220,5 +220,31 @@ module KrikriPlaybookGenerator
         end
       end
     end
+
+    it "seeds every plugin source and the ansible.cfg discovery variant" do
+      with_seeded_fixtures do |fixture_root|
+        %w[kpg_list.py kpg_none.py kpg_undefined.py kpg_raise.py kpg_sideeffect.py].each do |name|
+          assert File.file?(File.join(fixture_root, "plugins", "lookup_plugins", name)), "#{name} missing"
+        end
+        assert File.file?(File.join(fixture_root, "plugins", "filter_plugins", "kpg_filters.py"))
+        assert File.file?(File.join(fixture_root, "plugins", "strategy_plugins", "kpg_custom.py"))
+
+        cfg = File.read(File.join(fixture_root, "cfg", "kpg-plugins.cfg"))
+        assert(cfg.includes?("lookup_plugins = #{fixture_root}/plugins/lookup_plugins"))
+        assert(cfg.includes?("filter_plugins = #{fixture_root}/plugins/filter_plugins"))
+        assert(cfg.includes?("strategy_plugins = #{fixture_root}/plugins/strategy_plugins"))
+      end
+    end
+
+    it "maps each plugin kind to its loader directory and environment variable" do
+      assert_equal("#{Fixtures::PLUGIN_ROOT}/lookup_plugins", Fixtures.plugin_dir(PluginShapes::LOOKUP_KIND))
+      assert_equal("#{Fixtures::PLUGIN_ROOT}/filter_plugins", Fixtures.plugin_dir(PluginShapes::FILTER_KIND))
+      assert_equal("#{Fixtures::PLUGIN_ROOT}/strategy_plugins", Fixtures.plugin_dir(PluginShapes::STRATEGY_KIND))
+
+      env = Fixtures.plugin_env(PluginDiscovery::Env, [PluginShapes::LOOKUP_KIND])
+      assert_equal(Fixtures::LOOKUP_PLUGIN_DIR, env["ANSIBLE_LOOKUP_PLUGINS"])
+      assert_equal({} of String => String, Fixtures.plugin_env(PluginDiscovery::Relative, [PluginShapes::LOOKUP_KIND]))
+      assert_equal(Fixtures::PLUGIN_CONFIG, Fixtures.plugin_env(PluginDiscovery::Config, [PluginShapes::FILTER_KIND])["ANSIBLE_CONFIG"])
+    end
   end
 end
