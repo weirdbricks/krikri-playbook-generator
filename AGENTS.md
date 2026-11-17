@@ -206,6 +206,20 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   handler, so it really runs whatever module the playbook exercises; the
   module task itself has no `notify:`. Shape is drawn with its own seeded
   RNG and recorded as `handlers` in the sidecar.
+- `src/krikri_playbook_generator/retry_shapes.cr` — `RetryShape`,
+  `RetryShapes` and `RetryShapeSampler`. **Implemented**: the retry axis
+  (`--retries retried,exhausted,delegated,delegated-fact`, `none` off).
+  `Fixtures::RETRY_SCRIPT` is a command that fails twice and succeeds on
+  its third run (it counts attempts in `Fixtures::RETRY_COUNTER` under the
+  writable work root, so a fresh pair starts at zero);
+  `Fixtures::RETRY_NEVER_SCRIPT` never succeeds. The shapes add a
+  registered retry task with `retries`/`delay: 0`/`until: kpg_retry.rc ==
+  0` (so the RETRYING lines and the final result are compared), the
+  never-satisfied variant (attempts count and failure shape), the retried
+  command delegated to the second alias plus a probe of its attempts, and
+  a `set_fact` retried with `delegate_to` + `delegate_facts` followed by a
+  probe that reads the fact out of the delegate's hostvars. Recorded as
+  `retries` in the sidecar.
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -609,8 +623,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   matrix; `--play-keywords LIST` selects the play-level keyword axis
   (`none` disables it); `--delegation off|literal|templated|both` is the
   delegate_to axis; `--blocks LIST` wraps single-task playbooks in a
-  block shape; `--handlers LIST` picks the handler shape. All four are
-  generate-only.
+  block shape; `--handlers LIST` picks the handler shape; `--retries LIST`
+  picks the retry shape. All five are generate-only.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -821,7 +835,7 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
 `play_keywords_spec.cr`, `block_shapes_spec.cr`, `handler_shapes_spec.cr`,
-`run_context_spec.cr`,
+`retry_shapes_spec.cr`, `run_context_spec.cr`,
 `playbook_builder_spec.cr`,
 `fixtures_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
 `podman_backend_spec.cr`,
@@ -886,11 +900,12 @@ engine outputs name `target2`, the recap has the host, the row records
 `ANSIBLE_STRATEGY` fails on real ansible, proving the export happened)
 and landing in results.jsonl. `fixtures_spec.cr` covers the
 role/HTTP fixtures plus `IDENTITY_SCRIPT`, `ownership_command`, the
-unusual-mode destinations/directories and `RESTORE_UNUSUAL_SCRIPT`'s
-idempotency. `play_keywords_spec.cr` covers the kind list, valid vs
+unusual-mode destinations/directories, `RESTORE_UNUSUAL_SCRIPT`'s
+idempotency and the retry fixtures' attempt counting. `play_keywords_spec.cr` covers the kind list, valid vs
 chaos value pools, determinism, env-only `forks` and the 50/50 env door;
-`block_shapes_spec.cr` and `handler_shapes_spec.cr` cover the shape
-lists, parsing and the seeded samplers, and `playbook_builder_spec.cr`
+`block_shapes_spec.cr`, `handler_shapes_spec.cr` and
+`retry_shapes_spec.cr` cover the shape lists, parsing and the seeded
+samplers, and `playbook_builder_spec.cr`
 covers each shape's YAML (handler failure/ignoring/delegation/chain, the
 notifier task, the v2 application, and no handlers when off)
 (forced failure, rescue/always bodies, the block gate and its play var,

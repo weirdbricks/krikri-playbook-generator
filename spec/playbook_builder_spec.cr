@@ -412,6 +412,67 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "adds a retried command with register and until for the retried shape" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [RetryShape::Retried]).build([sample_task]).first
+
+      body = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.last
+      assert_equal("Kpg retried command", body["name"].as_s)
+      assert_equal(Fixtures::RETRY_SCRIPT, body["ansible.builtin.command"]["cmd"].as_s)
+      assert_equal("kpg_retry", body["register"].as_s)
+      assert_equal(4, body["retries"].as_i)
+      assert_equal(0, body["delay"].as_i)
+      assert_equal("kpg_retry.rc == 0", body["until"].as_s)
+      assert_nil(body["delegate_to"]?)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("retried", meta["retries"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "uses the never-succeeding fixture for the exhausted shape" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [RetryShape::Exhausted]).build([sample_task]).first
+
+      body = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.last
+      assert_equal(Fixtures::RETRY_NEVER_SCRIPT, body["ansible.builtin.command"]["cmd"].as_s)
+      assert_equal(2, body["retries"].as_i)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "delegates the retried command and probes its attempts for the delegated shapes" do
+      dir = File.tempname("kpg-spec")
+      delegated = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [RetryShape::Delegated]).build([sample_task]).first
+      bodies = YAML.parse(File.read(delegated)).as_a.first["tasks"].as_a
+      assert_equal("target2", bodies[-2]["delegate_to"].as_s)
+      assert_equal(true, bodies[-2]["delegate_facts"].as_bool)
+      assert_equal("Kpg retry probe", bodies[-1]["name"].as_s)
+
+      fact = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [RetryShape::DelegatedFact]).build([sample_task]).first
+      fact_bodies = YAML.parse(File.read(fact)).as_a.first["tasks"].as_a
+      retried = fact_bodies[-2]
+      assert_equal(true, retried["delegate_facts"].as_bool)
+      assert_equal("kpg_retry is defined", retried["until"].as_s)
+      assert(fact_bodies[-1]["ansible.builtin.debug"]["msg"].as_s.includes?("hostvars['target2']"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "adds no retry task when the retry axis is off" do
+      dir = File.tempname("kpg-spec")
+      path = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [] of BlockShape,
+        [] of HandlerShape, [RetryShape::Off]).build([sample_task]).first
+
+      assert_equal(1, YAML.parse(File.read(path)).as_a.first["tasks"].as_a.size)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

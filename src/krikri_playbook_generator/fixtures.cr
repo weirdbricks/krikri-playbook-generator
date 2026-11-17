@@ -96,6 +96,14 @@ module KrikriPlaybookGenerator
       "#{FIXTURE_ROOT}/dir",
     ]
 
+    # The deterministic retry fixtures: one command that succeeds only on
+    # its third run (its counter lives in the writable work root, so the
+    # per-playbook fresh pair starts from zero), and one that never
+    # succeeds, for the never-satisfied `until:` shape.
+    RETRY_SCRIPT       = "#{FIXTURE_ROOT}/retry.sh"
+    RETRY_NEVER_SCRIPT = "#{FIXTURE_ROOT}/retry-never.sh"
+    RETRY_COUNTER      = "#{WORK_ROOT}/retry.count"
+
     # A destination whose parent directory is root-owned and read-only: on
     # the nonroot profile a write proves the identity axis (real ansible
     # fails with the permission error), while the root profile still runs.
@@ -181,6 +189,15 @@ module KrikriPlaybookGenerator
       printf 'kpg fixture bravo\\n' > #{FIXTURE_ROOT}/src2.txt
       printf 'kpg says {{ 1 + 1 }}\\n' > #{FIXTURE_ROOT}/template.j2
       printf '#!/bin/sh\\necho kpg-fixture-script\\n' > #{FIXTURE_ROOT}/script.sh
+      cat > #{RETRY_SCRIPT} <<'KPG_RETRY_EOF'
+      #!/bin/sh
+      count=$(cat #{RETRY_COUNTER} 2>/dev/null || echo 0)
+      count=$((count + 1))
+      echo "$count" > #{RETRY_COUNTER}
+      [ "$count" -ge 3 ] && exit 0
+      exit 1
+      KPG_RETRY_EOF
+      printf '#!/bin/sh\\nexit 1\\n' > #{RETRY_NEVER_SCRIPT}
       printf 'kpg_var: 1\\nkpg_list:\\n  - a\\n  - b\\n' > #{FIXTURE_ROOT}/vars.yml
       printf 'inner\\n' > #{FIXTURE_ROOT}/dir/inner.txt
       mkdir -p #{FIXTURE_ROOT}/frags #{WORK_ROOT}/tree
@@ -258,7 +275,7 @@ module KrikriPlaybookGenerator
         ansible.builtin.debug:
           msg: kpg-fixture-role-handler
       KPG_ROLE_HANDLERS_EOF
-      chmod 0755 #{FIXTURE_ROOT}/script.sh
+      chmod 0755 #{FIXTURE_ROOT}/script.sh #{RETRY_SCRIPT} #{RETRY_NEVER_SCRIPT}
       chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt #{TASKS_FILE}
       BASH
 

@@ -110,7 +110,9 @@ module KrikriPlaybookGenerator
       shapes = tasks.map { block_sampler.sample }
       handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
       handlers = tasks.map { handler_sampler.sample }
-      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers).build(tasks)
+      retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
+      retries = tasks.map { retry_sampler.sample }
+      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -137,7 +139,9 @@ module KrikriPlaybookGenerator
       shapes = tasks.map { block_sampler.sample }
       handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
       handlers = tasks.map { handler_sampler.sample }
-      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers).build(tasks)
+      retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
+      retries = tasks.map { retry_sampler.sample }
+      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -153,8 +157,11 @@ module KrikriPlaybookGenerator
     settings = scenarios.map { |tasks| sampler.sample(tasks.any?(&.chaos?)) }
     handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
     handlers = scenarios.map { handler_sampler.sample }
+    retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
+    retries = scenarios.map { retry_sampler.sample }
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings,
-      block_shapes: [] of BlockShape, handler_shapes: handlers).build_scenarios(scenarios)
+      block_shapes: [] of BlockShape, handler_shapes: handlers,
+      retry_shapes: retries).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32

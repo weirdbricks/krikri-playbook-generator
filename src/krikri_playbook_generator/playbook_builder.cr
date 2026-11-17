@@ -3,6 +3,7 @@ require "./generator"
 require "./play_keywords"
 require "./block_shapes"
 require "./handler_shapes"
+require "./retry_shapes"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -38,7 +39,8 @@ module KrikriPlaybookGenerator
     def initialize(@out_dir : String, @seed : Int32? = nil,
                    @play_settings : Array(PlaySetting?) = [] of PlaySetting?,
                    @block_shapes : Array(BlockShape) = [] of BlockShape,
-                   @handler_shapes : Array(HandlerShape) = [] of HandlerShape)
+                   @handler_shapes : Array(HandlerShape) = [] of HandlerShape,
+                   @retry_shapes : Array(RetryShape) = [] of RetryShape)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -212,6 +214,7 @@ module KrikriPlaybookGenerator
       apply_play_vars(play, task, @block_shapes[index]? || BlockShape::None)
       bodies = block_bodies(task_body, task, @block_shapes[index]? || BlockShape::None)
       bodies << notifier_body unless shape.off?
+      bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
       play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
       apply_handlers(play, shape)
 
@@ -243,6 +246,7 @@ module KrikriPlaybookGenerator
           json.field "delegate_facts", task.delegate_facts? if task.delegate_to
           json.field "block", (@block_shapes[index]? || BlockShape::None).label
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
+          json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
         end
       end
     end
@@ -292,6 +296,7 @@ module KrikriPlaybookGenerator
       end
       shape = @handler_shapes[index]? || HandlerShape::Off
       task_bodies << notifier_body unless shape.off?
+      task_bodies.concat(retry_bodies(@retry_shapes[index]? || RetryShape::Off))
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
       apply_scenario_handlers(play, tasks, shape)
 
@@ -314,6 +319,7 @@ module KrikriPlaybookGenerator
           json.field "chaos", tasks.any?(&.chaos?)
           play_setting_json(json, @play_settings[index]?)
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
+          json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "mutations" do
             json.array do
               tasks.each_with_index do |task, task_index|
@@ -452,6 +458,66 @@ module KrikriPlaybookGenerator
       args[YAML::Any.new("msg")] = YAML::Any.new(message)
       body[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(args)
       YAML::Any.new(body)
+    end
+
+    # The retry shapes' play tasks. The command fixtures are deterministic:
+    # one succeeds on its third run (counter in the writable work root),
+    # one never succeeds. `until:` reads the registered result of the
+    # current attempt, which is how ansible exposes it.
+    private def retry_bodies(shape : RetryShape) : Array(YAML::Any)
+      case shape
+      when .retried?        then [retried_command_body(Fixtures::RETRY_SCRIPT, 4, false)]
+      when .exhausted?      then [retried_command_body(Fixtures::RETRY_NEVER_SCRIPT, 2, false)]
+      when .delegated?      then [retried_command_body(Fixtures::RETRY_SCRIPT, 4, true), retry_result_probe_body]
+      when .delegated_fact? then [delegated_fact_body, delegated_fact_probe_body]
+      else                       [] of YAML::Any
+      end
+    end
+
+    private def retried_command_body(script : String, retries : Int32, delegated : Bool) : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg retried command")
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("cmd")] = YAML::Any.new(script)
+      body[YAML::Any.new("ansible.builtin.command")] = YAML::Any.new(args)
+      body[YAML::Any.new("register")] = YAML::Any.new("kpg_retry")
+      body[YAML::Any.new("retries")] = YAML::Any.new(retries)
+      body[YAML::Any.new("delay")] = YAML::Any.new(0)
+      body[YAML::Any.new("until")] = YAML::Any.new("kpg_retry.rc == 0")
+      body[YAML::Any.new("changed_when")] = YAML::Any.new(false)
+      body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
+      if delegated
+        body[YAML::Any.new("delegate_to")] = YAML::Any.new(Generator::DELEGATE_HOST)
+        body[YAML::Any.new("delegate_facts")] = YAML::Any.new(true)
+      end
+      YAML::Any.new(body)
+    end
+
+    private def retry_result_probe_body : YAML::Any
+      body = debug_body("Kpg retry probe", "{{ kpg_retry.attempts | default('none') }}")
+      YAML::Any.new(body.as_h)
+    end
+
+    private def delegated_fact_body : YAML::Any
+      body = {} of YAML::Any => YAML::Any
+      body[YAML::Any.new("name")] = YAML::Any.new("Kpg retry fact")
+      args = {} of YAML::Any => YAML::Any
+      args[YAML::Any.new("kpg_retry_fact")] = YAML::Any.new("kpg-fact-{{ ansible_host }}")
+      body[YAML::Any.new("ansible.builtin.set_fact")] = YAML::Any.new(args)
+      body[YAML::Any.new("delegate_to")] = YAML::Any.new(Generator::DELEGATE_HOST)
+      body[YAML::Any.new("delegate_facts")] = YAML::Any.new(true)
+      body[YAML::Any.new("retries")] = YAML::Any.new(2)
+      body[YAML::Any.new("delay")] = YAML::Any.new(0)
+      body[YAML::Any.new("until")] = YAML::Any.new("kpg_retry is defined")
+      body[YAML::Any.new("register")] = YAML::Any.new("kpg_retry")
+      body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
+      YAML::Any.new(body)
+    end
+
+    private def delegated_fact_probe_body : YAML::Any
+      body = debug_body("Kpg fact probe",
+        "{{ hostvars['#{Generator::DELEGATE_HOST}']['kpg_retry_fact'] | default('absent') }}")
+      YAML::Any.new(body.as_h)
     end
 
     # Always-changed, always-ignored task whose only job is to notify the

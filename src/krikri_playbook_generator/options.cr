@@ -4,6 +4,7 @@ require "./run_context"
 require "./play_keywords"
 require "./block_shapes"
 require "./handler_shapes"
+require "./retry_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -64,6 +65,8 @@ module KrikriPlaybookGenerator
     property? blocks_given : Bool
     property handlers : Array(String)
     property? handlers_given : Bool
+    property retries : Array(String)
+    property? retries_given : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
@@ -93,6 +96,7 @@ module KrikriPlaybookGenerator
                    @delegation = DelegationMode::Both, @delegation_given = false,
                    @blocks = BlockShapes::KINDS, @blocks_given = false,
                    @handlers = HandlerShapes::KINDS, @handlers_given = false,
+                   @retries = RetryShapes::KINDS, @retries_given = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -187,6 +191,10 @@ module KrikriPlaybookGenerator
         dsl.on("--delegation MODE", "delegate_to spelling for generated tasks: off, literal, templated (a play var) or both (default, drawn per task)") do |v|
           opts.delegation = parse_delegation(v)
           opts.delegation_given = true
+        end
+        dsl.on("--retries LIST", "retry shapes: retried, exhausted, delegated or delegated-fact (comma-separated; `none` turns it off)") do |v|
+          opts.retries = parse_retries(v)
+          opts.retries_given = true
         end
         dsl.on("--handlers LIST", "handler shapes: failing, ignoring, delegated or chained (comma-separated; `none` turns it off)") do |v|
           opts.handlers = parse_handlers(v)
@@ -344,6 +352,7 @@ module KrikriPlaybookGenerator
       check_delegation_target!(opts)
       check_block_target!(opts)
       check_handler_target!(opts)
+      check_retry_target!(opts)
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
@@ -385,6 +394,22 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--handlers is only valid with generate (the playbook carries the handlers)")
+    end
+
+    # Retry shapes are playbook structure too, so generate-only.
+    private def self.check_retry_target!(opts : Options) : Nil
+      return unless opts.retries_given?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new("--retries is only valid with generate (the playbook carries retries/until)")
+    end
+
+    private def self.parse_retries(value : String) : Array(String)
+      shapes = RetryShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --retries value #{value.inspect} (expected: #{RetryShapes::KINDS.join(", ")}, none)")
     end
 
     private def self.parse_handlers(value : String) : Array(String)

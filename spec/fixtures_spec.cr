@@ -152,6 +152,19 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "seeds the retry fixtures: the third run succeeds, the never-run does not" do
+      with_seeded_fixtures do |fixture_root|
+        work = File.join(fixture_root, "..", "work")
+        retry_script = Fixtures::RETRY_SCRIPT.sub(Fixtures::FIXTURE_ROOT, fixture_root)
+        never_script = Fixtures::RETRY_NEVER_SCRIPT.sub(Fixtures::FIXTURE_ROOT, fixture_root)
+
+        rcs = Array.new(3) { Cmd.run("bash", [retry_script], timeout: 30.0).rc }
+        assert_equal([1, 1, 0], rcs)
+        assert_equal("3", File.read(File.join(work, "retry.count")).strip)
+        assert_equal(1, Cmd.run("bash", [never_script], timeout: 30.0).rc)
+      end
+    end
+
     it "http fixture URLs resolve to files the seed script creates" do
       with_seeded_fixtures do |fixture_root|
         Fixtures::HTTP_URLS.each do |url|
