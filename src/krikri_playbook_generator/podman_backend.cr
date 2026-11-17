@@ -174,16 +174,21 @@ module KrikriPlaybookGenerator
     end
 
     # Visible for specs: the identical bash script both engines exec.
-    # Check mode appends --check only - never --diff, whose krikri hunk
-    # formatting has a known gap that would flood the findings.
-    def self.engine_script(engine_cmd : String, playbook_basename : String, engine_timeout : Int32, check : Bool) : String
+    # `--diff` is on by default (see Options#diff): diff output is a large
+    # part of user-visible behavior, it is compared byte-for-byte like the
+    # rest of stdout, and it is masked by nothing - a formatting gap is a
+    # finding, not a reason to switch the flag off.
+    def self.engine_script(engine_cmd : String, playbook_basename : String, engine_timeout : Int32,
+                           check : Bool, diff : Bool = true) : String
       "cd /work && #{ENGINE_ENV_STRIP} timeout #{engine_timeout} " \
-      "#{engine_cmd}#{check ? " --check" : ""} -i inventory.ini /work/#{playbook_basename} </dev/null"
+      "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""} " \
+      "-i inventory.ini /work/#{playbook_basename} </dev/null"
     end
 
     def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120, @control : Bool = false,
                    @module_fqcns : Array(String) = [] of String, @dependencies : Dependencies = Dependencies.load,
-                   @refresh_templates : Bool = false, @check_mode : Bool = false)
+                   @refresh_templates : Bool = false, @check_mode : Bool = false,
+                   @diff : Bool = true)
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = ""
       @name_krikri = ""
@@ -334,7 +339,8 @@ module KrikriPlaybookGenerator
     # the SAME pair after the first run succeeded on both engines (the
     # idempotency pass); each pass is returned separately.
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
-                     check : Bool? = nil, second_run : Bool = false) : Array(HostState::Comparison)
+                     check : Bool? = nil, second_run : Bool = false,
+                     diff : Bool? = nil) : Array(HostState::Comparison)
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       # Per-profile images: a mixed batch provisions both templates, and a
@@ -346,6 +352,7 @@ module KrikriPlaybookGenerator
       krikri = "kpg-krikri-#{@run_index}#{@suffix}"
       created = [] of String
       effective_check = check.nil? ? @check_mode : check
+      effective_diff = diff.nil? ? @diff : diff
       krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
 
       begin
@@ -360,10 +367,10 @@ module KrikriPlaybookGenerator
         copy_playbook(playbook_path, krikri)
 
         runs = [] of HostState::Comparison
-        runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check)
+        runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff)
         if second_run && HostState.succeeded?(runs.first[:ansible]) &&
            HostState.succeeded?(runs.first[:krikri])
-          runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check)
+          runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff)
         end
         runs
       ensure
@@ -375,15 +382,15 @@ module KrikriPlaybookGenerator
     end
 
     private def comparison(real : String, krikri : String, playbook_path : String,
-                           krikri_engine : String, check : Bool) : HostState::Comparison
-      {ansible: observe(real, "ansible-playbook", playbook_path, check),
-       krikri:  observe(krikri, krikri_engine, playbook_path, check)}
+                           krikri_engine : String, check : Bool, diff : Bool) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff)}
     end
 
     private def observe(name : String, engine_cmd : String, playbook_path : String,
-                        check : Bool) : HostState::Observation
+                        check : Bool, diff : Bool) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path, check)
+      result = exec_engine(name, engine_cmd, playbook_path, check, diff)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -696,8 +703,8 @@ module KrikriPlaybookGenerator
     end
 
     private def exec_engine(name : String, engine_cmd : String, playbook_path : String,
-                            check : Bool = @check_mode) : Cmd::Result
-      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout, check)
+                            check : Bool = @check_mode, diff : Bool = @diff) : Cmd::Result
+      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout, check, diff)
       Cmd.run("podman", ["exec", "-w", "/work", name, "bash", "-c", script], timeout: @engine_timeout + 60.0)
     end
 

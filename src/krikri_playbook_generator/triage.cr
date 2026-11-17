@@ -135,6 +135,7 @@ module KrikriPlaybookGenerator
               json.field "modes", info[:modes]
               json.field "duration", info[:duration]
               json.field "second_run", info[:second_run]
+              json.field "diff", info[:diff]
             end
           end
           json.field "findings" do
@@ -295,11 +296,15 @@ module KrikriPlaybookGenerator
     # Provenance written next to results.jsonl by Runner: which mode matrix
     # the batch covered, whether the second-run pass was on, and how long
     # the batch took (so the cost of both is visible in the report).
-    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool)
+    # `diff` defaults to false for a legacy versions.txt written before the
+    # flag was recorded: those batches never passed --diff, so a repro of
+    # one has to skip it too or it compares different bytes.
+    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool, diff: Bool)
       path = File.join(@results_dir, "versions.txt")
       modes = [] of String
       duration = nil
       second_run = false
+      diff = false
       if File.exists?(path)
         File.each_line(path) do |line|
           key, value = line.split(": ", 2)
@@ -308,10 +313,11 @@ module KrikriPlaybookGenerator
           when "modes"          then modes = value.split(',').map(&.strip)
           when "batch duration" then duration = value.strip
           when "idempotency"    then second_run = value.strip == "true"
+          when "diff"           then diff = value.strip == "true"
           end
         end
       end
-      {modes: modes, duration: duration, second_run: second_run}
+      {modes: modes, duration: duration, second_run: second_run, diff: diff}
     end
 
     def rates : Array(Rate)
@@ -338,11 +344,12 @@ module KrikriPlaybookGenerator
     # database or container module needs the microVM path, and sending it to
     # podman would "reproduce" nowhere.
     def self.repro_command(playbook_path : String, module_names : Array(String) = [] of String,
-                           mode : String? = nil, run : Int32 = 1) : String
+                           mode : String? = nil, run : Int32 = 1, diff : Bool = true) : String
       backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
       command = "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
       command += " --modes #{mode}" if mode && mode.in?(%w[check real])
       command += " --no-second-run" if run <= 1
+      command += " --no-diff" unless diff
       command
     end
 

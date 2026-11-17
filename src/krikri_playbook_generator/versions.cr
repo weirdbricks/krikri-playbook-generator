@@ -27,15 +27,15 @@ module KrikriPlaybookGenerator
 
     def self.write(results_dir : String, version : String, krikri_bin : String,
                    ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
-                   second_run : Bool, duration : Time::Span, started : Time,
+                   second_run : Bool, diff : Bool, duration : Time::Span, started : Time,
                    runner : CommandRunner = DEFAULT_RUNNER) : Nil
       File.write(File.join(results_dir, "versions.txt"),
-        render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, duration, runner))
+        render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, diff, duration, runner))
     end
 
     def self.render(version : String, started : Time, krikri_bin : String,
                     ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
-                    second_run : Bool, duration : Time::Span,
+                    second_run : Bool, diff : Bool, duration : Time::Span,
                     runner : CommandRunner) : String
       binary = Path[krikri_bin].expand(home: true).to_s
       checkout = File.dirname(File.dirname(binary))
@@ -53,6 +53,7 @@ module KrikriPlaybookGenerator
         "control: #{control}",
         "modes: #{modes.map(&.label).join(",")}",
         "idempotency: #{second_run}",
+        "diff: #{diff}",
         "batch duration: #{duration.total_seconds.round(1)}s",
       ]
 

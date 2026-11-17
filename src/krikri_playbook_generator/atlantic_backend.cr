@@ -180,7 +180,8 @@ module KrikriPlaybookGenerator
     @created_key_id : String? = nil
 
     def initialize(@krikri_bin : String, @engine_timeout : Int32, @max_hosts : Int32,
-                   @work_dir : String = "", @on_playbook_done : (String -> Nil)? = nil)
+                   @work_dir : String = "", @on_playbook_done : (String -> Nil)? = nil,
+                   @diff : Bool = true)
       @work_dir = Path.home.join(".kpg-atlantic").to_s if @work_dir.empty?
       @suffix = "#{Time.utc.to_unix}-#{Process.pid}"
       @created_instances = [] of Instance
@@ -601,7 +602,7 @@ module KrikriPlaybookGenerator
 
     private def exec_engine(vm : Vm, engine_cmd : String, basename : String) : Cmd::Result
       script = "cd /work && #{ENGINE_ENV_STRIP} timeout #{@engine_timeout} " \
-               "#{engine_cmd} -i inventory.ini /work/#{basename} </dev/null"
+               "#{engine_cmd}#{@diff ? " --diff" : ""} -i inventory.ini /work/#{basename} </dev/null"
       result = exec_remote(vm, script, @engine_timeout + 60.0)
       # ssh reports its own failures as 255; those are provisioning errors,
       # not engine results.

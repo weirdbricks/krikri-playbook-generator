@@ -80,6 +80,16 @@ module KrikriPlaybookGenerator
         "suffix; the name can never match between runs, let alone engines",
       },
       {
+        Regex.new("ansible-local-[a-z0-9_]+/tmp_?[a-z0-9_]{6,9}/"),
+        "ansible-local-<RND>/tmp<RND>/",
+        "copy/template diff headers name the file the engine staged for the diff " \
+        "(`+++ after: <local tmp>/.../template.j2`): ansible and krikri each stage " \
+        "into their own per-run local temp directory (`ansible-local-<random>` then " \
+        "a `tmp<random>`/`tmp_<random>` component), the same non-deterministic " \
+        "class as ansible-tmp-N. Only those two components are masked - the diff " \
+        "body, the dest path and the source file name must still match",
+      },
+      {
         Regex.new("\\.\\d+\\.\\d{4}-\\d{2}-\\d{2}@\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?~"),
         ".N.<TIMESTAMP>~",
         "copy/lineinfile backup file names embed a pid-like random number plus a " \

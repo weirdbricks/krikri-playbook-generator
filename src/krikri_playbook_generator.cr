@@ -18,7 +18,7 @@ module KrikriPlaybookGenerator
       results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
         opts.krikri_bin, modes: Options.effective_modes(opts), run_on_podman: opts.run_on_podman?,
         run_on_atlantic: opts.run_on_atlantic?, run_on_microvm: opts.run_on_microvm?,
-        run_on_mixed: opts.run_on_mixed?, second_run: opts.second_run?,
+        run_on_mixed: opts.run_on_mixed?, second_run: opts.second_run?, diff: opts.diff?,
         keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
         refresh_podman_templates: opts.refresh_podman_templates?,
         podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
@@ -146,7 +146,7 @@ module KrikriPlaybookGenerator
     results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
       opts.krikri_bin, modes: Options.effective_modes(opts), run_on_podman: opts.run_on_podman?,
       run_on_atlantic: opts.run_on_atlantic?, run_on_microvm: opts.run_on_microvm?,
-      run_on_mixed: opts.run_on_mixed?, second_run: opts.second_run?,
+      run_on_mixed: opts.run_on_mixed?, second_run: opts.second_run?, diff: opts.diff?,
       keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
       refresh_podman_templates: opts.refresh_podman_templates?,
       podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
@@ -193,8 +193,9 @@ module KrikriPlaybookGenerator
   private def self.print_full_report(triage : Triage, findings : Array(Triage::Finding)? = nil,
                                      state_findings : Array(Triage::Finding)? = nil) : Nil
     print_batch_info(triage)
-    print_divergences(findings || triage.report)
-    print_state_divergences(state_findings || triage.state_report)
+    diff = triage.batch_info[:diff]
+    print_divergences(findings || triage.report, diff)
+    print_state_divergences(state_findings || triage.state_report, diff)
     print_quality(triage.quality, triage.expected_failures, triage.happy_coverage, triage.not_applicable_modules)
     print_rates(triage.rates)
   end
@@ -236,7 +237,7 @@ module KrikriPlaybookGenerator
     puts "modes: #{modes} | idempotency pass: #{info[:second_run] ? "on" : "off"} | wall time: #{duration}"
   end
 
-  private def self.print_divergences(findings : Array(Triage::Finding)) : Nil
+  private def self.print_divergences(findings : Array(Triage::Finding), diff : Bool = true) : Nil
     puts "== Divergences (grouped by module + diff signature) =="
     if findings.empty?
       puts "No divergences found."
@@ -251,11 +252,11 @@ module KrikriPlaybookGenerator
         puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
       puts "  example: #{finding.playbooks.first}"
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run)}"
+      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff)}"
     end
   end
 
-  private def self.print_state_divergences(findings : Array(Triage::Finding)) : Nil
+  private def self.print_state_divergences(findings : Array(Triage::Finding), diff : Bool = true) : Nil
     return if findings.empty?
 
     puts "== State divergences (same printed result, different host state) =="
@@ -264,7 +265,7 @@ module KrikriPlaybookGenerator
       example = finding.example
       puts "#{finding.module_name} (#{example.mode}, run #{example.run}, #{label}): #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff)}"
       print_state_diff(example.state_diff)
     end
   end

@@ -35,7 +35,7 @@ module KrikriPlaybookGenerator
       }
 
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
-        "#{dir}/bin/ansible-playbook", true, [RunMode::Check], true, 12.5.seconds, fake_runner(handlers))
+        "#{dir}/bin/ansible-playbook", true, [RunMode::Check], true, true, 12.5.seconds, fake_runner(handlers))
 
       lines = text.lines
       assert_equal("tool: krikri-playbook-generator #{VERSION}", lines[0])
@@ -49,9 +49,10 @@ module KrikriPlaybookGenerator
       assert_equal("control: true", lines[8])
       assert_equal("modes: check", lines[9])
       assert_equal("idempotency: true", lines[10])
-      assert_equal("batch duration: 12.5s", lines[11])
-      assert_equal("check: true", lines[12])
-      assert_equal(13, lines.size)
+      assert_equal("diff: true", lines[11])
+      assert_equal("batch duration: 12.5s", lines[12])
+      assert_equal("check: true", lines[13])
+      assert_equal(14, lines.size)
     ensure
       FileUtils.rm_rf(dir) if dir
     end
@@ -61,7 +62,7 @@ module KrikriPlaybookGenerator
       Dir.mkdir_p(dir)
       binary = make_binary(dir)
 
-      Versions.write(dir, "9.9.9", binary, "ansible-playbook", false, [RunMode::Check], false,
+      Versions.write(dir, "9.9.9", binary, "ansible-playbook", false, [RunMode::Check], false, false,
         3.seconds, Time.utc(2026, 1, 1), fake_runner({} of String => Cmd::Result))
 
       text = File.read(File.join(dir, "versions.txt"))
@@ -82,7 +83,7 @@ module KrikriPlaybookGenerator
       binary = File.join(dir, "missing", "bin", "krikri-playbook")
 
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
-        "ansible-playbook", false, [RunMode::Check], false, 0.seconds,
+        "ansible-playbook", false, [RunMode::Check], false, true, 0.seconds,
         fake_runner({} of String => Cmd::Result))
 
       lines = text.lines
@@ -103,7 +104,7 @@ module KrikriPlaybookGenerator
       exploding = Versions::CommandRunner.new { |_command, _args| raise "boom" }
 
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
-        "ansible-playbook", false, [RunMode::Check], false, 0.seconds, exploding)
+        "ansible-playbook", false, [RunMode::Check], false, true, 0.seconds, exploding)
 
       assert_equal("krikri commit: unavailable", text.lines[5])
       assert_equal("ansible-playbook: unavailable", text.lines[7])
@@ -123,7 +124,7 @@ module KrikriPlaybookGenerator
       }
 
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
-        "ansible-playbook", false, [RunMode::Check], false, 0.seconds,
+        "ansible-playbook", false, [RunMode::Check], false, true, 0.seconds,
         fake_runner(handlers))
 
       assert_equal("krikri --version: krikri 4.5.6 | build: xyz", text.lines[4])
@@ -142,7 +143,7 @@ module KrikriPlaybookGenerator
       }
 
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
-        "ansible-playbook", false, [RunMode::Check], false, 0.seconds,
+        "ansible-playbook", false, [RunMode::Check], false, true, 0.seconds,
         fake_runner(handlers))
 
       assert_equal(Versions::STALE_WARNING, text.lines.last)
@@ -161,7 +162,7 @@ module KrikriPlaybookGenerator
       }
 
       text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
-        "ansible-playbook", false, [RunMode::Check], false, 0.seconds,
+        "ansible-playbook", false, [RunMode::Check], false, true, 0.seconds,
         fake_runner(handlers))
 
       refute(text.includes?("binary is older than"))

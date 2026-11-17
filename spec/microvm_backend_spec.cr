@@ -128,11 +128,14 @@ module KrikriPlaybookGenerator
       assert_includes(command, "cd /work")
       assert_includes(command, "ANSIBLE_NOCOLOR=1")
       refute_includes(command, "ANSIBLE_GATHERING=")
-      assert_includes(command, "timeout 120 ansible-playbook -i inventory.ini /work/000001-copy-happy.yml </dev/null")
+      assert_includes(command, "timeout 120 ansible-playbook --diff -i inventory.ini /work/000001-copy-happy.yml </dev/null")
       refute_includes(command, "--check")
 
       check = MicrovmBackend.engine_command("/opt/krikri/bin/krikri-playbook", "x.yml", 60, true)
       assert_includes(check, "--check --diff")
+
+      no_diff = MicrovmBackend.engine_command("ansible-playbook", "x.yml", 60, false, false)
+      refute_includes(no_diff, "--diff")
     end
 
     it "installs the pinned ansible-core and the profile's own service packages in the golden" do

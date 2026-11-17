@@ -106,6 +106,18 @@ module KrikriPlaybookGenerator
       assert_equal(ByteDiff.mask(stamped_a), ByteDiff.mask(stamped_b))
     end
 
+    it "masks the staged source path in copy/template diff headers, and nothing else" do
+      a = "--- before\n+++ after: /root/.ansible/tmp/ansible-local-30zo8p_sgn/tmpvmed4a7p/template.j2\n"
+      b = "--- before\n+++ after: /root/.ansible/tmp/ansible-local-30dt0urbo6/tmprzqt_r2o/template.j2\n"
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      assert(ByteDiff.mask(a).includes?("+++ after: /root/.ansible/tmp/ansible-local-<RND>/tmp<RND>/template.j2"))
+
+      # the diff body and a real work path (which lives under /tmp but not
+      # under an ansible-local dir) stay raw
+      untouched = "+++ after: /opt/kpg-fixtures/src.txt\n-kpg old\n+kpg new\n/tmp/kpg-work/out1.txt\n"
+      assert_equal(untouched, ByteDiff.mask(untouched))
+    end
+
     it "masks the random container hostname in missing_required_lib messages only" do
       a = "Failed to import the required Python library (libselinux-python) on 390f31e8df6a's Python /usr/bin/python3.13.\n"
       b = "Failed to import the required Python library (libselinux-python) on f8fe8308b659's Python /usr/bin/python3.13.\n"

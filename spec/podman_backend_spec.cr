@@ -143,17 +143,20 @@ module KrikriPlaybookGenerator
     it "gains --check in the engine script only in check mode, and never --diff" do
       env = PodmanBackend::ENGINE_ENV_STRIP
       plain = PodmanBackend.engine_script("ansible-playbook", "001-debug-happy.yml", 120, false)
-      assert_equal("cd /work && #{env} timeout 120 ansible-playbook -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("cd /work && #{env} timeout 120 ansible-playbook --diff -i inventory.ini /work/001-debug-happy.yml </dev/null",
         plain)
 
       checked = PodmanBackend.engine_script("ansible-playbook", "001-debug-happy.yml", 120, true)
-      assert_equal("cd /work && #{env} timeout 120 ansible-playbook --check -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("cd /work && #{env} timeout 120 ansible-playbook --check --diff -i inventory.ini /work/001-debug-happy.yml </dev/null",
         checked)
-      refute(checked.includes?("--diff"))
 
       krikri = PodmanBackend.engine_script("/opt/krikri/bin/krikri-playbook", "001-debug-happy.yml", 120, true)
-      assert_equal("cd /work && #{env} timeout 120 /opt/krikri/bin/krikri-playbook --check -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("cd /work && #{env} timeout 120 /opt/krikri/bin/krikri-playbook --check --diff -i inventory.ini /work/001-debug-happy.yml </dev/null",
         krikri)
+
+      no_diff = PodmanBackend.engine_script("ansible-playbook", "001-debug-happy.yml", 120, false, false)
+      assert_equal("cd /work && #{env} timeout 120 ansible-playbook -i inventory.ini /work/001-debug-happy.yml </dev/null",
+        no_diff)
     end
 
     it "runs each playbook on its own profile's template image, even after another profile was provisioned", tags: :slow do

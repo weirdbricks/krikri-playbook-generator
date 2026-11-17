@@ -113,6 +113,12 @@ module KrikriPlaybookGenerator
       refute(Options.parse(["run", "--no-second-run"]).second_run?)
     end
 
+    it "passes --diff by default and lets --no-diff (or an explicit --diff) decide it" do
+      assert(Options.parse(["run"]).diff?)
+      refute(Options.parse(["run", "--no-diff"]).diff?)
+      assert(Options.parse(["run", "--no-diff", "--diff"]).diff?)
+    end
+
     it "parses --refresh-podman-templates with --run-on-podman and refuses it without" do
       assert(Options.parse(["run", "--run-on-podman", "--refresh-podman-templates"]).refresh_podman_templates?)
       err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--refresh-podman-templates"]) }

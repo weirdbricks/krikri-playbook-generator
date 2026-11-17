@@ -134,6 +134,11 @@ module KrikriPlaybookGenerator
       refute(second.includes?("--no-second-run"))
     end
 
+    it "skips diff in a repro when the batch never compared diff output" do
+      refute(Triage.repro_command("/tmp/p.yml", ["copy"]).includes?("--no-diff"))
+      assert(Triage.repro_command("/tmp/p.yml", ["copy"], nil, 1, false).includes?("--no-diff"))
+    end
+
     it "points a service module's repro at the backend that can host it" do
       command = Triage.repro_command("/tmp/playbooks/000001-postgresql_db-happy.yml",
         ["community.postgresql.postgresql_db"])
@@ -469,16 +474,19 @@ module KrikriPlaybookGenerator
         tool: krikri-playbook-generator 0.0.8
         modes: check,real
         idempotency: true
+        diff: true
         batch duration: 41.2s
         TEXT
 
       info = Triage.new(dir).batch_info
       assert_equal(%w[check real], info[:modes])
       assert_equal(true, info[:second_run])
+      assert_equal(true, info[:diff])
       assert_equal("41.2s", info[:duration])
       report = JSON.parse(Triage.new(dir).report_json)
       assert_equal(%w[check real], report["batch"]["modes"].as_a.map(&.as_s))
       assert_equal(true, report["batch"]["second_run"].as_bool)
+      assert_equal(true, report["batch"]["diff"].as_bool)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

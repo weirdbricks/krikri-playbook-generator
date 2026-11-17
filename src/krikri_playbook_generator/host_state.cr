@@ -20,10 +20,15 @@ module KrikriPlaybookGenerator
     # Files every host (container or VM) regenerates for itself: hostname,
     # resolver, machine id. The two engines' hosts are distinct machines, so
     # these can never agree; snapshotting them would make every playbook
-    # look state-divergent. A module that edits one is invisible to this
-    # oracle - the deliberate, documented gap (same discipline as
-    # ByteDiff::MASKS).
-    EXCLUDED_PATHS = %w[/etc/hostname /etc/hosts /etc/resolv.conf /etc/machine-id]
+    # look state-divergent. `/root/.ansible` is the engine's own
+    # control-side state (its collections, its tmp staging root): real
+    # ansible creates the tmp root lazily and every --diff run leaves it
+    # behind, while krikri stages elsewhere, so it says nothing about what
+    # the module did.
+    # A module that edits one of these is invisible to this oracle - the
+    # deliberate, documented gap (same discipline as ByteDiff::MASKS).
+    EXCLUDED_PATHS = %w[/etc/hostname /etc/hosts /etc/resolv.conf /etc/machine-id
+      /root/.ansible]
 
     EXCLUDE_PREDICATE = EXCLUDED_PATHS.map { |path| "-path #{path}" }.join(" -o ")
 

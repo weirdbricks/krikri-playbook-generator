@@ -241,10 +241,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `--allow-mutation`; engines wrapped in `timeout`; fixtures seeded
   best-effort on the host), podman (`--run-on-podman`, fresh container
   pair per playbook via committed template images; REAL by default,
-  `--check` appends `--check` - never `--diff` - to both engines'
-  invocation) and Atlantic.net
+  `--check` appends `--check` and every batch passes `--diff` unless
+  `--no-diff`, identically on both engines) and Atlantic.net
   (`--run-on-atlantic`, one disposable VM per module profile, always
-  real - it refuses `--check`).
+  real - it refuses `--check` - and `--diff` like the other backends).
   `MetaInfo` carries `module_names` (every task's module for a v2
   multi-task playbook, falling back to just the primary one for v1
   sidecars): podman picks the Rpm profile when ANY task needs it, the
@@ -271,8 +271,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `key: value` line each: tool version, run start (RFC3339 UTC), krikri
   binary path/mtime/`--version`/git commit (+ ` (dirty)`)/commit subject,
   ansible-playbook version, `control`, `modes:` (the mode matrix, e.g.
-  `check,real`), `idempotency:` (whether the second-run pass was on) and
-  `batch duration:`. `check: true` appears only when the batch ran check
+  `check,real`), `idempotency:` (whether the second-run pass was on),
+  `diff:` (whether both engines got `--diff`) and `batch duration:`. `check: true` appears only when the batch ran check
   mode and nothing else, keeping the old contract for
   krikri-role-triager (how it tells a `--check` repro run from a real
   one) while a mixed-mode batch is no longer mislabeled. Plus, only when
@@ -356,8 +356,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   ANSIBLE_GATHERING -u ANSIBLE_CACHE_PLUGIN -u
   ANSIBLE_CACHE_PLUGIN_CONNECTION ANSIBLE_NOCOLOR=1 timeout <N>
   <engine> -i inventory.ini /work/<basename> </dev/null>"` - a check-mode
-  run inserts `--check`, never `--diff`, right after the engine command
-  on both sides); the pair is
+  run inserts `--check` and every run `--diff` (unless `--no-diff`), right
+  after the engine command on both sides, so diff output is compared
+  byte-for-byte like the rest of stdout); the pair is
   `podman rm -f`'d in `ensure` immediately after. `teardown` removes
   remaining containers but KEEPS the committed images (they are the
   cache the next run starts from); `PodmanBackend.leak_check`
@@ -416,8 +417,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   duration, second-run flag read back from versions.txt), errors,
   not_applicable, happy_coverage, rates. The human report starts with the
   same `== Batch ==` line, and `Triage.repro_command` pins the finding's
-  `--modes` (plus `--no-second-run` for a run-1 row) so a repro reruns
-  exactly that comparison.
+  `--modes` (plus `--no-second-run` for a run-1 row, and `--no-diff`
+  when the batch never compared diff output) so a repro reruns exactly
+  that comparison.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the four
   subcommands (`generate`, `run`, `report`, `modules`), plus `--check`
   (run only the check-mode half; conflicts with `--run-on-atlantic` and
@@ -426,6 +428,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `--allow-mutation`; `Options.effective_modes` refuses real mode
   locally without `--allow-mutation` and check mode on Atlantic),
   `--no-second-run` (skip the idempotency pass, on by default),
+  `--diff`/`--no-diff` (both engines get `--diff` by default, on every
+  backend, because diff output is user-visible behavior; nothing about it
+  is masked),
   `--keep-going`,
   `--engine-timeout` (per-engine timeout in seconds; a hung engine is
   recorded with rc 124), `--json` (valid only with `report` or `modules`;

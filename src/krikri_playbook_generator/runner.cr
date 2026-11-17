@@ -277,7 +277,7 @@ module KrikriPlaybookGenerator
                    @keep_going : Bool = false, @engine_timeout : Int32 = 120,
                    @control : Bool = false, @refresh_podman_templates : Bool = false,
                    @podman_parallel : Int32 = 1, @microvm_dir : String = MicrovmBackend::DEFAULT_DIR,
-                   @microvm_parallel : Int32 = 1)
+                   @microvm_parallel : Int32 = 1, @diff : Bool = true)
     end
 
     # "runner" is blue so the per-playbook verdict colors stay the
@@ -396,7 +396,7 @@ module KrikriPlaybookGenerator
       return [] of PlaybookResult if paths.empty?
       MicrovmBackend.cleanup_stale(@microvm_dir)
       backend = MicrovmBackend.new(@krikri_bin, @engine_timeout, @microvm_dir,
-        control: @control)
+        control: @control, diff: @diff)
       profiles = Hash(String, Array(String)).new do |hash, os|
         hash[os] = [] of String
       end
@@ -444,6 +444,7 @@ module KrikriPlaybookGenerator
       end
 
       backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts,
+        diff: @diff,
         on_playbook_done: ->(path : String) {
           done = @completed.add(1) + 1
           log("comparison #{done}/#{@planned} complete: #{File.basename(path)} (real, run 1)")
@@ -474,7 +475,7 @@ module KrikriPlaybookGenerator
         end
       end.flatten
       backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, fqcns.uniq,
-        refresh_templates: @refresh_podman_templates)
+        refresh_templates: @refresh_podman_templates, diff: @diff)
       begin
         # rpm-family modules need the Rocky template pair; everything else
         # stays on Debian. A mixed batch provisions both templates and runs
@@ -557,7 +558,8 @@ module KrikriPlaybookGenerator
 
     private def run_engine_locally(path : String, engine : String, bin : String, mode : RunMode) : Cmd::Result
       args = [@engine_timeout.to_s, bin, "-i", "localhost,", "-c", "local"]
-      args.concat(["--check", "--diff"]) if mode.check?
+      args << "--check" if mode.check?
+      args << "--diff" if @diff
       args << path
 
       Cmd.run("timeout", args, timeout: @engine_timeout + 30.0)
@@ -763,7 +765,7 @@ module KrikriPlaybookGenerator
     # disk.
     private def write_versions(started : Time) : Nil
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
-        @control, @modes, @second_run, Time.utc - started, started)
+        @control, @modes, @second_run, @diff, Time.utc - started, started)
     rescue e
       STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end

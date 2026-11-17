@@ -171,7 +171,7 @@ module KrikriPlaybookGenerator
     def initialize(@krikri_bin : String, @engine_timeout : Int32 = 120,
                    @dir : String = DEFAULT_DIR, @qemu : String = "qemu-system-x86_64",
                    @control : Bool = false, @check_mode : Bool = false,
-                   @work_dir : String? = nil)
+                   @work_dir : String? = nil, @diff : Bool = true)
     end
 
     def self.available?(qemu : String = "qemu-system-x86_64") : Bool
@@ -386,10 +386,11 @@ module KrikriPlaybookGenerator
 
     # The engine command inside the VM: identical for both engines, run from
     # /work with the same env strip the other backends use.
-    def self.engine_command(binary : String, basename : String, timeout : Int32, check_mode : Bool) : String
-      check = check_mode ? "--check --diff " : ""
+    def self.engine_command(binary : String, basename : String, timeout : Int32,
+                            check_mode : Bool, diff : Bool = true) : String
+      flags = "#{check_mode ? " --check" : ""}#{diff ? " --diff" : ""}"
       "cd /work && #{ENGINE_ENV_STRIP} timeout #{timeout} " \
-      "#{binary} -i inventory.ini #{check}/work/#{basename} </dev/null"
+      "#{binary}#{flags} -i inventory.ini /work/#{basename} </dev/null"
     end
 
     # Bakes (or reuses) the golden for each OS in `oses`, then runs every
@@ -426,9 +427,11 @@ module KrikriPlaybookGenerator
     # the SAME pair after the first run succeeded on both engines (the
     # idempotency pass); each pass is returned separately.
     def run_playbook(playbook_path : String, os : String,
-                     check : Bool? = nil, second_run : Bool = false) : Array(HostState::Comparison)
+                     check : Bool? = nil, second_run : Bool = false,
+                     diff : Bool? = nil) : Array(HostState::Comparison)
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
       effective_check = check.nil? ? @check_mode : check
+      effective_diff = diff.nil? ? @diff : diff
 
       lease = acquire_slot
       begin
@@ -438,10 +441,10 @@ module KrikriPlaybookGenerator
           basename = File.basename(playbook_path)
           krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
           runs = [] of HostState::Comparison
-          runs << comparison(pair, basename, krikri_engine, effective_check)
+          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff)
           if second_run && HostState.succeeded?(runs.first[:ansible]) &&
              HostState.succeeded?(runs.first[:krikri])
-            runs << comparison(pair, basename, krikri_engine, effective_check)
+            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff)
           end
           runs
         ensure
@@ -453,15 +456,15 @@ module KrikriPlaybookGenerator
     end
 
     private def comparison(pair : Pair, basename : String, krikri_engine : String,
-                           check : Bool) : HostState::Comparison
-      {ansible: observe(pair.ansible, "ansible-playbook", basename, check),
-       krikri:  observe(pair.krikri, krikri_engine, basename, check)}
+                           check : Bool, diff : Bool) : HostState::Comparison
+      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff),
+       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff)}
     end
 
     private def observe(vm : Vm, binary : String, basename : String,
-                        check : Bool) : HostState::Observation
+                        check : Bool, diff : Bool) : HostState::Observation
       before = snapshot_state(vm)
-      result = exec_engine(vm, binary, basename, check)
+      result = exec_engine(vm, binary, basename, check, diff)
       HostState::Observation.new(result, before, snapshot_state(vm))
     end
 
@@ -896,8 +899,8 @@ module KrikriPlaybookGenerator
     end
 
     private def exec_engine(vm : Vm, binary : String, basename : String,
-                            check : Bool = @check_mode) : Cmd::Result
-      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check)
+                            check : Bool = @check_mode, diff : Bool = @diff) : Cmd::Result
+      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff)
       result = Cmd.run("timeout", [(@engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
         timeout: @engine_timeout + 150.0)
       if result.rc == 255

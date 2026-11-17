@@ -56,6 +56,9 @@ module KrikriPlaybookGenerator
     property modes : Array(RunMode)
     property? modes_given : Bool
     property? second_run : Bool
+    # On by default: diff output is user-visible behavior and is compared
+    # byte-for-byte like the rest of stdout (never masked).
+    property? diff : Bool
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
                    @supported_community = false, @scope_from_krikri = false,
@@ -69,7 +72,7 @@ module KrikriPlaybookGenerator
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
                    @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
-                   @modes_given = false, @second_run = true,
+                   @modes_given = false, @second_run = true, @diff = true,
                    @microvm_dir = "/home/labros/.local/share/krikri-playbook-generator/microvm")
     end
 
@@ -127,6 +130,8 @@ module KrikriPlaybookGenerator
           opts.modes_given = true
         end
         dsl.on("--no-second-run", "skip the second-run idempotency pass (the default runs a successful playbook twice on the same host)") { opts.second_run = false }
+        dsl.on("--diff", "pass --diff to both engines (the default; diff output is part of the compared bytes)") { opts.diff = true }
+        dsl.on("--no-diff", "do not pass --diff to either engine (diff output is then never compared)") { opts.diff = false }
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
       end
       parser.parse(rest)
