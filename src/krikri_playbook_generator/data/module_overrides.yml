@@ -1104,3 +1104,12 @@ modules:
     subcommands.path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh"]}
     family: {exclude: true}
     always: [name, link, path]
+
+# `ansible.module_utils` import paths the module_utils probe axis must not
+# generate a probe for, each with the reason it cannot run on the reference
+# image (an optional third-party library, an import only legal inside a
+# module run, ...). Empty by default: every public module_utils module of
+# the installed ansible-core imports cleanly, and an import that fails on
+# the reference side is a harness gap (an errored result), never a krikri
+# finding. Add an entry rather than masking a failure.
+module_utils_skip: {}

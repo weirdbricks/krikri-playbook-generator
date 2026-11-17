@@ -1,3 +1,4 @@
+require "./reference_version"
 require "base64"
 require "http/client"
 require "json"
@@ -49,7 +50,7 @@ module KrikriPlaybookGenerator
 
     # Byte-parity needs the same ansible-core everywhere (the podman path
     # asserts 2.21.6, the core krikri targets); pip pins it on the VMs too.
-    EXPECTED_ANSIBLE_VERSION = "2.21.6"
+    EXPECTED_ANSIBLE_VERSION = KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
     ANSIBLE_CORE_PIN         = "ansible-core==#{EXPECTED_ANSIBLE_VERSION}"
 
     INVENTORY        = "target ansible_connection=local\n"
@@ -607,6 +608,12 @@ module KrikriPlaybookGenerator
         copied = Cmd.run("scp", ["-r", "-i", vm.ssh_key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
                                  "-o", "UserKnownHostsFile=/dev/null", dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
         raise AtlanticProvisionError.new("plugin upload failed: #{copied.stderr}") unless copied.rc == 0
+      end
+      library_dir = PlaybookBuilder.library_dir(playbook_path)
+      if Dir.exists?(library_dir)
+        copied = Cmd.run("scp", ["-r", "-i", vm.ssh_key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+                                 "-o", "UserKnownHostsFile=/dev/null", library_dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
+        raise AtlanticProvisionError.new("library upload failed: #{copied.stderr}") unless copied.rc == 0
       end
 
       env = @env_for.try(&.call(playbook_path)) || {} of String => String

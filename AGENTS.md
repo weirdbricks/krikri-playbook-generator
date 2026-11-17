@@ -291,6 +291,37 @@ checklist before closing the issue.
   `ANSIBLE_STRATEGY` spellings are compared. It is opt-in because krikri
   accepts a third-party strategy but runs it as linear (its own
   KNOWN_MISSING), so every row naming the plugin is an expected finding.
+- `src/krikri_playbook_generator/library_shapes.cr` — `LibraryProbe`,
+  `ModuleUtilsSurface`, `LibraryShape`/`LibraryShapes`. **Implemented**:
+  the custom-`library/` axes. Both build a generated Python module plus
+  the single task that runs it as `ansible.legacy.<module>`, one playbook
+  per probe, with every other per-playbook axis forced off (a random
+  block/handler around a probe would change what is compared).
+  `--module-utils all|LIST` enumerates the installed ansible-core's
+  non-private `ansible.module_utils` tree (walked with python3, the same
+  interpreter `ansible-doc` uses) and writes one module per import path
+  that statically imports it and every public name it exposes (the
+  reference `dir()` list) - `AnsiballZ` only bundles module_utils it can
+  see in the source, and a module that exists but lost a name is a
+  different finding from a missing module, so a missing module or name on
+  krikri is one finding per import path. The probe declares
+  `supports_check_mode`, so a check-mode row really imports the surface
+  instead of being skipped before the import runs.
+  `--library-modules all|LIST` generates the custom-module shapes that
+  exercise the extension API: check-mode support (`supports_check_mode`
+  true/false), `required`/`choices`/`mutually_exclusive`/
+  `required_one_of` argument specs, `no_log`, `exit_json(warnings=...)`,
+  `fail_json(exception=...)`, `_verbosity`, a required dict with
+  suboptions, `ansible.module_utils.common.text.converters`, and a pinned
+  collection's `plugins.module_utils.version`. The argument-rejecting and
+  explicit-failure shapes carry `deliberate_failure`, so their sidecar is
+  `structural_failure`. The sources are written to the batch's shared
+  playbook-adjacent `library/` directory (`PlaybookBuilder.library_dir`);
+  every isolated backend copies it into the playbook's working directory,
+  which is where both engines search. `module_utils_skip:` in
+  `module_overrides.yml` is the data escape hatch for an import that
+  legitimately needs an unavailable third-party library (skipped with its
+  reason, never silently).
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -348,6 +379,11 @@ checklist before closing the issue.
   `PlaybookBuilder.plugin_loader_dirs` is what every backend copies into
   the playbook's working directory (local runs export the same directories
   as `ANSIBLE_*_PLUGINS` instead, since they have no copy step).
+  A generated library probe's module goes into the batch's shared
+  `library/` directory (`library_dir`), recorded in the sidecar's
+  `library` object (`module`/`shape`/`target`/`source`/
+  `deliberate_failure`); rebuilding clears only this tool's `kpg_*.py`
+  files, and a hand-written module beside the batch is left alone.
 - `src/krikri_playbook_generator/host_state.cr` — `HostState`. **Implemented**:
   the state half of the oracle. `SNAPSHOT_SCRIPT` (GNU find/`sha256sum`,
   LC_ALL=C sorts, no timestamps) lists `/etc`, `/tmp/kpg-work`,
@@ -417,7 +453,19 @@ checklist before closing the issue.
   one live host, so a delta cannot be attributed to one engine).
   Every playbook is compared once per MODE (`RunMode::Check` and
   `RunMode::Real`): both by default on an isolated backend, check-only
-  locally unless `--allow-mutation`, always real on Atlantic. It is also
+  locally unless `--allow-mutation`, always real on Atlantic. On podman it
+  is also compared once per requested reference ansible-core version
+  (`--reference-core-version`, opt-in; default is the pinned
+  `DEFAULT_ANSIBLE_CORE_VERSION` in `reference_version.cr`): each version
+  gets its own cached template pair and its own row, krikri stays at its
+  target version, rows record `core_version` in results.jsonl, the
+  progress label names a non-default core, and `versions.txt` carries
+  `reference cores:`. Triage merges rows with the same signature across
+  versions into one finding carrying `core_versions` (so a finding that
+  only reproduces on the production version is visible as such) and pins
+  `--reference-core-version` in its repro command. The matrix is podman
+  only for now; local, microVM and Atlantic keep their single baked
+  version and the option is refused there. It is also
   compared once per identity, umask and host count (`--user-profile`,
   `--umask`, `--hosts`): each row gets its own fresh host/pair and records
   `user`, `umask` and `hosts` in results.jsonl, and the context is part of
@@ -568,7 +616,8 @@ checklist before closing the issue.
   `ansible-core` + a runtime-lib set in one, `podman cp`'s the
   `krikri-playbook` binary and its `plugins/` dir into the other, seeds
   the identical `Fixtures` tree into both, asserts the container's
-  ansible-core version equals `EXPECTED_ANSIBLE_VERSION` (2.21.6) and that
+  ansible-core version equals the requested one (`EXPECTED_ANSIBLE_VERSION`
+  by default, 2.21.6) and that
   every pinned collection resolves to its `collection_pins:` version (the
   first copy in search order, since `~/.ansible/collections` outranks
   Debian's distro tree — fails loudly otherwise, as an argument spec ships
@@ -577,7 +626,10 @@ checklist before closing the issue.
   fingerprint>` holds the package layer (a SHA-256 over the package sets,
   ansible-core pin, inventory and fixture seed script, deliberately not the
   krikri binary), and `kpg-img-{real,krikri}-{debian,rpm}:<fingerprint>`
-  adds the binary + plugins digests. A full cache hit skips provisioning
+  adds the binary + plugins digests. Both fingerprints include the
+  reference core version, so `--reference-core-version` matrices get (and
+  reuse) one cached pair per version and can never run a row against the
+  wrong image. A full cache hit skips provisioning
   entirely; when only the base pair exists (every loop cycle rebuilds
   `krikri-playbook`) the pair starts from it and just the binary layer is
   committed, so a 27 MB binary change no longer costs a 3-6 minute apt
@@ -634,7 +686,12 @@ checklist before closing the issue.
   (attempted/failed/succeeded/success rate), excluding chaos, errored,
   second-run rows (`run > 1`: repeatability, not runnability),
   `expect_failure` and `not_applicable` modules; `not_applicable_modules`
-  reports the exclusions so they stay visible. `rates` gives per-module
+  reports the exclusions so they stay visible. Rows whose results line
+  carries a `library` target (a custom-`library/` probe) are excluded the
+  same way: the probe measures the extension API, not a module happy path,
+  so a krikri failure must not lower the coverage gate - its divergence is
+  still reported normally, grouped by the probe's module name. `rates`
+  gives per-module
   byte-identical counts (`masked_identical`, so a state-only divergence
   does not lower the byte rate).
   `report` only groups playbooks whose OUTPUT diverged
@@ -722,7 +779,13 @@ checklist before closing the issue.
   `--lookups LIST` picks the lookup-plugin shape and `--expressions LIST`
   the filter/expression shape, `--plugin-discovery LIST` where those
   plugin files are found and `--strategy-plugins` adds the custom strategy
-  to the strategy pool (all generate-only).
+  to the strategy pool (all generate-only). `--module-utils all|LIST` and
+  `--library-modules all|LIST` are the custom-`library/` axes (also
+  generate-only, single-task shape): they append one probe playbook per
+  `ansible.module_utils` import path / custom-module shape to the batch.
+  `--reference-core-version VERSION` (repeatable or comma-separated, podman
+  only) widens the comparison to more reference ansible-core versions; the
+  default is the pinned target version.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -875,6 +938,12 @@ Documented deliberately, not silently:
   a collection; the pin/assert discipline described above lives in the
   podman and microVM backends. Widening Atlantic means installing the
   playbook's collections there with the same pins first.
+- The reference-version matrix (`--reference-core-version`) is implemented
+  on the podman backend only: it is the backend with cached per-version
+  templates. Local (one host interpreter), microVM (one golden per OS) and
+  Atlantic (one VM per profile) keep their single baked version, and
+  Options refuses the flag there rather than silently collapsing the
+  matrix into one row.
 - `PodmanBackend` installs a UNION dependency set (base lists plus
   `Dependencies#supported`'s extras) rather than podman-diff's dozens
   of per-module installs gated on a hand-picked case list — a randomly
@@ -1004,7 +1073,19 @@ v2 debug+stat multi-task playbook) that run both real
 engines end to end and check `results.jsonl`'s shape — not a fake, same
 reasoning as `schema_spec.cr`; it passes `run_on_podman: false` (now the
 Runner default anyway) explicitly so it stays fast even if that default
-ever changes. `podman_backend_spec.cr` is a real integration test too
+ever changes. `library_shapes_spec.cr` covers the module_utils surface
+enumeration (real `python3`/ansible-core, like `schema_spec.cr`), the
+overrides-driven skip list, one unique probe per import path, the shape
+argument/`deliberate_failure` table and the sources that must contain the
+probed imports; `playbook_builder_spec.cr` checks the shared `library/`
+layout, its sidecar object and its stale-file cleanup, and
+`runner_spec.cr` runs an `ansible.module_utils.basic` probe through both
+engines and checks the recorded `library` target. `triage_spec.cr` keeps
+library rows out of the coverage metrics, merges a finding across
+reference core versions (listing them) and pins
+`--reference-core-version` in the repro; `versions_spec.cr` covers the
+`reference cores:` line and `podman_backend_spec.cr` proves the template
+fingerprints differ per reference core. `podman_backend_spec.cr` is a real integration test too
 (provisions actual containers, `skip`s itself — minitest.cr's `skip`, not
 crystal-spec's `pending` — if `podman` or the `krikri-playbook` binary
 isn't available rather than failing the suite on a machine without them).

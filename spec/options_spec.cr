@@ -594,5 +594,73 @@ module KrikriPlaybookGenerator
       refute(Options.parse(["generate"]).strategy_plugins?)
       assert(Options.parse(["generate", "--strategy-plugins"]).strategy_plugins?)
     end
+
+    it "parses --module-utils as an opt-in generate-only axis" do
+      assert_empty(Options.parse(["generate"]).module_utils)
+      refute(Options.parse(["generate"]).module_utils_given?)
+
+      opts = Options.parse(["generate", "--module-utils", "all"])
+      assert_equal(["all"], opts.module_utils)
+      assert(opts.module_utils_given?)
+
+      opts = Options.parse(["generate", "--module-utils",
+                            "ansible.module_utils.basic,ansible.module_utils.common.text.converters"])
+      assert_equal(["ansible.module_utils.basic", "ansible.module_utils.common.text.converters"],
+        opts.module_utils)
+
+      assert_empty(Options.parse(["generate", "--module-utils", "none"]).module_utils)
+    end
+
+    it "refuses --module-utils outside generate or with multi-task playbooks" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--module-utils", "all"]) }
+      assert((err.message || "").includes?("generate"))
+
+      err = assert_raises(InvalidOptionsError) do
+        Options.parse(["generate", "--module-utils", "all", "--tasks-per-playbook", "2"])
+      end
+      assert((err.message || "").includes?("--tasks-per-playbook"))
+    end
+
+    it "parses --library-modules as an opt-in generate-only axis" do
+      assert_empty(Options.parse(["generate"]).library_modules)
+
+      opts = Options.parse(["generate", "--library-modules", "check-mode,dict-arg"])
+      assert_equal(%w[check-mode dict-arg], opts.library_modules)
+      assert(opts.library_modules_given?)
+
+      assert_equal(LibraryShapes::KINDS, Options.parse(["generate", "--library-modules", "all"]).library_modules)
+      assert_empty(Options.parse(["generate", "--library-modules", "none"]).library_modules)
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--library-modules", "telepathy"]) }
+      assert((err.message || "").includes?("telepathy"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--library-modules", "check-mode"]) }
+      assert((err.message || "").includes?("generate"))
+    end
+
+    it "parses --reference-core-version as a repeatable podman-only matrix" do
+      assert_empty(Options.parse(["run", "--run-on-podman"]).reference_core_versions)
+
+      opts = Options.parse(["run", "--run-on-podman",
+                            "--reference-core-version", "2.20.1",
+                            "--reference-core-version", "2.19.5,2.20.1"])
+      assert_equal(%w[2.20.1 2.19.5], opts.reference_core_versions)
+      assert(opts.reference_core_versions_given?)
+
+      err = assert_raises(InvalidOptionsError) do
+        Options.parse(["run", "--run-on-podman", "--reference-core-version", "latest"])
+      end
+      assert((err.message || "").includes?("--reference-core-version"))
+
+      err = assert_raises(InvalidOptionsError) do
+        Options.parse(["run", "--reference-core-version", "2.20.1"])
+      end
+      assert((err.message || "").includes?("--run-on-podman"))
+
+      err = assert_raises(InvalidOptionsError) do
+        Options.parse(["report", "--run-on-podman", "--reference-core-version", "2.20.1"])
+      end
+      assert((err.message || "").includes?("run or generate"))
+    end
   end
 end

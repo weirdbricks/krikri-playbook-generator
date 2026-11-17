@@ -3,6 +3,7 @@ require "./schema"
 require "./fixtures"
 require "./overrides"
 require "./dependencies"
+require "./library_shapes"
 require "random/pcg32"
 
 module KrikriPlaybookGenerator
@@ -86,12 +87,16 @@ module KrikriPlaybookGenerator
     # Per-argument provenance for the happy baseline; a chaos-mutated slot
     # is absent from this map because its value no longer came from there.
     property choice_sources : Hash(String, ChoiceSource)
+    # A generated custom `library/` module this task runs (module_utils
+    # import probes and custom-module shapes); nil for every scanned-module
+    # task.
+    property library : LibraryProbe?
 
     def initialize(@module_name, @collection = "ansible.builtin", @args = {} of String => YAML::Any,
                    @mutations = [] of {String, ChaosKind}, @free_form = nil,
                    @when_condition = nil, @loop_option = nil, @loop_items = nil, @notify = nil,
                    @choice_sources = {} of String => ChoiceSource,
-                   @delegate_to = nil, @delegate_facts = false)
+                   @delegate_to = nil, @delegate_facts = false, @library : LibraryProbe? = nil)
     end
 
     def fqcn : String

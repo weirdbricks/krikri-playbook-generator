@@ -58,6 +58,24 @@ module KrikriPlaybookGenerator
       File.delete(bin) if bin
     end
 
+    it "keys the template cache on the reference core version" do
+      bin = File.tempname("kpg-spec-bin")
+      File.write(bin, "fake krikri binary")
+      backend = PodmanBackend.new(bin)
+
+      default_full = backend.fingerprint_for_test(PodmanBackend::Profile::Debian, "2.21.6")
+      other_full = backend.fingerprint_for_test(PodmanBackend::Profile::Debian, "2.20.1")
+      refute_equal(default_full, other_full,
+        "a different reference core needs its own template image")
+
+      default_base = backend.base_fingerprint_for_test(PodmanBackend::Profile::Debian, "2.21.6")
+      other_base = backend.base_fingerprint_for_test(PodmanBackend::Profile::Debian, "2.20.1")
+      refute_equal(default_base, other_base,
+        "the package layer differs by the installed ansible-core pin")
+    ensure
+      File.delete(bin) if bin
+    end
+
     it "keeps the base fingerprint equal across krikri binaries so the package layer stays reusable" do
       bin = File.tempname("kpg-spec-bin")
       File.write(bin, "fake krikri binary v1")

@@ -514,6 +514,34 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(results_dir) if results_dir
     end
 
+    it "runs a generated library probe through both engines and records its target" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      probe = LibraryShapes.probes([LibraryShape::DictArg]).first
+      task = GeneratedTask.new(probe.module_name, "ansible.legacy", probe.args, library: probe)
+      playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      result = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin,
+        modes: [RunMode::Real], second_run: false).run.first
+
+      assert_equal(0, result.ansible.rc)
+      assert_equal(0, result.krikri.rc)
+      assert(result.masked_identical?)
+      meta = result.meta
+      refute_nil(meta)
+      library = meta.as(Runner::MetaInfo).library
+      refute_nil(library)
+      assert_equal("dict-arg", library.as(Runner::LibraryMeta).target)
+      parsed = JSON.parse(File.read_lines(File.join(results_dir, "results.jsonl")).first)
+      assert_equal("dict-arg", parsed["library"]["target"].as_s)
+      assert_equal("library", parsed["library"]["shape"].as_s)
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
     it "maps sidecar profiles to microVM OSes and records the row's profile" do
       assert_equal("ubuntu", Runner.microvm_os("debian"))
       assert_equal("rocky", Runner.microvm_os("rocky"))

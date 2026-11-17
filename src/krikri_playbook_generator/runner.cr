@@ -1,3 +1,4 @@
+require "./reference_version"
 require "json"
 require "yaml"
 require "./cmd"
@@ -57,6 +58,11 @@ module KrikriPlaybookGenerator
   # with it false (the default) the error aborts the run.
   #
   class Runner
+    # The reference ansible-core version krikri targets; a batch compares
+    # against this one unless --reference-core-version names others.
+    DEFAULT_CORE_VERSION       = KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
+    DEFAULT_REFERENCE_VERSIONS = [DEFAULT_CORE_VERSION]
+
     record Recap, ok : Int32, changed : Int32, unreachable : Int32, failed : Int32,
       skipped : Int32, ignored : Int32 do
       def self.parse(text : String) : Recap?
@@ -91,11 +97,24 @@ module KrikriPlaybookGenerator
     # backend must export it identically for both engines.
     record MetaInfo, module_name : String, chaos : Bool, mutations : Array({String, String}),
       module_names : Array(String), env : Hash(String, String) = {} of String => String,
-      structural_failure : Bool = false, profiles : Array(String) = ["debian"] do
+      structural_failure : Bool = false, profiles : Array(String) = ["debian"],
+      library : LibraryMeta? = nil do
       def self.primary(module_name : String, chaos : Bool, mutations : Array({String, String})) : MetaInfo
         MetaInfo.new(module_name, chaos, mutations, [module_name])
       end
+
+      # A generated custom module probe: the playbook runs a `library/`
+      # module this tool wrote, not a scanned ansible module.
+      def library? : Bool
+        !@library.nil?
+      end
     end
+
+    # The generated `library/` module a probe playbook runs (its target and
+    # source make a finding copy-pasteable). `deliberate_failure` marks a
+    # probe shape whose reference-side run is supposed to fail.
+    record LibraryMeta, shape : String, target : String?,
+      source : String? = nil, deliberate_failure : Bool = false
 
     class PlaybookResult
       getter playbook : String
@@ -119,15 +138,20 @@ module KrikriPlaybookGenerator
       # Which host image this row ran on ("debian" or "rocky"); a
       # distro-polymorphic module gets one row per image.
       getter profile : String
+      # Which reference ansible-core version this row compared against
+      # (`--reference-core-version`); the krikri side stays at its target.
+      getter core_version : String
 
       # "(check, run 1, nonroot, umask 022)" - one row's matrix point; the
       # host count and limit are appended only when they are not the
-      # default, so a plain batch's log lines stay as they were.
+      # default, so a plain batch's log lines stay as they were. A
+      # reference core other than the default is always named.
       def context_label : String
         label = "(#{mode.label}, run #{run}, #{user.label}, umask #{umask}"
         label += ", hosts #{hosts}" unless hosts == 1
         label += ", limit #{limit}" unless limit == "off"
         label += ", #{profile}" unless profile == "debian"
+        label += ", core #{core_version}" unless core_version == Runner::DEFAULT_CORE_VERSION
         "#{label})"
       end
 
@@ -145,7 +169,8 @@ module KrikriPlaybookGenerator
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil,
                      @mode = RunMode::Real, @run = 1,
                      @user = UserProfile::Root, @umask = DEFAULT_UMASK, @hosts = 1,
-                     @limit = "off", @profile = "debian")
+                     @limit = "off", @profile = "debian",
+                     @core_version = Runner::DEFAULT_CORE_VERSION)
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
         @leftover_temps_ansible = PlaybookResult.annotate_leftovers(@ansible)
         @leftover_temps_krikri = PlaybookResult.annotate_leftovers(@krikri)
@@ -187,9 +212,10 @@ module KrikriPlaybookGenerator
                        mode : RunMode = RunMode::Real, run : Int32 = 1,
                        user : UserProfile = UserProfile::Root, umask : String = DEFAULT_UMASK,
                        hosts : Int32 = 1, limit : String = "off",
-                       profile : String = "debian") : PlaybookResult
+                       profile : String = "debian",
+                       core_version : String = Runner::DEFAULT_CORE_VERSION) : PlaybookResult
         failed = EngineRun.new("ansible", -1, nil, "", "", false)
-        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts, limit, profile)
+        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts, limit, profile, core_version)
       end
 
       # The environment variables the playbook's sidecar asks the engines
@@ -434,7 +460,14 @@ module KrikriPlaybookGenerator
                    @microvm_parallel : Int32 = 1, @diff : Bool = true,
                    @user_profiles : Array(UserProfile) = [UserProfile::Root],
                    @umasks : Array(String) = [DEFAULT_UMASK],
-                   @hosts : Array(Int32) = [1], @limits : Array(String) = ["off"])
+                   @hosts : Array(Int32) = [1], @limits : Array(String) = ["off"],
+                   @reference_versions : Array(String) = DEFAULT_REFERENCE_VERSIONS)
+    end
+
+    # The reference core versions this batch compares against; an empty
+    # list means the engine's own target version.
+    def core_versions : Array(String)
+      @reference_versions.empty? ? DEFAULT_REFERENCE_VERSIONS : @reference_versions.uniq
     end
 
     # Every (identity, umask, host-count, limit) point the batch runs.
@@ -481,8 +514,26 @@ module KrikriPlaybookGenerator
       result
     end
 
+    # The version matrix needs a backend that can hold more than one baked
+    # reference version; Options refuses it on the others before Runner is
+    # constructed, and this keeps direct Runner use honest.
+    private def check_reference_backend! : Nil
+      return if core_versions == DEFAULT_REFERENCE_VERSIONS || @run_on_podman
+
+      raise ArgumentError.new("--reference-core-version is only implemented for --run-on-podman")
+    end
+
+    private def log_start : Nil
+      cores = core_versions.size > 1 ? " x core #{core_versions.join("+")}" : ""
+      log("starting #{@playbook_paths.size} playbook(s) x #{@modes.map(&.label).join("+")} " \
+          "mode(s) x #{@user_profiles.map(&.label).join("+")} x umask #{@umasks.join("+")} " \
+          "x hosts #{@hosts.join("+")} x limit #{@limits.join("+")}#{cores} " \
+          "(backend=#{backend_label}, results=#{@results_dir})")
+    end
+
     def run : Array(PlaybookResult)
       started = Time.utc
+      check_reference_backend!
       if @run_on_podman && !PodmanBackend.available?
         raise PodmanProvisionError.new("--run-on-podman was requested but `podman` isn't on PATH")
       end
@@ -501,10 +552,7 @@ module KrikriPlaybookGenerator
       @user_profiles = [UserProfile::Local] if local_backend?
       @user_profiles = [UserProfile::Root] if @run_on_atlantic
       @planned = planned_rows
-      log("starting #{@playbook_paths.size} playbook(s) x #{@modes.map(&.label).join("+")} " \
-          "mode(s) x #{@user_profiles.map(&.label).join("+")} x umask #{@umasks.join("+")} " \
-          "x hosts #{@hosts.join("+")} x limit #{@limits.join("+")} " \
-          "(backend=#{backend_label}, results=#{@results_dir})")
+      log_start
       Dir.mkdir_p(@results_dir)
       results = Log.phase("runner", "executing #{@playbook_paths.size} playbook(s) (#{backend_label})") do
         if @run_on_atlantic
@@ -538,7 +586,7 @@ module KrikriPlaybookGenerator
                      else
                        @playbook_paths.size
                      end
-      per_playbook * @modes.size * contexts.size
+      per_playbook * @modes.size * contexts.size * core_versions.size
     end
 
     private def local_backend? : Bool
@@ -641,10 +689,18 @@ module KrikriPlaybookGenerator
       end
       groups = Hash(String, Array(String)).new
       @playbook_paths.each do |path|
+        meta = load_meta(path)
+        # A generated library/ probe needs no module-specific VM image, so
+        # it rides the generic misc profile instead of failing the batch
+        # for having no `PROFILE_FOR_MODULE` entry.
+        if meta.try(&.library?)
+          (groups["misc"] ||= [] of String) << path
+          next
+        end
         # doc's own `module` field (and therefore the meta sidecar) is the
         # short name even when the schema was requested by FQCN; a v2
         # multi-task playbook needs a profile for EVERY task's module
-        names = load_meta(path).try(&.module_names).try(&.map(&.split(".").last)) || [] of String
+        names = meta.try(&.module_names).try(&.map(&.split(".").last)) || [] of String
         raise AtlanticProvisionError.new("playbook #{File.basename(path)} has no meta module list") if names.empty?
         missing = names.find { |name| !AtlanticBackend::PROFILE_FOR_MODULE[name]? }
         raise AtlanticProvisionError.new("playbook #{File.basename(path)} (module #{missing.inspect}) has no Atlantic profile") if missing
@@ -702,21 +758,27 @@ module KrikriPlaybookGenerator
         paths.each do |path|
           podman_profile_for(path).each { |profile| profiles[profile] << path }
         end
-        profiles.each_key { |profile| backend.provision(profile) }
+        profiles.each_key do |profile|
+          core_versions.each { |version| backend.provision(profile, version) }
+        end
         profile_counts = profiles.map { |profile, batch| [profile, batch.size] }
         log("podman: running #{profiles.values.sum(&.size)} playbook(s) " \
-            "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
+            "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")}" \
+            "#{core_versions.size > 1 ? ", core #{core_versions.join("+")}" : ""})")
         profiles.flat_map do |profile, batch|
           Runner.in_parallel(batch, @podman_parallel) do |path|
             contexts.flat_map do |(user, umask, hosts, limit)|
               @modes.flat_map do |mode|
-                guarded_results(path, mode, user, umask, hosts, limit,
-                  profile.debian? ? "debian" : "rocky") do
-                  runs = backend.run_playbook(path, profile, check: mode.check?, second_run: @second_run,
-                    user: user, umask: umask, hosts: hosts, env: play_env(path),
-                    limit: Options.limit_pattern(limit), include_unreachable: limit != "off")
-                  comparison_results(path, mode, runs, user, umask, hosts, limit,
-                    profile.debian? ? "debian" : "rocky")
+                core_versions.flat_map do |version|
+                  guarded_results(path, mode, user, umask, hosts, limit,
+                    profile.debian? ? "debian" : "rocky", version) do
+                    runs = backend.run_playbook(path, profile, version: version,
+                      check: mode.check?, second_run: @second_run,
+                      user: user, umask: umask, hosts: hosts, env: play_env(path),
+                      limit: Options.limit_pattern(limit), include_unreachable: limit != "off")
+                    comparison_results(path, mode, runs, user, umask, hosts, limit,
+                      profile.debian? ? "debian" : "rocky", version)
+                  end
                 end
               end
             end
@@ -843,7 +905,8 @@ module KrikriPlaybookGenerator
                                    runs : Array(HostState::Comparison),
                                    user : UserProfile, umask : String,
                                    hosts : Int32 = 1, limit : String = "off",
-                                   profile : String = "debian") : Array(PlaybookResult)
+                                   profile : String = "debian",
+                                   core_version : String = DEFAULT_CORE_VERSION) : Array(PlaybookResult)
       results = [] of PlaybookResult
       runs.each_with_index do |comparison, index|
         run_number = index + 1
@@ -851,7 +914,7 @@ module KrikriPlaybookGenerator
           to_engine_run("ansible", comparison[:ansible]),
           to_engine_run("krikri", comparison[:krikri]), load_meta(path),
           mode: mode, run: run_number, user: user, umask: umask, hosts: hosts, limit: limit,
-          profile: profile)
+          profile: profile, core_version: core_version)
         results << (run_number == 1 ? progress(result) : log_second_run(result))
       end
       results
@@ -894,6 +957,7 @@ module KrikriPlaybookGenerator
     private def guarded_results(path : String, mode : RunMode, user : UserProfile, umask : String,
                                 hosts : Int32 = 1, limit : String = "off",
                                 profile : String = "debian",
+                                core_version : String = DEFAULT_CORE_VERSION,
                                 &block : -> Array(PlaybookResult)) : Array(PlaybookResult)
       block.call
     rescue e : Exception
@@ -901,7 +965,7 @@ module KrikriPlaybookGenerator
 
       STDERR.puts "warning: #{File.basename(path)}: #{e.message} - continuing (--keep-going)"
       [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1,
-        user, umask, hosts, limit, profile)]
+        user, umask, hosts, limit, profile, core_version)]
     end
 
     private def report_leaks : Nil
@@ -1041,9 +1105,19 @@ module KrikriPlaybookGenerator
 
       MetaInfo.new(module_name, chaos, mutations, module_names,
         parse_plugin_env(parsed).merge(parse_play_env(parsed)),
-        parse_structural_failure(parsed), parse_profiles(parsed))
+        parse_structural_failure(parsed), parse_profiles(parsed), parse_library(parsed))
     rescue JSON::ParseException
       nil
+    end
+
+    # The sidecar's `library` object for a generated custom-module probe.
+    private def parse_library(parsed : Hash(String, JSON::Any)) : LibraryMeta?
+      entry = parsed["library"]?.try(&.as_h?)
+      return unless entry
+
+      shape = entry["shape"]?.try(&.as_s?) || "probe"
+      LibraryMeta.new(shape, entry["target"]?.try(&.as_s?),
+        entry["source"]?.try(&.as_s?), entry["deliberate_failure"]?.try(&.as_bool?) || false)
     end
 
     # The host images the playbook covers (a distro-polymorphic module runs
@@ -1098,7 +1172,7 @@ module KrikriPlaybookGenerator
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
         @control, @modes, @second_run, @diff, Time.utc - started, started,
         user_profiles: @user_profiles.map(&.label), umasks: @umasks, hosts: @hosts,
-        limits: @limits)
+        limits: @limits, reference_versions: core_versions)
     rescue e
       STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end
@@ -1114,6 +1188,7 @@ module KrikriPlaybookGenerator
           json.field "hosts", result.hosts
           json.field "limit", result.limit
           json.field "profile", result.profile
+          json.field "core_version", result.core_version
           json.field "env", result.env.empty? ? nil : result.env
           write_meta_fields(json, result)
           json.field "error", result.error
@@ -1148,6 +1223,16 @@ module KrikriPlaybookGenerator
         json.field "module", meta.module_name
         if meta.module_names.size > 1
           json.field "modules", meta.module_names
+        end
+        if library = meta.library
+          json.field "library" do
+            json.object do
+              json.field "shape", library.shape
+              json.field "target", library.target
+              json.field "source", library.source
+              json.field "deliberate_failure", library.deliberate_failure
+            end
+          end
         end
         json.field "chaos", meta.chaos
         json.field "mutations" do

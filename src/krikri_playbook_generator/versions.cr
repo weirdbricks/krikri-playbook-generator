@@ -30,10 +30,12 @@ module KrikriPlaybookGenerator
                    second_run : Bool, diff : Bool, duration : Time::Span, started : Time,
                    runner : CommandRunner = DEFAULT_RUNNER,
                    user_profiles : Array(String)? = nil, umasks : Array(String)? = nil,
-                   hosts : Array(Int32)? = nil, limits : Array(String)? = nil) : Nil
+                   hosts : Array(Int32)? = nil, limits : Array(String)? = nil,
+                   reference_versions : Array(String)? = nil) : Nil
       File.write(File.join(results_dir, "versions.txt"),
         render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, diff,
-          duration, runner, user_profiles: user_profiles, umasks: umasks, hosts: hosts, limits: limits))
+          duration, runner, user_profiles: user_profiles, umasks: umasks, hosts: hosts, limits: limits,
+          reference_versions: reference_versions))
     end
 
     def self.render(version : String, started : Time, krikri_bin : String,
@@ -41,7 +43,8 @@ module KrikriPlaybookGenerator
                     second_run : Bool, diff : Bool, duration : Time::Span,
                     runner : CommandRunner, user_profiles : Array(String)? = nil,
                     umasks : Array(String)? = nil, hosts : Array(Int32)? = nil,
-                    limits : Array(String)? = nil) : String
+                    limits : Array(String)? = nil,
+                    reference_versions : Array(String)? = nil) : String
       binary = Path[krikri_bin].expand(home: true).to_s
       checkout = File.dirname(File.dirname(binary))
       subject_args = ["-C", checkout, "log", "-1", "--format=%s"]
@@ -72,6 +75,12 @@ module KrikriPlaybookGenerator
       # krikri-role-triager uses "check: true" to tell a check-mode repro
       # from a real one; a mixed-mode batch is not a check run.
       lines << "check: true" if modes == [RunMode::Check]
+      # Which reference ansible-core versions this batch compared against
+      # (the applied matrix, or the default); omitted by a legacy caller
+      # that predates the axis.
+      if reference_versions
+        lines << "reference cores: #{reference_versions.join(",")}"
+      end
       lines << STALE_WARNING if stale?(binary, checkout, runner)
       lines.join("\n") + "\n"
     end

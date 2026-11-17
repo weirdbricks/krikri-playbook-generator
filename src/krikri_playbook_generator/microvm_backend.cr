@@ -1,3 +1,4 @@
+require "./reference_version"
 require "digest/sha256"
 require "file_utils"
 require "./cmd"
@@ -37,7 +38,7 @@ module KrikriPlaybookGenerator
     BOOT_SECS            =  240
     BAKE_SECS            =  900
     DOWNLOAD_SECS        =  900
-    ANSIBLE_CORE_VERSION = "2.21.6"
+    ANSIBLE_CORE_VERSION = KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
     ANSIBLE_CORE_PIN     = "ansible-core==#{ANSIBLE_CORE_VERSION}"
 
     # Same rule as the podman and Atlantic backends: byte parity is only
@@ -896,6 +897,13 @@ module KrikriPlaybookGenerator
                                  "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                                  dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
         raise MicrovmProvisionError.new("plugin upload to #{vm.ip} failed: #{copied.stderr}") unless copied.rc == 0
+      end
+      library_dir = PlaybookBuilder.library_dir(playbook_path)
+      if Dir.exists?(library_dir)
+        copied = Cmd.run("scp", ["-r", "-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
+                                 "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                                 library_dir, "root@#{vm.ip}:/work/"], timeout: 120.0)
+        raise MicrovmProvisionError.new("library upload to #{vm.ip} failed: #{copied.stderr}") unless copied.rc == 0
       end
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
                                  HostInventory.render(hosts, include_unreachable) + "KPG_INVENTORY_EOF\n", 60.0)

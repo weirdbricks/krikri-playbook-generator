@@ -187,5 +187,19 @@ module KrikriPlaybookGenerator
     ensure
       FileUtils.rm_rf(dir) if dir
     end
+
+    it "records the reference core versions the batch compared against" do
+      dir = File.tempname("kpg-spec-versions")
+      Dir.mkdir_p(dir)
+      binary = make_binary(dir, Time.utc(2026, 1, 2, 3, 4, 5))
+
+      text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
+        "ansible-playbook", false, [RunMode::Real], false, true, 0.seconds,
+        fake_runner({} of String => Cmd::Result), reference_versions: %w[2.21.6 2.20.1])
+
+      assert(text.lines.includes?("reference cores: 2.21.6,2.20.1"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
   end
 end

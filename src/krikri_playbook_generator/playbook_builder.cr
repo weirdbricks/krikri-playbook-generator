@@ -59,6 +59,13 @@ module KrikriPlaybookGenerator
       dirs
     end
 
+    # The playbook-adjacent `library/` directory ansible and krikri both
+    # search for custom modules. Generated probes live here, and every
+    # isolated backend copies it into the playbook's working directory.
+    def self.library_dir(playbook_path : String) : String
+      File.join(File.dirname(playbook_path), "library")
+    end
+
     # The play-level variables the lookup and expression shapes render;
     # each is probed through both `debug: var:` and `debug: msg:`.
     LOOKUP_VALUE_VARIABLE     = "kpg_lookup_value"
@@ -244,6 +251,21 @@ module KrikriPlaybookGenerator
 
         File.delete(File.join(@out_dir, name))
       end
+      remove_stale_library
+    end
+
+    # Only this tool's generated probes are cleared from the shared
+    # playbook-adjacent library directory; a hand-written module beside the
+    # batch is left alone.
+    private def remove_stale_library : Nil
+      dir = File.join(@out_dir, "library")
+      return unless Dir.exists?(dir)
+
+      Dir.each_child(dir) do |name|
+        next unless name.starts_with?("kpg_") && name.ends_with?(".py")
+        path = File.join(dir, name)
+        File.delete(path) if File.file?(path)
+      end
     end
 
     private def write_playbook(task : GeneratedTask, index : Int32) : String
@@ -253,6 +275,7 @@ module KrikriPlaybookGenerator
 
       write_include_layout(basename, @include_shapes[index]? || IncludeShape::Off)
       write_plugin_layout(basename, plugin_axes(index))
+      write_library_layout(task)
       File.write(playbook_path, "#{seed_comment}#{playbook_yaml(task, index, basename)}")
       File.write(meta_path, metadata_json(task, playbook_path, index))
 
@@ -323,7 +346,8 @@ module KrikriPlaybookGenerator
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
           plugin_json(json, index)
-          json.field "structural_failure", structural_failure?(index)
+          library_json(json, task)
+          json.field "structural_failure", structural_failure?(index) || (task.library.try(&.deliberate_failure) == true)
           json.field "profiles", playbook_profiles(index)
         end
       end
@@ -362,6 +386,7 @@ module KrikriPlaybookGenerator
 
       write_include_layout(basename, @include_shapes[index]? || IncludeShape::Off)
       write_plugin_layout(basename, plugin_axes(index))
+      tasks.each { |task| write_library_layout(task) }
       File.write(playbook_path, "#{seed_comment}#{scenario_yaml(tasks, index, basename)}")
       File.write(meta_path, scenario_metadata_json(tasks, playbook_path, index))
 
@@ -744,6 +769,34 @@ module KrikriPlaybookGenerator
               plugin_env(axes).each { |name, value| json.field name, value }
             end
           end
+        end
+      end
+    end
+
+    # One generated custom module per row in the shared playbook-adjacent
+    # library/ directory. ansible and krikri both search it for a bare
+    # `ansible.legacy.<module>` task, and every isolated backend copies it
+    # next to the uploaded playbook.
+    private def write_library_layout(task : GeneratedTask) : Nil
+      probe = task.library
+      return unless probe
+
+      dir = File.join(@out_dir, "library")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "#{probe.module_name}.py"), probe.source)
+    end
+
+    private def library_json(json : JSON::Builder, task : GeneratedTask) : Nil
+      probe = task.library
+      return unless probe
+
+      json.field "library" do
+        json.object do
+          json.field "module", probe.module_name
+          json.field "shape", probe.shape
+          json.field "target", probe.target
+          json.field "source", File.join(@out_dir, "library", "#{probe.module_name}.py")
+          json.field "deliberate_failure", probe.deliberate_failure
         end
       end
     end

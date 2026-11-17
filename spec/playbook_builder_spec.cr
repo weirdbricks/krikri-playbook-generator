@@ -871,5 +871,63 @@ module KrikriPlaybookGenerator
     ensure
       FileUtils.rm_rf(dir) if dir
     end
+
+    def library_task(probe : LibraryProbe) : GeneratedTask
+      GeneratedTask.new(probe.module_name, "ansible.legacy", probe.args, library: probe)
+    end
+
+    it "writes a generated library module beside the playbook and records it" do
+      dir = File.tempname("kpg-spec")
+      probe = ModuleUtilsSurface.probes(["ansible.module_utils.basic"]).first
+      path = PlaybookBuilder.new(dir).build([library_task(probe)]).first
+
+      source = File.join(dir, "library", "kpg_mu_basic.py")
+      assert File.exists?(source)
+      assert_includes(File.read(source), "import ansible.module_utils.basic")
+      assert_equal(source, File.join(PlaybookBuilder.library_dir(path), "kpg_mu_basic.py"))
+
+      task = YAML.parse(File.read(path)).as_a.first["tasks"].as_a.first
+      assert(task.as_h.has_key?(YAML::Any.new("ansible.legacy.kpg_mu_basic")))
+      assert_equal(0, task["ansible.legacy.kpg_mu_basic"].as_h.size)
+
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("module-utils", meta["library"]["shape"].as_s)
+      assert_equal("ansible.module_utils.basic", meta["library"]["target"].as_s)
+      assert_equal("kpg_mu_basic", meta["library"]["module"].as_s)
+      assert_equal(false, meta["library"]["deliberate_failure"].as_bool)
+      assert_equal(false, meta["structural_failure"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "clears stale generated library modules but leaves a hand-written one alone" do
+      dir = File.tempname("kpg-spec")
+      library = File.join(dir, "library")
+      Dir.mkdir_p(library)
+      File.write(File.join(library, "kpg_mu_stale.py"), "# stale probe")
+      File.write(File.join(library, "handwritten.py"), "# not ours")
+
+      probe = ModuleUtilsSurface.probes(["ansible.module_utils.basic"]).first
+      PlaybookBuilder.new(dir).build([library_task(probe)])
+
+      refute File.exists?(File.join(library, "kpg_mu_stale.py"))
+      assert File.exists?(File.join(library, "handwritten.py"))
+      assert File.exists?(File.join(library, "kpg_mu_basic.py"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "marks a deliberately failing library probe as a structural failure" do
+      dir = File.tempname("kpg-spec")
+      probe = LibraryProbe.new("kpg_lib_required", "library", "required",
+        "# probe\ndef main():\n    pass\n", deliberate_failure: true)
+      path = PlaybookBuilder.new(dir).build([library_task(probe)]).first
+
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal(true, meta["structural_failure"].as_bool)
+      assert_equal(true, meta["library"]["deliberate_failure"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
   end
 end

@@ -26,7 +26,8 @@ module KrikriPlaybookGenerator
         user_profiles: Options.effective_user_profiles(opts),
         umasks: Options.effective_umasks(opts),
         hosts: Options.effective_hosts(opts),
-        limits: Options.effective_limits(opts)).run
+        limits: Options.effective_limits(opts),
+        reference_versions: opts.reference_core_versions).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -104,33 +105,58 @@ module KrikriPlaybookGenerator
       schemas.each do |schema|
         tasks.concat(generator.generate(schema, opts.count))
       end
+      tasks.concat(library_tasks(opts))
       playbooks = build_single_task_playbooks(opts, tasks)
     end
     run_generated(opts, playbooks)
   end
 
+  # Custom `library/` probe tasks are not scanned modules: each one is a
+  # generated module plus the single task that runs it. They join the batch
+  # so the same runner, backends, state oracle and triage cover them.
+  private def self.library_tasks(opts : Options) : Array(GeneratedTask)
+    return [] of GeneratedTask if opts.module_utils.empty? && opts.library_modules.empty?
+
+    overrides = Overrides.load
+    probes = [] of LibraryProbe
+    names, skipped = ModuleUtilsSurface.select(opts.module_utils, overrides)
+    skipped.each do |(name, reason)|
+      Log.info("generate", "skipping module_utils #{name}: #{reason}")
+    end
+    probes.concat(ModuleUtilsSurface.probes(names))
+    shapes = opts.library_modules.compact_map { |value| LibraryShape.parse(value) }
+    probes.concat(LibraryShapes.probes(shapes))
+    probes.map do |probe|
+      GeneratedTask.new(probe.module_name, "ansible.legacy", probe.args, library: probe)
+    end
+  end
+
   # One playbook per generated task: sample every per-playbook axis with
   # the batch seed and assemble them. Shared by a plain single-task batch
-  # and the `--tasks-per-playbook` fallback so the two never drift.
+  # and the `--tasks-per-playbook` fallback so the two never drift. A
+  # library/ probe task keeps every axis off: the probe's result is what is
+  # compared, not a random block/handler/lookup wrapped around it.
   private def self.build_single_task_playbooks(opts : Options,
                                                tasks : Array(GeneratedTask)) : Array(String)
     Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
-    settings = sample_play_settings(opts, tasks)
+    settings = sample_play_settings(opts, tasks).map_with_index { |setting, index| tasks[index].library ? nil : setting }
     block_sampler = BlockShapeSampler.new(opts.seed, opts.blocks)
-    shapes = tasks.map { block_sampler.sample }
+    shapes = tasks.map { |task| task.library ? BlockShape::None : block_sampler.sample }
     handler_sampler = HandlerShapeSampler.new(opts.seed, opts.handlers)
-    handlers = tasks.map { handler_sampler.sample }
+    handlers = tasks.map { |task| task.library ? HandlerShape::Off : handler_sampler.sample }
     retry_sampler = RetryShapeSampler.new(opts.seed, opts.retries)
-    retries = tasks.map { retry_sampler.sample }
+    retries = tasks.map { |task| task.library ? RetryShape::Off : retry_sampler.sample }
     include_sampler = IncludeShapeSampler.new(opts.seed, opts.includes)
-    includes = tasks.map { include_sampler.sample }
+    includes = tasks.map { |task| task.library ? IncludeShape::Off : include_sampler.sample }
     lookup_sampler = LookupShapeSampler.new(opts.seed, opts.lookups)
-    lookups = tasks.map { lookup_sampler.sample }
+    lookups = tasks.map { |task| task.library ? LookupShape::Off : lookup_sampler.sample }
     expression_sampler = ExpressionShapeSampler.new(opts.seed, opts.expressions)
-    expressions = tasks.map { expression_sampler.sample }
+    expressions = tasks.map { |task| task.library ? ExpressionShape::Off : expression_sampler.sample }
     discovery_sampler = PluginDiscoverySampler.new(opts.seed, opts.plugin_discovery)
-    discoveries = tasks.map { discovery_sampler.sample }
-    profiles = tasks.map { |task| Dependencies.playbook_profiles([task.fqcn], Overrides.load) }
+    discoveries = tasks.map { |task| task.library ? PluginDiscovery::Relative : discovery_sampler.sample }
+    profiles = tasks.map do |task|
+      task.library ? ["debian"] : Dependencies.playbook_profiles([task.fqcn], Overrides.load)
+    end
     PlaybookBuilder.new(opts.out_dir, opts.seed, settings, shapes, handlers, retries,
       opts.gather_facts?, includes, profiles, lookups, expressions, discoveries).build(tasks)
   end
@@ -221,7 +247,8 @@ module KrikriPlaybookGenerator
       user_profiles: Options.effective_user_profiles(opts),
       umasks: Options.effective_umasks(opts),
       hosts: Options.effective_hosts(opts),
-      limits: Options.effective_limits(opts)).run
+      limits: Options.effective_limits(opts),
+      reference_versions: opts.reference_core_versions).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)
@@ -313,7 +340,9 @@ module KrikriPlaybookGenerator
     modes = info[:modes].empty? ? "unknown" : info[:modes].join(",")
     duration = info[:duration] || "unknown"
     puts "== Batch =="
-    puts "modes: #{modes} | idempotency pass: #{info[:second_run] ? "on" : "off"} | wall time: #{duration}"
+    line = "modes: #{modes} | idempotency pass: #{info[:second_run] ? "on" : "off"} | wall time: #{duration}"
+    line += " | reference cores: #{info[:cores].join(",")}" unless info[:cores].empty?
+    puts line
   end
 
   # (mode, run, identity, umask, host count, signature label) for one
@@ -321,6 +350,9 @@ module KrikriPlaybookGenerator
   private def self.finding_context(example : Triage::ResultLine, label : String) : String
     context = "#{example.mode}, run #{example.run}, #{example.user}, umask #{example.umask}"
     context += ", hosts #{example.hosts}" unless example.hosts == 1
+    unless example.core_version == KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
+      context += ", core #{example.core_version}"
+    end
     "(#{context}, #{label})"
   end
 
@@ -335,11 +367,13 @@ module KrikriPlaybookGenerator
       label = finding.signature ? "signature #{finding.signature}" : "no signature"
       example = finding.example
       puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} divergent playbook(s)"
+      puts "  core versions: #{finding.core_versions.join(", ")}" if finding.core_versions.size > 1
       unless finding.example_mutations.empty?
         puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
       puts "  example: #{finding.playbooks.first}"
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit)}"
+      puts "  module: #{example.library_source}" if example.library_source
+      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version)}"
     end
   end
 
@@ -352,7 +386,8 @@ module KrikriPlaybookGenerator
       example = finding.example
       puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit)}"
+      puts "  module: #{example.library_source}" if example.library_source
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
         puts "  leftover staging files:"
@@ -378,7 +413,8 @@ module KrikriPlaybookGenerator
       puts "#{finding.module_name} #{finding_context(example, label)}: " \
            "#{finding.count} playbook(s) mutated the host in check mode"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit)}"
+      puts "  module: #{example.library_source}" if example.library_source
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version)}"
       lines = example.check_mode_diff.lines
       lines.first(10).each { |line| puts "  #{line}" }
       puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10

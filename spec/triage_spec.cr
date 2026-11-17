@@ -16,7 +16,8 @@ module KrikriPlaybookGenerator
                      error : String? = nil, masked_diff : String = "",
                      masked_identical : Bool? = nil, state_divergent : Bool = false,
                      state_diff : String = "", check_mode_mutated : Bool = false,
-                     check_mode_diff : String = "", leftover_temps : String = "") : String
+                     check_mode_diff : String = "", leftover_temps : String = "",
+                     library_target : String? = nil, core_version : String = "2.21.6") : String
       playbook = File.join(dir, "#{name}.yml")
       File.write(playbook, "---\n")
 
@@ -30,6 +31,7 @@ module KrikriPlaybookGenerator
         "hosts"              => hosts,
         "limit"              => limit,
         "profile"            => profile,
+        "core_version"       => core_version,
         "chaos"              => chaos,
         "divergent"          => divergent,
         "masked_identical"   => masked_identical.nil? ? !divergent : masked_identical,
@@ -44,6 +46,7 @@ module KrikriPlaybookGenerator
         "mutations"          => mutations.map { |(option, kind)| {"option" => option, "kind" => kind} },
         "error"              => error,
         "diff"               => {"masked" => masked_diff, "raw" => ""},
+        "library"            => library_target ? {"target" => library_target, "shape" => "probe"} : nil,
       }
       File.open(File.join(dir, "results.jsonl"), "a") { |file| file.puts(result.to_json) }
       playbook
@@ -80,6 +83,24 @@ module KrikriPlaybookGenerator
       assert_equal(2, findings.first.count)
       assert_equal("abc123def456", findings.first.signature)
       assert(findings.first.playbooks.all?(&.ends_with?(".yml")))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "merges a finding across reference core versions and pins the version in a repro" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, signature: "same", core_version: "2.20.1")
+      write_result(dir, "b", "copy", divergent: true, signature: "same", core_version: "2.21.6")
+
+      findings = Triage.new(dir).report
+      assert_equal(1, findings.size)
+      assert_equal(%w[2.20.1 2.21.6], findings.first.core_versions)
+
+      command = Triage.repro_command(findings.first.playbooks.first, ["copy"], core_version: "2.20.1")
+      assert(command.includes?("--reference-core-version 2.20.1"))
+      # The default version is the backend default and stays unpinned.
+      refute(Triage.repro_command("x.yml", ["copy"], core_version: "2.21.6").includes?("--reference-core-version"))
     ensure
       FileUtils.rm_rf(dir) if dir
     end
@@ -327,6 +348,26 @@ module KrikriPlaybookGenerator
       assert_equal(["reboot"], triage.not_applicable_modules)
       assert_equal(1, triage.happy_coverage.attempted)
       assert_equal(0, triage.happy_coverage.failed)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps a library probe out of the quality and happy-coverage metrics but still reports it" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "probe", "kpg_mu_facts", divergent: true, signature: "libsig",
+        ansible_failed: true, ansible_error: "No module named 'ansible.module_utils.facts'",
+        library_target: "ansible.module_utils.facts")
+      write_result(dir, "copy", "copy", divergent: false)
+
+      triage = Triage.new(dir)
+      assert_empty(triage.quality)
+      assert_equal(1, triage.happy_coverage.attempted)
+      assert_equal(0, triage.happy_coverage.failed)
+      # the probe's own divergence is still a finding, grouped by its module
+      findings = triage.report
+      assert_equal(1, findings.size)
+      assert_equal("kpg_mu_facts", findings.first.module_name)
     ensure
       FileUtils.rm_rf(dir) if dir
     end
@@ -675,6 +716,7 @@ module KrikriPlaybookGenerator
         modes: check,real
         idempotency: true
         diff: true
+        reference cores: 2.21.6,2.20.1
         batch duration: 41.2s
         TEXT
 
@@ -683,10 +725,12 @@ module KrikriPlaybookGenerator
       assert_equal(true, info[:second_run])
       assert_equal(true, info[:diff])
       assert_equal("41.2s", info[:duration])
+      assert_equal(%w[2.21.6 2.20.1], info[:cores])
       report = JSON.parse(Triage.new(dir).report_json)
       assert_equal(%w[check real], report["batch"]["modes"].as_a.map(&.as_s))
       assert_equal(true, report["batch"]["second_run"].as_bool)
       assert_equal(true, report["batch"]["diff"].as_bool)
+      assert_equal(%w[2.21.6 2.20.1], report["batch"]["reference_cores"].as_a.map(&.as_s))
     ensure
       FileUtils.rm_rf(dir) if dir
     end

@@ -1,3 +1,4 @@
+require "./reference_version"
 require "json"
 require "./masks"
 require "./host_state"
@@ -37,7 +38,8 @@ module KrikriPlaybookGenerator
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
       state_signature : String?, state_diff : String, check_mode_mutated : Bool,
       check_mode_diff : String, check_mode_signature : String?,
-      leftover_temps : String do
+      leftover_temps : String, library_target : String?, library_source : String?,
+      core_version : String do
       def errored? : Bool
         !error.nil?
       end
@@ -56,7 +58,8 @@ module KrikriPlaybookGenerator
       end
     end
     record Finding, module_name : String, signature : String?, playbooks : Array(String),
-      example_mutations : Array(MutationEntry), example : ResultLine do
+      example_mutations : Array(MutationEntry), example : ResultLine,
+      core_versions : Array(String) do
       def count : Int32
         playbooks.size
       end
@@ -119,7 +122,8 @@ module KrikriPlaybookGenerator
 
       groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
-        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
+        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first,
+          entries.map(&.core_version).uniq!.sort!)
       end.sort_by! { |finding| -finding.count }
     end
 
@@ -139,7 +143,8 @@ module KrikriPlaybookGenerator
 
       groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
-        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
+        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first,
+          entries.map(&.core_version).uniq!.sort!)
       end.sort_by! { |finding| -finding.count }
     end
 
@@ -156,7 +161,8 @@ module KrikriPlaybookGenerator
 
       groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
-        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
+        Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first,
+          entries.map(&.core_version).uniq!.sort!)
       end.sort_by! { |finding| -finding.count }
     end
 
@@ -181,6 +187,7 @@ module KrikriPlaybookGenerator
               json.field "duration", info[:duration]
               json.field "second_run", info[:second_run]
               json.field "diff", info[:diff]
+              json.field "reference_cores", info[:cores]
             end
           end
           json.field "findings" do
@@ -236,6 +243,7 @@ module KrikriPlaybookGenerator
           json.field "signature", nil
         end
         json.field "count", finding.count
+        json.field "core_versions", finding.core_versions
         json.field "playbooks" do
           json.array { finding.playbooks.each { |path| json.scalar path } }
         end
@@ -250,6 +258,9 @@ module KrikriPlaybookGenerator
             json.field "hosts", example.hosts
             json.field "limit", example.limit
             json.field "profile", example.profile
+            json.field "core_version", example.core_version
+            json.field "library_target", example.library_target
+            json.field "library_source", example.library_source
             json.field "env", example.env.empty? ? nil : example.env
             json.field "chaos", example.chaos
             json.field "mutations" do
@@ -309,6 +320,9 @@ module KrikriPlaybookGenerator
         next if line.run > 1
         next if @overrides.expect_failure?(line.module_name)
         next if @overrides.not_applicable?(line.module_name)
+        # A generated library/ probe measures the extension API, not a
+        # module's happy path, so it never counts toward the gate.
+        next if line.library_target
         next unless line.ansible_failed
 
         groups[line.module_name] << line
@@ -338,6 +352,8 @@ module KrikriPlaybookGenerator
         next if line.run > 1
         next if @overrides.expect_failure?(line.module_name)
         next if @overrides.not_applicable?(line.module_name)
+        # Library probes are excluded for the same reason as in `quality`.
+        next if line.library_target
 
         attempted += 1
         failed += 1 if line.ansible_failed
@@ -365,25 +381,27 @@ module KrikriPlaybookGenerator
     # `diff` defaults to false for a legacy versions.txt written before the
     # flag was recorded: those batches never passed --diff, so a repro of
     # one has to skip it too or it compares different bytes.
-    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool, diff: Bool)
+    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool, diff: Bool, cores: Array(String))
       path = File.join(@results_dir, "versions.txt")
       modes = [] of String
       duration = nil
       second_run = false
       diff = false
+      cores = [] of String
       if File.exists?(path)
         File.each_line(path) do |line|
           key, value = line.split(": ", 2)
           next unless value
           case key
-          when "modes"          then modes = value.split(',').map(&.strip)
-          when "batch duration" then duration = value.strip
-          when "idempotency"    then second_run = value.strip == "true"
-          when "diff"           then diff = value.strip == "true"
+          when "modes"           then modes = value.split(',').map(&.strip)
+          when "batch duration"  then duration = value.strip
+          when "idempotency"     then second_run = value.strip == "true"
+          when "diff"            then diff = value.strip == "true"
+          when "reference cores" then cores = value.split(',').map(&.strip)
           end
         end
       end
-      {modes: modes, duration: duration, second_run: second_run, diff: diff}
+      {modes: modes, duration: duration, second_run: second_run, diff: diff, cores: cores}
     end
 
     def rates : Array(Rate)
@@ -418,7 +436,8 @@ module KrikriPlaybookGenerator
                            user : String = "root", umask : String = DEFAULT_UMASK,
                            hosts : Int32 = 1,
                            env : Hash(String, String) = {} of String => String,
-                           limit : String = "off") : String
+                           limit : String = "off",
+                           core_version : String? = nil) : String
       backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
       command = "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
       command += " --modes #{mode}" if mode && mode.in?(%w[check real])
@@ -433,6 +452,10 @@ module KrikriPlaybookGenerator
       # A limit row contacts (or deliberately avoids) a different host set;
       # pinning the symbol keeps that shape, including `--limit none`.
       command += " --limit #{limit}" unless limit == "off"
+      # A reference-core row only reproduces against that engine version.
+      if core_version && core_version != KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
+        command += " --reference-core-version #{core_version}"
+      end
       command += " --no-second-run" if run <= 1
       command += " --no-diff" unless diff
       # An env-var play keyword lives only in the sidecar, so the repro has
@@ -513,8 +536,33 @@ module KrikriPlaybookGenerator
         check_mode_mutated,
         check_mode_diff,
         HostState.check_mode_signature(check_mode_diff),
-        leftover_temps
+        leftover_temps,
+        parse_library_target(parsed),
+        parse_library_source(parsed),
+        parse_core_version(parsed)
       )
+    end
+
+    # The target a generated library/ probe imports or exercises; nil for
+    # every scanned-module row (including legacy lines).
+    private def parse_library_target(parsed : Hash(String, JSON::Any)) : String?
+      entry = parsed["library"]?.try(&.as_h?)
+      return unless entry
+
+      entry["target"]?.try(&.as_s?)
+    end
+
+    private def parse_library_source(parsed : Hash(String, JSON::Any)) : String?
+      entry = parsed["library"]?.try(&.as_h?)
+      return unless entry
+
+      entry["source"]?.try(&.as_s?)
+    end
+
+    # The reference core a row compared against; legacy lines predate the
+    # axis and are the default.
+    private def parse_core_version(parsed : Hash(String, JSON::Any)) : String
+      parsed["core_version"]?.try(&.as_s?) || KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
     end
 
     # A legacy line predates the host-count axis and is one host.

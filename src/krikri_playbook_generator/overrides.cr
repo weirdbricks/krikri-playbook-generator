@@ -24,6 +24,7 @@ module KrikriPlaybookGenerator
     @expect_failure : Hash(String, Bool)
     @not_applicable : Hash(String, Bool)
     @profiles : Hash(String, Array(String))
+    @module_utils_skip : Hash(String, String)
 
     # Module-level keys are not option overrides; the per-option parser must
     # skip them even when their YAML shape (a map) looks identical. `free_form`
@@ -42,6 +43,7 @@ module KrikriPlaybookGenerator
       @expect_failure = parse_flag_by_module(parsed["modules"]?, "expect_failure")
       @not_applicable = parse_flag_by_module(parsed["modules"]?, "not_applicable")
       @profiles = parse_list_by_module(parsed["modules"]?, "profiles")
+      @module_utils_skip = parse_module_utils_skip(parsed["module_utils_skip"]?)
     end
 
     # Module-level happy-path requirement groups from the data file: a
@@ -166,6 +168,25 @@ module KrikriPlaybookGenerator
     # Absent means the module's default profile only.
     def profiles(module_name : String) : Array(String)
       @profiles[module_name.split(".").last]? || [] of String
+    end
+
+    # Top-level `module_utils_skip:` entries: an `ansible.module_utils`
+    # import path the module_utils probe axis must leave alone, with the
+    # reason (usually an optional third-party library the reference image
+    # does not install). nil when the path is not skipped.
+    def module_utils_skip_reason(name : String) : String?
+      @module_utils_skip[name]?
+    end
+
+    private def parse_module_utils_skip(section : YAML::Any?) : Hash(String, String)
+      result = {} of String => String
+      section.try(&.as_h?).try do |entries|
+        entries.each do |name, reason|
+          text = reason.as_s?
+          result[name.to_s] = text if text
+        end
+      end
+      result
     end
 
     # A module-level bare list (`profiles: [debian, rocky]`), unlike the

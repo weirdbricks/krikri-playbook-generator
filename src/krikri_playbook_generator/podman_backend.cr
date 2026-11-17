@@ -1,3 +1,4 @@
+require "./reference_version"
 require "digest"
 require "./cmd"
 require "./dependencies"
@@ -63,7 +64,7 @@ module KrikriPlaybookGenerator
   # ansible-core packaged.
   class PodmanBackend
     IMAGE                    = "docker.io/library/debian:trixie-slim"
-    EXPECTED_ANSIBLE_VERSION = "2.21.6"
+    EXPECTED_ANSIBLE_VERSION = KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
     INVENTORY                = "target ansible_connection=local\n"
     ENGINE_ENV_STRIP         = KrikriPlaybookGenerator::ENGINE_ENV_STRIP
     OWNER_LABEL              = "krikri-owner-pid"
@@ -80,8 +81,11 @@ module KrikriPlaybookGenerator
     # package set no longer ships - the staged binary died with "cannot
     # open shared object file" right after the version assertion without
     # it (found launching the first 2.21.6 batch).
-    RPM_PACKAGES     = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp gnupg2 libxcrypt-compat"
-    ANSIBLE_CORE_PIN = "ansible-core==#{EXPECTED_ANSIBLE_VERSION}"
+    RPM_PACKAGES = "python3 python3-pip python3-dnf python3-dnf-plugin-versionlock libyaml pcre2 openssl libxml2 zstd gmp gnupg2 libxcrypt-compat"
+
+    def self.ansible_core_pin(version : String) : String
+      "ansible-core==#{version}"
+    end
 
     enum Profile
       Debian
@@ -203,20 +207,20 @@ module KrikriPlaybookGenerator
       @suffix = "-#{Time.utc.to_unix}-#{Process.pid}"
       @name_real = ""
       @name_krikri = ""
-      @images = {} of Profile => {String, String}
+      @images = {} of {Profile, String} => {String, String}
       @started_names = [] of String
       @run_index = 0
-      @provisioned_profiles = [] of Profile
-      @cache_hits = [] of Profile
-      @base_cache_hits = [] of Profile
+      @provisioned = [] of {Profile, String}
+      @cache_hits = [] of {Profile, String}
+      @base_cache_hits = [] of {Profile, String}
       @stale_cleaned = false
     end
 
-    def provision(profile : Profile = Profile::Debian) : Nil
+    def provision(profile : Profile = Profile::Debian, version : String = EXPECTED_ANSIBLE_VERSION) : Nil
       cleanup_stale_once
       label = profile.debian? ? "debian" : "rpm"
-      Log.phase("podman", "#{label} template provisioning start") do
-        provision_inner(profile)
+      Log.phase("podman", "#{label} template provisioning start (core #{version})") do
+        provision_inner(profile, version)
       end
     end
 
@@ -230,20 +234,20 @@ module KrikriPlaybookGenerator
       PodmanBackend.cleanup_stale
     end
 
-    private def provision_inner(profile : Profile) : Nil
+    private def provision_inner(profile : Profile, version : String) : Nil
       label = profile.debian? ? "debian" : "rpm"
-      fingerprint = fingerprint(profile)
+      fingerprint = fingerprint(profile, version)
       real_image, krikri_image = PodmanBackend.image_names(profile, fingerprint)
 
       if !@refresh_templates && image_exists?(real_image) && image_exists?(krikri_image)
         Log.info("podman", "#{label} template cache hit (#{fingerprint}) - skipping provisioning")
-        @images[profile] = {real_image, krikri_image}
-        @provisioned_profiles << profile
-        @cache_hits << profile
+        @images[{profile, version}] = {real_image, krikri_image}
+        @provisioned << {profile, version}
+        @cache_hits << {profile, version}
         return
       end
 
-      base_fingerprint = base_fingerprint(profile)
+      base_fingerprint = base_fingerprint(profile, version)
       base_real, base_krikri = PodmanBackend.base_image_names(profile, base_fingerprint)
       @name_real = profile.debian? ? "kpg-tpl-real#{@suffix}" : "kpg-rpmtpl-real#{@suffix}"
       @name_krikri = profile.debian? ? "kpg-tpl-krikri#{@suffix}" : "kpg-rpmtpl-krikri#{@suffix}"
@@ -257,13 +261,13 @@ module KrikriPlaybookGenerator
                            "starting #{@name_real} + #{@name_krikri} from #{base_real}")
         start_from_image(base_real, @name_real)
         start_from_image(base_krikri, @name_krikri)
-        @base_cache_hits << profile
+        @base_cache_hits << {profile, version}
       else
-        build_package_layer(profile, label)
+        build_package_layer(profile, label, version)
       end
 
-      Log.info("podman", "#{label} template: asserting ansible-core == #{EXPECTED_ANSIBLE_VERSION}")
-      assert_ansible_version!
+      Log.info("podman", "#{label} template: asserting ansible-core == #{version}")
+      assert_ansible_version!(version)
       unless base_hit
         Log.info("podman", "#{label} template: committing base #{base_real} + #{base_krikri}")
         commit_and_prune(base_real, base_krikri)
@@ -276,16 +280,17 @@ module KrikriPlaybookGenerator
       commit_and_prune(real_image, krikri_image)
       drop_templates
       Log.info("podman", "#{label} template: ready (#{real_image})")
-      @images[profile] = {real_image, krikri_image}
-      @provisioned_profiles << profile
+      @images[{profile, version}] = {real_image, krikri_image}
+      @provisioned << {profile, version}
     end
 
     # The expensive half of the template: the union dependency set installed
     # into a fresh pair from the base image, then fixtures and the inventory.
     # Everything the krikri binary does not touch, so its result is worth
     # committing on its own as the base pair.
-    private def build_package_layer(profile : Profile, label : String) : Nil
+    private def build_package_layer(profile : Profile, label : String, version : String) : Nil
       sets = package_sets
+      pin = PodmanBackend.ansible_core_pin(version)
       case profile
       when Profile::Debian
         Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE})")
@@ -296,19 +301,19 @@ module KrikriPlaybookGenerator
         install(@name_real, sets.real_debian.join(" "))
         install(@name_krikri, sets.krikri_debian.join(" "))
         # Debian trixie's apt ansible-core is 2.19.x, and the version
-        # assertion below demands EXPECTED_ANSIBLE_VERSION - byte-parity
+        # assertion below demands the requested version - byte-parity
         # comparisons against a different core are meaningless. Pip
         # provides the pinned core over the distro one (/usr/local/bin
         # shadows /usr/bin); trixie's pip is PEP 668 externally-managed,
         # hence --break-system-packages.
         exec!(@name_real, "export DEBIAN_FRONTEND=noninteractive; " \
                           "apt-get install -y -qq --no-install-recommends python3-pip >/dev/null && " \
-                          "pip3 install --quiet --break-system-packages --ignore-installed #{ANSIBLE_CORE_PIN}", 900.0)
+                          "pip3 install --quiet --break-system-packages --ignore-installed #{pin}", 900.0)
       when Profile::Rpm
         Log.info("podman", "#{label} template: starting #{@name_real} + #{@name_krikri} (image #{IMAGE_RPM})")
         start_container(@name_real, IMAGE_RPM)
         start_container(@name_krikri, IMAGE_RPM)
-        install_rpm(@name_real, with_ansible: true, packages: sets.real_rpm.join(" "))
+        install_rpm(@name_real, with_ansible: true, packages: sets.real_rpm.join(" "), version: version)
         install_rpm(@name_krikri, with_ansible: false, packages: sets.krikri_rpm.join(" "))
       end
       unless sets.python.empty?
@@ -352,18 +357,22 @@ module KrikriPlaybookGenerator
     # the SAME pair after the first run succeeded on both engines (the
     # idempotency pass); each pass is returned separately.
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
+                     version : String = EXPECTED_ANSIBLE_VERSION,
                      check : Bool? = nil, second_run : Bool = false,
                      diff : Bool? = nil, user : UserProfile = UserProfile::Root,
                      umask : String = DEFAULT_UMASK, hosts : Int32 = 1,
                      env : Hash(String, String) = {} of String => String,
                      limit : String? = nil,
                      include_unreachable : Bool = false) : Array(HostState::Comparison)
-      raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
+      unless @provisioned.includes?({profile, version})
+        raise PodmanProvisionError.new("provision was never called for profile #{profile} (core #{version})")
+      end
 
-      # Per-profile images: a mixed batch provisions both templates, and a
-      # playbook must run on the profile that matches its module (an apt
-      # module can never pass on the Rocky pair).
-      real_image, krikri_image = @images[profile]
+      # Per-profile, per-version images: a mixed batch provisions both
+      # templates, and a version matrix provisions one per reference core.
+      # A playbook must run on the profile that matches its module (an apt
+      # module can never pass on the Rocky pair) and the version it compares.
+      real_image, krikri_image = @images[{profile, version}]
       @run_index += 1
       real = "kpg-real-#{@run_index}#{@suffix}"
       krikri = "kpg-krikri-#{@run_index}#{@suffix}"
@@ -478,10 +487,11 @@ module KrikriPlaybookGenerator
     # The rpm template pair shares one prep: dnf packages everywhere, the
     # pinned ansible-core only where the real engine runs (the version
     # assertion below would fail on a distro ansible-core otherwise).
-    private def install_rpm(name : String, with_ansible : Bool, packages : String = RPM_PACKAGES) : Nil
+    private def install_rpm(name : String, with_ansible : Bool, packages : String = RPM_PACKAGES,
+                            version : String = EXPECTED_ANSIBLE_VERSION) : Nil
       script = "dnf makecache -q 2>/dev/null || dnf makecache; " \
                "dnf install -y -q #{packages} >/dev/null"
-      script += " && pip3 install --quiet #{ANSIBLE_CORE_PIN}" if with_ansible
+      script += " && pip3 install --quiet #{PodmanBackend.ansible_core_pin(version)}" if with_ansible
       exec!(name, script, 900.0)
     end
 
@@ -545,18 +555,18 @@ module KrikriPlaybookGenerator
       raise PodmanProvisionError.new("writing inventory.ini failed in #{name}: #{result.stderr}") unless Cmd.success?(result)
     end
 
-    private def assert_ansible_version! : Nil
+    private def assert_ansible_version!(expected : String = EXPECTED_ANSIBLE_VERSION) : Nil
       result = Cmd.run("podman", ["exec", @name_real, "ansible-playbook", "--version"], timeout: 120.0)
       unless Cmd.success?(result)
         raise PodmanProvisionError.new("ansible-playbook --version failed in container: #{result.stderr}")
       end
 
       version = result.stdout.match(/core (\d+\.\d+\.\d+)/).try(&.[1])
-      unless version == EXPECTED_ANSIBLE_VERSION
+      unless version == expected
         raise PodmanProvisionError.new(
-          "container ansible-core is #{version.inspect}, expected #{EXPECTED_ANSIBLE_VERSION} - " \
+          "container ansible-core is #{version.inspect}, expected #{expected} - " \
           "byte-parity comparisons against a different engine version are meaningless; " \
-          "install the expected version or update EXPECTED_ANSIBLE_VERSION deliberately")
+          "install the expected version or update --reference-core-version deliberately")
       end
     end
 
@@ -655,31 +665,33 @@ module KrikriPlaybookGenerator
     # plugins, the fixture seed script) yields a new tag and forces a
     # rebuild; everything else hits. Visible for specs - it is pure
     # computation, no podman involved.
-    def fingerprint_for_test(profile : Profile = Profile::Debian) : String
-      fingerprint(profile)
+    def fingerprint_for_test(profile : Profile = Profile::Debian,
+                             version : String = EXPECTED_ANSIBLE_VERSION) : String
+      fingerprint(profile, version)
     end
 
     # Visible for specs: the tag the package layer is cached under. It must
     # stay equal across two builds whose krikri binary differs, or the base
     # images can never be reused.
-    def base_fingerprint_for_test(profile : Profile = Profile::Debian) : String
-      base_fingerprint(profile)
+    def base_fingerprint_for_test(profile : Profile = Profile::Debian,
+                                  version : String = EXPECTED_ANSIBLE_VERSION) : String
+      base_fingerprint(profile, version)
     end
 
     # Visible for specs: which profiles were satisfied from the image
     # cache rather than freshly provisioned.
-    def cache_hit?(profile : Profile) : Bool
-      @cache_hits.includes?(profile)
+    def cache_hit?(profile : Profile, version : String = EXPECTED_ANSIBLE_VERSION) : Bool
+      @cache_hits.includes?({profile, version})
     end
 
     # Visible for specs: which profiles were rebuilt from a cached base pair
     # (package layer reused) rather than from the vanilla base image.
-    def base_cache_hit?(profile : Profile) : Bool
-      @base_cache_hits.includes?(profile)
+    def base_cache_hit?(profile : Profile, version : String = EXPECTED_ANSIBLE_VERSION) : Bool
+      @base_cache_hits.includes?({profile, version})
     end
 
-    private def fingerprint(profile : Profile) : String
-      parts = base_fingerprint_parts(profile) + [content_digest(@krikri_bin), plugins_digest]
+    private def fingerprint(profile : Profile, version : String) : String
+      parts = base_fingerprint_parts(profile, version) + [content_digest(@krikri_bin), plugins_digest]
       Digest::SHA256.hexdigest(parts.join("\n"))[0, 16]
     end
 
@@ -688,17 +700,17 @@ module KrikriPlaybookGenerator
     # rebuilds `krikri-playbook` before most runs, so keying the install on
     # the binary's digest re-downloaded and re-committed ~600 MB of packages
     # for a 27 MB change; this lets that change start from the cached pair.
-    private def base_fingerprint(profile : Profile) : String
-      Digest::SHA256.hexdigest(base_fingerprint_parts(profile).join("\n"))[0, 16]
+    private def base_fingerprint(profile : Profile, version : String) : String
+      Digest::SHA256.hexdigest(base_fingerprint_parts(profile, version).join("\n"))[0, 16]
     end
 
-    private def base_fingerprint_parts(profile : Profile) : Array(String)
+    private def base_fingerprint_parts(profile : Profile, version : String) : Array(String)
       sets = package_sets
       [
         profile.to_s,
         profile.debian? ? IMAGE : IMAGE_RPM,
-        EXPECTED_ANSIBLE_VERSION,
-        ANSIBLE_CORE_PIN,
+        version,
+        PodmanBackend.ansible_core_pin(version),
         sets.real_debian.join(","), sets.krikri_debian.join(","),
         sets.real_rpm.join(","), sets.krikri_rpm.join(","),
         sets.python.join(","), sets.collections.join(","),
@@ -751,6 +763,15 @@ module KrikriPlaybookGenerator
       PlaybookBuilder.plugin_loader_dirs(playbook_path).each do |dir|
         copied = Cmd.run("podman", ["cp", dir, "#{name}:/work/"], timeout: 120.0)
         raise PodmanProvisionError.new("podman cp #{File.basename(dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
+      end
+
+      # A generated library/ probe needs its custom module beside the
+      # playbook, which is where both engines search for an
+      # `ansible.legacy.<name>` task.
+      library_dir = PlaybookBuilder.library_dir(playbook_path)
+      if Dir.exists?(library_dir)
+        copied = Cmd.run("podman", ["cp", library_dir, "#{name}:/work/"], timeout: 120.0)
+        raise PodmanProvisionError.new("podman cp library into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
       end
     end
 

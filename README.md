@@ -338,6 +338,9 @@ The axis checklist (all of these, not just the reported one):
 | distro / package channel | the Debian and Rocky templates (`--run-on-podman`, `--run-on-mixed` for service modules) | apt vs dnf paths, the "other package formula" follow-ups |
 | play keywords | default `--play-keywords` (linear/free/serial/...) | a fix that assumes one strategy or no serial |
 | plugin loading | `--lookups`/`--expressions` (default all), `--plugin-discovery relative,env,config`, `--strategy-plugins` | a lookup returning null, a filter/expression rendered differently in `var:` vs `msg:`, a third-party strategy, or a plugin only found through the env/cfg path |
+| custom module API | `--library-modules all` (or `check-mode,dict-arg,...`) | argument-spec validation, check-mode support, warning/error/traceback plumbing, `_verbosity`, collection imports |
+| module_utils surface | `--module-utils all` (or one import path) | a custom module importing a module_utils module or public name krikri's shim lacks |
+| reference version | `--reference-core-version 2.20.1 --run-on-podman` (repeatable) | a divergence that only exists on the version the production playbooks actually run |
 
 krikri-loop's fix workflow should gate on this: after a KPG-derived fix,
 run the table above for the touched module (and its sibling module when

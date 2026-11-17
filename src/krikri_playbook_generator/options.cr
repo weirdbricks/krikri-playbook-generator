@@ -7,6 +7,7 @@ require "./handler_shapes"
 require "./retry_shapes"
 require "./include_shapes"
 require "./plugin_shapes"
+require "./library_shapes"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -79,6 +80,10 @@ module KrikriPlaybookGenerator
     property? expressions_given : Bool
     property plugin_discovery : Array(String)
     property? plugin_discovery_given : Bool
+    property module_utils : Array(String)
+    property? module_utils_given : Bool
+    property library_modules : Array(String)
+    property? library_modules_given : Bool
     property? strategy_plugins : Bool
     property? gather_facts : Bool
     property? seed_given : Bool
@@ -94,6 +99,10 @@ module KrikriPlaybookGenerator
     # On by default: diff output is user-visible behavior and is compared
     # byte-for-byte like the rest of stdout (never masked).
     property? diff : Bool
+    # The reference ansible-core versions to compare against (empty = the
+    # backend's pinned target version).
+    property reference_core_versions : Array(String)
+    property? reference_core_versions_given : Bool
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
                    @supported_community = false, @scope_from_krikri = false,
@@ -116,9 +125,12 @@ module KrikriPlaybookGenerator
                    @lookups = LookupShapes::KINDS, @lookups_given = false,
                    @expressions = ExpressionShapes::KINDS, @expressions_given = false,
                    @plugin_discovery = ["relative"], @plugin_discovery_given = false,
+                   @module_utils = [] of String, @module_utils_given = false,
+                   @library_modules = [] of String, @library_modules_given = false,
                    @strategy_plugins = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
+                   @reference_core_versions = [] of String, @reference_core_versions_given = false,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
                    @umasks = [DEFAULT_UMASK], @umasks_given = false,
                    @hosts = [1], @hosts_given = false,
@@ -207,6 +219,10 @@ module KrikriPlaybookGenerator
         end
         dsl.on("--diff", "pass --diff to both engines (the default; diff output is part of the compared bytes)") { opts.diff = true }
         dsl.on("--no-diff", "do not pass --diff to either engine (diff output is then never compared)") { opts.diff = false }
+        dsl.on("--reference-core-version VERSION", "also compare against this reference ansible-core version (repeatable or comma-separated; podman only, opt-in)") do |v|
+          opts.reference_core_versions.concat(parse_reference_versions(v))
+          opts.reference_core_versions_given = true
+        end
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
         dsl.on("--delegation MODE", "delegate_to spelling for generated tasks: off, literal, templated (a play var) or both (default, drawn per task)") do |v|
           opts.delegation = parse_delegation(v)
@@ -233,6 +249,14 @@ module KrikriPlaybookGenerator
         dsl.on("--plugin-discovery LIST", "where plugin files are found: relative (playbook-adjacent, the default), env (ANSIBLE_*_PLUGINS) or config (ansible.cfg via ANSIBLE_CONFIG)") do |v|
           opts.plugin_discovery = parse_plugin_discovery(v)
           opts.plugin_discovery_given = true
+        end
+        dsl.on("--module-utils LIST", "generate one custom library/ module per ansible.module_utils import path (`all`, or comma-separated paths), each importing it and running on both engines") do |v|
+          opts.module_utils = parse_module_utils(v)
+          opts.module_utils_given = true
+        end
+        dsl.on("--library-modules LIST", "generate custom library/ module shapes: #{LibraryShapes::KINDS.join(", ")} (comma-separated; `none` turns it off)") do |v|
+          opts.library_modules = parse_library_modules(v)
+          opts.library_modules_given = true
         end
         dsl.on("--retries LIST", "retry shapes: retried, exhausted, delegated or delegated-fact (comma-separated; `none` turns it off)") do |v|
           opts.retries = parse_retries(v)
@@ -345,11 +369,30 @@ module KrikriPlaybookGenerator
       end
       check_scope_conflicts!(opts)
       check_podman_conflicts!(opts)
+      check_reference_version_target!(opts)
       check_run_mode_conflicts!(opts)
       check_context_conflicts!(opts)
       raise InvalidOptionsError.new("--json is only valid with the report or modules command") if opts.json? && !opts.command.report? && !opts.command.modules?
 
       check_happy_gate_target!(opts)
+    end
+
+    # The version matrix is implemented on the podman backend only: it is
+    # the backend that builds (and caches) a reference template per core.
+    # Local, microVM and Atlantic keep their single baked version, and a
+    # matrix there would silently collapse to one row.
+    private def self.check_reference_version_target!(opts : Options) : Nil
+      return if opts.reference_core_versions.empty?
+
+      unless opts.command.run? || opts.command.generate?
+        raise InvalidOptionsError.new("--reference-core-version is only valid with run or generate")
+      end
+      unless opts.run_on_podman?
+        raise InvalidOptionsError.new(
+          "--reference-core-version needs --run-on-podman (the only backend with per-version templates)")
+      end
+
+      opts.reference_core_versions.uniq!
     end
 
     # The flags that only make sense for (or contradict) --run-on-podman.
@@ -415,6 +458,7 @@ module KrikriPlaybookGenerator
       check_retry_target!(opts)
       check_include_target!(opts)
       check_plugin_target!(opts)
+      check_library_probe_target!(opts)
       check_limit_target!(opts)
       return unless opts.supported_community?
 
@@ -503,6 +547,21 @@ module KrikriPlaybookGenerator
         "--lookups/--expressions/--plugin-discovery/--strategy-plugins are only valid with generate (the playbook carries the probes)")
     end
 
+    # The custom-library probe axes build playbooks, so they belong to
+    # generate, and they only produce the single-task shape.
+    private def self.check_library_probe_target!(opts : Options) : Nil
+      if opts.module_utils_given? && !opts.command.generate?
+        raise InvalidOptionsError.new("--module-utils is only valid with generate (it builds library/ probe playbooks)")
+      end
+      if opts.library_modules_given? && !opts.command.generate?
+        raise InvalidOptionsError.new("--library-modules is only valid with generate (it builds library/ probe playbooks)")
+      end
+
+      return unless (opts.module_utils_given? || opts.library_modules_given?) && opts.tasks_per_playbook > 1
+
+      raise InvalidOptionsError.new("--module-utils/--library-modules build single-task probe playbooks; drop --tasks-per-playbook")
+    end
+
     private def self.parse_lookups(value : String) : Array(String)
       shapes = LookupShapes.parse_list(value)
       return shapes if shapes
@@ -525,6 +584,21 @@ module KrikriPlaybookGenerator
 
       raise InvalidOptionsError.new(
         "unknown --plugin-discovery value #{value.inspect} (expected: #{PluginShapes::KINDS.join(", ")})")
+    end
+
+    private def self.parse_module_utils(value : String) : Array(String)
+      names = ModuleUtilsShapes.parse_list(value)
+      return names if names
+
+      raise InvalidOptionsError.new("--module-utils needs `all` or at least one import path")
+    end
+
+    private def self.parse_library_modules(value : String) : Array(String)
+      shapes = LibraryShapes.parse_list(value)
+      return shapes if shapes
+
+      raise InvalidOptionsError.new(
+        "unknown --library-modules value #{value.inspect} (expected: #{LibraryShapes::KINDS.join(", ")}, none)")
     end
 
     private def self.parse_includes(value : String) : Array(String)
@@ -620,6 +694,19 @@ module KrikriPlaybookGenerator
       if (threshold = opts.min_happy_success) && !threshold.in?(0.0..100.0)
         raise InvalidOptionsError.new("--min-happy-success must be between 0 and 100, got #{threshold}")
       end
+    end
+
+    private def self.parse_reference_versions(value : String) : Array(String)
+      versions = value.split(',').map(&.strip).reject(&.empty?).map do |entry|
+        unless entry.matches?(/\A\d+\.\d+(?:\.\d+)?\z/)
+          raise InvalidOptionsError.new(
+            "--reference-core-version expects a version like 2.21.6, got #{entry.inspect}")
+        end
+        entry
+      end
+      raise InvalidOptionsError.new("--reference-core-version needs at least one version") if versions.empty?
+
+      versions
     end
 
     private def self.parse_int(value : String, flag : String) : Int32
