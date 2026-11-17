@@ -296,6 +296,41 @@ engine is recorded with rc 124). The report has three sections:
 - **Per-module byte-identical rate** — masked-comparison identical/total
   per module.
 
+### Re-fuzzing after a fix
+
+Most follow-up findings in the production history were an earlier fix
+verified only on the shape that reported it: literal `delegate_to` but
+not `{{ var }}`, local but not delegated, one attempt but not under
+retries, one include form but not the looped one, one package channel
+but not the other. A fix is therefore not done until the touched module
+has been re-fuzzed along the axis the fix sits on. The recipe is cheap on
+purpose: one module, a small count, the existing template images, and the
+adjacent axes in one batch.
+
+    just refuzz copy 10   # generate + run + report, podman, own out/results dirs
+
+The axis checklist (all of these, not just the reported one):
+
+| Axis | Flags / command | Follow-up class it catches |
+| ---- | --------------- | -------------------------- |
+| delegation spelling | `--delegation literal` and `--delegation templated` (or `both`, one batch) | a fix that only covers the literal or only the templated target |
+| local vs delegated | `--hosts 1` (delegate outside the play) and `--hosts 2` (delegate is a play host) | `delegate_facts`/`ansible_delegated_vars` only working for one shape |
+| retries | `--retries retried,exhausted,delegated` | `until:`/`attempts` under delegation, never-satisfied conditions |
+| failure/cleanup | `--blocks rescue,always --handlers failing,ignoring,chained` | ignored-failure accounting, `always`, rescue, handler order |
+| include forms | `--includes relative,role-inner,loop-tasks,import-playbook,import-role` | playbook-relative vs role-relative resolution, looped includes |
+| host scope | `--limit one` vs `--limit none` with `--gather-facts` | fact gathering and out-of-limit contact |
+| mode matrix | default `--modes check,real` (never `--check` alone) | a fix that only holds in one mode |
+| distro / package channel | the Debian and Rocky templates (`--run-on-podman`, `--run-on-mixed` for service modules) | apt vs dnf paths, the "other package formula" follow-ups |
+| play keywords | default `--play-keywords` (linear/free/serial/...) | a fix that assumes one strategy or no serial |
+
+krikri-loop's fix workflow should gate on this: after a KPG-derived fix,
+run the table above for the touched module (and its sibling module when
+the fix is a shared helper) before closing the issue. The historical
+follow-ups this exists for are exactly the "verified on the minimal repro"
+class - literal vs templated `delegate_to`, local vs SSH delegation,
+with vs without `retries`, the other package formula, and one more
+missing `module_utils` import.
+
 ### Happy-path success gate
 
 A batch whose happy-path playbooks mostly fail on the reference engine is

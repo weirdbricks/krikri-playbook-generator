@@ -26,6 +26,15 @@ crystal spec
 No Makefile, no CI config, no linter configured yet (ameba is a dev dep
 but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 
+## Re-fuzzing after a fix
+
+Docs live in `README.md` ("Re-fuzzing after a fix") and the cheap recipe
+is `just refuzz <module> [count]`: one small batch with every adjacent
+axis enabled (both delegation spellings drawn per playbook, blocks,
+handlers, retries, include forms, gather_facts), run and reported.
+krikri-loop's fix workflow is expected to gate a KPG-derived fix on that
+checklist before closing the issue.
+
 ## Architecture
 
 - `src/krikri_playbook_generator/schema.cr` — `OptionSchema`/`ModuleSchema`
@@ -805,6 +814,13 @@ Documented deliberately, not silently:
   the happy path genuinely cannot run (not a missing package) belong
   in `module_overrides.yml` as `not_applicable: true`, never as a
   silent exclusion.
+- A playbook whose SHAPE deliberately fails (rescued forced failure,
+  undefined block condition, failing/ignoring handler, never-satisfied
+  retry) is marked `structural_failure` in the sidecar and excluded from
+  the happy-path quality metric: that failure is the comparison under
+  test, not wasted coverage. Its byte/state findings are still reported.
+  A genuine module-task failure inside such a playbook is therefore not
+  counted by the gate either - the divergence report is where it shows.
 - The state oracle only runs on the podman and microVM backends. Local
   runs share one live host between the two engines, so a before/after
   delta cannot be attributed to one engine (and snapshotting the user's

@@ -42,6 +42,17 @@ generate MODULES="apt,copy,user,cron" COUNT="500" CHAOS="3" RUN_ARGS="--run-on-p
 run TARGET="playbooks/" RUN_ARGS="--run-on-podman":
     {{BIN}} run {{TARGET}} --results-dir ~/scratch/kpg-results {{RUN_ARGS}}
 
+# Re-fuzz one module along the axes adjacent to a KPG-derived fix.
+# Cheap on purpose: one module, a small count, the existing template images,
+# and every adjacent axis in one batch (see README "Re-fuzzing after a fix").
+refuzz MODULE COUNT="10" OUT="playbooks/refuzz" RESULTS="~/scratch/kpg-refuzz" RUN_ARGS="--run-on-podman --keep-going":
+    rm -rf {{OUT}} {{RESULTS}}
+    {{BIN}} generate --modules {{MODULE}} --seed 7 --count {{COUNT}} --chaos-percentage 3 \
+      --delegation both --blocks rescue,always --handlers failing,ignoring,chained \
+      --retries retried,exhausted,delegated --includes relative,role-inner,loop-tasks \
+      --gather-facts --out {{OUT}} --results-dir {{RESULTS}} {{RUN_ARGS}}
+    {{BIN}} report {{RESULTS}}
+
 # Print the triage report for a results directory.
 report DIR="~/scratch/kpg-results":
     {{BIN}} report {{DIR}}

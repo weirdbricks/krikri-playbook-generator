@@ -278,6 +278,7 @@ module KrikriPlaybookGenerator
       assert_nil(block["when"]?)
       meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
       assert_equal("rescue", meta["block"].as_s)
+      assert_equal(true, meta["structural_failure"].as_bool)
     ensure
       FileUtils.rm_rf(dir) if dir
     end
@@ -301,6 +302,8 @@ module KrikriPlaybookGenerator
       skipped_play = YAML.parse(File.read(skipped)).as_a.first
       assert_equal("kpg_block_gate | bool", skipped_play["tasks"].as_a.first["when"].as_s)
       assert_equal(false, skipped_play["vars"]["kpg_block_gate"].as_bool)
+      skipped_meta = JSON.parse(File.read(skipped.sub(/\.yml$/, ".meta.json")))
+      assert_equal(false, skipped_meta["structural_failure"].as_bool)
 
       undefined = PlaybookBuilder.new(dir, nil, [] of PlaySetting?, [BlockShape::Undefined])
         .build([sample_task]).first

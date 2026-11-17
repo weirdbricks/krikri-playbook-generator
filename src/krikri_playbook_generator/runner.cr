@@ -10,6 +10,7 @@ require "./host_state"
 require "./run_mode"
 require "./fixtures"
 require "./versions"
+require "./options"
 
 module KrikriPlaybookGenerator
   # Executes each generated playbook against both engines and records the
@@ -89,7 +90,8 @@ module KrikriPlaybookGenerator
     # sidecar carries it because the playbook file cannot, and every
     # backend must export it identically for both engines.
     record MetaInfo, module_name : String, chaos : Bool, mutations : Array({String, String}),
-      module_names : Array(String), env : Hash(String, String) = {} of String => String do
+      module_names : Array(String), env : Hash(String, String) = {} of String => String,
+      structural_failure : Bool = false do
       def self.primary(module_name : String, chaos : Bool, mutations : Array({String, String})) : MetaInfo
         MetaInfo.new(module_name, chaos, mutations, [module_name])
       end
@@ -356,6 +358,9 @@ module KrikriPlaybookGenerator
       # count to `ignored`, so all three signals matter.
       def ansible_failed? : Bool
         return false if @error
+        # A shape that fails deliberately is the comparison under test, not
+        # wasted happy-path coverage; its byte/state findings still report.
+        return false if meta.try(&.structural_failure)
 
         ansible.rc != 0 || ansible.timed_out ||
           (ansible.recap.try(&.ignored) || 0) > 0 ||
@@ -977,9 +982,14 @@ module KrikriPlaybookGenerator
       module_names = [module_name] if !module_names || module_names.empty?
       module_names.unshift(module_name) unless module_names.includes?(module_name)
 
-      MetaInfo.new(module_name, chaos, mutations, module_names, parse_play_env(parsed))
+      MetaInfo.new(module_name, chaos, mutations, module_names, parse_play_env(parsed),
+        parse_structural_failure(parsed))
     rescue JSON::ParseException
       nil
+    end
+
+    private def parse_structural_failure(parsed : Hash(String, JSON::Any)) : Bool
+      parsed["structural_failure"]?.try(&.as_bool?) || false
     end
 
     # The sidecar's `play.env` mapping (ANSIBLE_STRATEGY/ANSIBLE_FORKS);

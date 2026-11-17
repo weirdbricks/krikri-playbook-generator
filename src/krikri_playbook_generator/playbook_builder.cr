@@ -265,8 +265,23 @@ module KrikriPlaybookGenerator
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
+          json.field "structural_failure", structural_failure?(index)
         end
       end
+    end
+
+    # A shape that deliberately fails (a rescued forced failure, an
+    # undefined block condition, a failing/ignoring handler, a
+    # never-satisfied retry) makes the play report those signals by design.
+    # Runner keeps such a playbook out of the happy-path quality metric -
+    # the failure IS the comparison under test - while the byte and state
+    # findings still report it.
+    private def structural_failure?(index : Int32) : Bool
+      block = @block_shapes[index]? || BlockShape::None
+      handlers = @handler_shapes[index]? || HandlerShape::Off
+      retries = @retry_shapes[index]? || RetryShape::Off
+      block.rescue? || block.undefined? || handlers.failing? ||
+        handlers.ignoring? || retries.exhausted?
     end
 
     private def choice_sources_json(json : JSON::Builder, task : GeneratedTask) : Nil
@@ -335,6 +350,7 @@ module KrikriPlaybookGenerator
           json.field "handlers", (@handler_shapes[index]? || HandlerShape::Off).label
           json.field "retries", (@retry_shapes[index]? || RetryShape::Off).label
           json.field "includes", (@include_shapes[index]? || IncludeShape::Off).label
+          json.field "structural_failure", structural_failure?(index)
           json.field "mutations" do
             json.array do
               tasks.each_with_index do |task, task_index|
