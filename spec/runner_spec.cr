@@ -392,6 +392,29 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(results_dir) if results_dir
     end
 
+    it "runs every umask as its own row and records the context" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      task = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("umask matrix")})
+      playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin,
+        modes: [RunMode::Check], second_run: false, umasks: ["002", "077"]).run
+
+      assert_equal(2, results.size)
+      assert_equal(["002", "077"], results.map(&.umask))
+      # A local run is always the invoking account, whatever the default.
+      assert(results.all? { |result| result.user == UserProfile::Local })
+      parsed = File.read_lines(File.join(results_dir, "results.jsonl")).map { |line| JSON.parse(line) }
+      assert_equal(%w[002 077], parsed.map(&.["umask"].as_s))
+      assert_equal(%w[local local], parsed.map(&.["user"].as_s))
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
     it "skips the second-run idempotency pass when the first run failed on an engine" do
       playbook_dir = File.tempname("kpg-spec-playbooks")
       results_dir = File.tempname("kpg-spec-results")

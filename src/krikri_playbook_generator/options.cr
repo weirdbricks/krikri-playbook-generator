@@ -1,5 +1,6 @@
 require "option_parser"
 require "./run_mode"
+require "./run_context"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -55,6 +56,10 @@ module KrikriPlaybookGenerator
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
+    property user_profiles : Array(UserProfile)
+    property? user_profiles_given : Bool
+    property umasks : Array(String)
+    property? umasks_given : Bool
     property? second_run : Bool
     # On by default: diff output is user-visible behavior and is compared
     # byte-for-byte like the rest of stdout (never masked).
@@ -73,6 +78,8 @@ module KrikriPlaybookGenerator
                    @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
+                   @user_profiles = [UserProfile::Root], @user_profiles_given = false,
+                   @umasks = [DEFAULT_UMASK], @umasks_given = false,
                    @microvm_dir = "/home/labros/.local/share/krikri-playbook-generator/microvm")
     end
 
@@ -130,6 +137,20 @@ module KrikriPlaybookGenerator
           opts.modes_given = true
         end
         dsl.on("--no-second-run", "skip the second-run idempotency pass (the default runs a successful playbook twice on the same host)") { opts.second_run = false }
+        dsl.on("--user-profile LIST", "which account the engines run as on an isolated backend: root, nonroot or both (default: root)") do |v|
+          profiles = UserProfile.parse_list(v)
+          raise InvalidOptionsError.new("unknown --user-profile value #{v.inspect} (expected: root, nonroot, both)") unless profiles
+          opts.user_profiles = profiles
+          opts.user_profiles_given = true
+        end
+        dsl.on("--umask LIST", "umask the engines run under: 002, 022, 077 (comma-separated; default: #{DEFAULT_UMASK})") do |v|
+          umasks = v.split(',').map(&.strip).map do |value|
+            KrikriPlaybookGenerator.normalize_umask(value) || raise InvalidOptionsError.new(
+              "unknown --umask value #{value.inspect} (expected an octal mode like 002, 022 or 077)")
+          end
+          opts.umasks = umasks.uniq
+          opts.umasks_given = true
+        end
         dsl.on("--diff", "pass --diff to both engines (the default; diff output is part of the compared bytes)") { opts.diff = true }
         dsl.on("--no-diff", "do not pass --diff to either engine (diff output is then never compared)") { opts.diff = false }
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
@@ -172,6 +193,19 @@ module KrikriPlaybookGenerator
       modes.uniq
     end
 
+    # Which identities the matrix runs. The shared local host cannot switch
+    # accounts, and Atlantic's VMs are only provisioned as root.
+    def self.effective_user_profiles(opts : Options) : Array(UserProfile)
+      return [UserProfile::Local] if local_run?(opts)
+      return [UserProfile::Root] if opts.run_on_atlantic?
+
+      opts.user_profiles
+    end
+
+    def self.effective_umasks(opts : Options) : Array(String)
+      opts.umasks
+    end
+
     private def self.default_modes(opts : Options) : Array(RunMode)
       return [RunMode::Real] if opts.run_on_atlantic?
       return [RunMode::Check] if local_run?(opts) && !opts.allow_mutation?
@@ -191,6 +225,7 @@ module KrikriPlaybookGenerator
       check_scope_conflicts!(opts)
       check_podman_conflicts!(opts)
       check_run_mode_conflicts!(opts)
+      check_context_conflicts!(opts)
       raise InvalidOptionsError.new("--json is only valid with the report or modules command") if opts.json? && !opts.command.report? && !opts.command.modules?
 
       check_happy_gate_target!(opts)
@@ -211,6 +246,31 @@ module KrikriPlaybookGenerator
     private def self.check_run_mode_conflicts!(opts : Options) : Nil
       raise InvalidOptionsError.new("--check conflicts with --run-on-atlantic (Atlantic runs are deliberately real)") if opts.check? && opts.run_on_atlantic?
       raise InvalidOptionsError.new("--check conflicts with --allow-mutation (check mode and real mutation mean opposite things)") if opts.check? && opts.allow_mutation?
+    end
+
+    # The identity and umask axes need a host the tool fully owns: the
+    # shared local host cannot switch accounts, and Atlantic's VMs are only
+    # provisioned as root (their umask axis is still available).
+    private def self.check_context_conflicts!(opts : Options) : Nil
+      return unless opts.user_profiles_given? || opts.umasks_given?
+
+      unless opts.command.run? || opts.command.generate?
+        raise InvalidOptionsError.new("--user-profile/--umask are only valid with run or generate")
+      end
+
+      # Atlantic applies one umask per batch (one VM per profile), so an
+      # axis list there would silently drop values.
+      if opts.run_on_atlantic? && opts.umasks.size > 1
+        raise InvalidOptionsError.new("--umask takes one value on --run-on-atlantic")
+      end
+
+      return unless opts.user_profiles_given?
+
+      isolated = opts.run_on_podman? || opts.run_on_microvm? || opts.run_on_mixed?
+      return if isolated
+
+      raise InvalidOptionsError.new(
+        "--user-profile needs an isolated backend (--run-on-podman, --run-on-microvm or --run-on-mixed)")
     end
 
     private def self.check_scope_conflicts!(opts : Options) : Nil

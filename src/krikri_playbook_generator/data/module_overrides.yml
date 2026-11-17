@@ -53,7 +53,7 @@
 # embedded at compile time.
 
 names:
-  mode: {kind: mode, pool: ["0644", "0755", "0600", "0750"]}
+  mode: {kind: mode, pool: ["0644", "0755", "0600", "0750", "0440", "0400", "0444"]}
   owner: {kind: owner}
   group: {kind: group}
   validate: {kind: validate}

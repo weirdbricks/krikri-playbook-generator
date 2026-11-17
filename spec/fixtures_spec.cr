@@ -53,6 +53,34 @@ module KrikriPlaybookGenerator
     # served by the backend's http.server out of the fixture root; every
     # URL must map to a file the seed script actually creates, or the happy
     # path 404s instead of exercising the module.
+    it "provisions an unprivileged account with passwordless sudo" do
+      script = Fixtures::IDENTITY_SCRIPT
+      assert_includes(script, "useradd -m")
+      assert_includes(script, Fixtures::UNPRIVILEGED_USER)
+      assert_includes(script, "mkdir -p /etc/sudoers.d")
+      assert_includes(script, "NOPASSWD:ALL")
+      assert_includes(script, "chmod 0440 /etc/sudoers.d/#{Fixtures::UNPRIVILEGED_USER}")
+    end
+
+    it "re-owns the writable fixture root for the row's identity" do
+      nonroot = Fixtures.ownership_command(UserProfile::Nonroot)
+      assert_includes(nonroot, "chown -R #{Fixtures::UNPRIVILEGED_USER}:#{Fixtures::UNPRIVILEGED_USER} #{Fixtures::WORK_ROOT}")
+      assert_includes(nonroot, "chmod 0755 #{Fixtures::WORK_ROOT}")
+      assert_includes(nonroot, "chmod -R a+rX #{Fixtures::FIXTURE_ROOT}")
+
+      root = Fixtures.ownership_command(UserProfile::Root)
+      assert_includes(root, "chown -R root:root #{Fixtures::WORK_ROOT}")
+      assert_includes(root, "chmod 0555 #{Fixtures::READONLY_DIR}")
+      assert_includes(root, "chmod 0444 #{Fixtures::READONLY_DEST}")
+    end
+
+    it "seeds a read-only destination parent that even the nonroot fix leaves read-only" do
+      with_seeded_fixtures do |fixture_root|
+        work = File.join(fixture_root, "..", "work")
+        assert(File.info(File.join(work, "readonly", "dest.txt")))
+      end
+    end
+
     it "http fixture URLs resolve to files the seed script creates" do
       with_seeded_fixtures do |fixture_root|
         Fixtures::HTTP_URLS.each do |url|

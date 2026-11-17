@@ -269,14 +269,23 @@ module KrikriPlaybookGenerator
       end
     end
 
-    it "generates a valid octal mode string and existing owner/group via the override table" do
+    it "generates a valid octal mode string and per-profile owner/group via the override table" do
+      modes = ["0644", "0755", "0600", "0750", "0440", "0400", "0444"]
       Generator.new(5, 0.0).generate(copy_schema, 30).each do |task|
         mode = task.args["mode"]?
-        assert_includes(["0644", "0755", "0600", "0750"], mode.as_s) if mode
+        assert_includes(modes, mode.as_s) if mode
 
         owner = task.args["owner"]?
-        assert_equal("root", owner.as_s) if owner
+        assert_equal("{{ kpg_owner }}", owner.as_s) if owner
+        group = task.args["group"]?
+        assert_equal("{{ kpg_group }}", group.as_s) if group
       end
+    end
+
+    it "keeps read-only modes in the pool so a destination may start read-only" do
+      sampled = Generator.new(11, 0.0).generate(copy_schema, 200).compact_map { |task| task.args["mode"]?.try(&.as_s) }
+      assert(sampled.includes?("0440") || sampled.includes?("0400") || sampled.includes?("0444"),
+        "read-only modes never sampled: #{sampled.uniq}")
     end
 
     it "gives validate a value containing the required %s placeholder" do

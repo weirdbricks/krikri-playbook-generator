@@ -54,6 +54,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   generator emits touches paths outside those two roots), `mode`/`owner`/
   `group`/`validate` and other practical traps come from a per-module
   override table (`src/krikri_playbook_generator/data/module_overrides.yml`,
+  where owner/group render as `{{ kpg_owner }}` / `{{ kpg_group }}`,
+  resolved per run to root or the nonroot account because a non-root task
+  cannot chown to root, and the mode pool includes 0440/0400/0444,
   embedded at compile time, easy to extend — kinds: `mode`, `owner`,
   `group`, `validate`, `source_path`, `work_path`, `work_dir`, `username`,
   `literal_pool`, `empty_dict`, `exclude`, plus module-level `always`,
@@ -139,7 +142,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   into BOTH containers
   during provisioning (never via playbook tasks, so seeding never appears
   in the compared output); local runs seed the host best-effort and warn
-  if that fails (e.g. `/opt` not writable).
+  if that fails (e.g. `/opt` not writable). It also owns the identity
+  half: `IDENTITY_SCRIPT` provisions the `kpg` account with passwordless
+  sudo into every isolated host (podman template and microVM golden), and
+  `ownership_command(user)` re-owns the writable work root for the row's
+  identity before the first snapshot, so root and nonroot rows start from
+  identical fixture state without a profile-specific image.
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -245,7 +253,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   one live host, so a delta cannot be attributed to one engine).
   Every playbook is compared once per MODE (`RunMode::Check` and
   `RunMode::Real`): both by default on an isolated backend, check-only
-  locally unless `--allow-mutation`, always real on Atlantic. Each
+  locally unless `--allow-mutation`, always real on Atlantic. It is also
+  compared once per identity and umask (`--user-profile`, `--umask`):
+  each (identity, umask) row gets its own fresh host/pair, records `user`
+  and `umask` in results.jsonl, and is part of the progress/summary
+  labels; local rows are always the invoking account and Atlantic rows
+  are always root. Each
   (playbook, mode) gets its own fresh host/pair, so real-mode state can
   never leak into the check row; each row records its `mode` in
   results.jsonl, and Triage groups by module + mode + run + signature so a
@@ -325,7 +338,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   the second qemu died on its hostfwd rule. A bake takes the same dir's
   `bake.lock` for the same reason - its boot and verify use one fixed
   address - and re-checks the golden's `.ok` marker once it holds it.
-  `--run-on-mixed`
+  The golden's prep also bakes the `kpg` account (`Fixtures::IDENTITY_SCRIPT`,
+  part of the fingerprinted prep), and each playbook row's fixture ownership
+  is fixed before the first snapshot; `--user-profile nonroot` starts the
+  engine through `runuser -u kpg -- env HOME=/home/kpg bash -c ...`, and
+  every engine command carries the row's umask and
+  `-e kpg_owner=... -e kpg_group=...`. `--run-on-mixed`
   routes a batch here per playbook (`MicrovmBackend.microvm_only?`) and
   keeps everything else on podman; `--run-on-microvm` forces it for the
   whole batch. A golden without its `.ok` marker is discarded and re-baked
@@ -380,7 +398,14 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   run inserts `--check` and every run `--diff` (unless `--no-diff`), right
   after the engine command on both sides, so diff output is compared
   byte-for-byte like the rest of stdout); the pair is
-  `podman rm -f`'d in `ensure` immediately after. `teardown` removes
+  `podman rm -f`'d in `ensure` immediately after. The invocation also
+  carries the row's umask and `-e kpg_owner=... -e kpg_group=...`; under
+  `--user-profile nonroot` it runs via `podman exec --user kpg:kpg -e
+  HOME=/home/kpg`, and the writable fixture root is re-owned for that row
+  before the first snapshot (so the chown never shows as a mutation). The
+  template bakes the `kpg` account in, and its script is part of the base
+  fingerprint, so an old cache without the account is not reused.
+  `teardown` removes
   remaining containers but KEEPS the committed images (they are the
   cache the next run starts from); `PodmanBackend.leak_check`
   lists any leftover `kpg-*` containers via `podman ps -a` so Runner can
@@ -417,7 +442,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   byte-identical counts (`masked_identical`, so a state-only divergence
   does not lower the byte rate).
   `report` only groups playbooks whose OUTPUT diverged
-  (`output_divergent?`, i.e. not `masked_identical`); `state_report`
+  (`output_divergent?`, i.e. not `masked_identical`), keyed on module +
+  mode + run + identity + umask + signature (so a nonroot-only finding is
+  separate); `state_report`
   groups state-only ones by their `state:`-prefixed `HostState` signature,
   so a playbook that differs on both is counted once (as an output
   finding) and one root cause never appears twice. State-only findings
@@ -456,7 +483,10 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   default both on isolated backends, check locally unless
   `--allow-mutation`; `Options.effective_modes` refuses real mode
   locally without `--allow-mutation` and check mode on Atlantic),
-  `--no-second-run` (skip the idempotency pass, on by default),
+  `--user-profile root|nonroot|both` and `--umask LIST` (the identity and
+  umask matrix, default root/022; `--user-profile` needs an isolated
+  backend, Atlantic takes one umask), `--no-second-run` (skip the
+  idempotency pass, on by default),
   `--diff`/`--no-diff` (both engines get `--diff` by default, on every
   backend, because diff output is user-visible behavior; nothing about it
   is masked),
@@ -486,8 +516,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   and `jinja`.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
-  report: divergences grouped by module + diff signature (with count,
-  mutations, example playbook and repro command), the state-only
+  report: divergences grouped by module + mode + run + identity + umask +
+  diff signature (with count, mutations, example playbook and repro
+  command pinning `--user-profile`/`--umask`), the state-only
   divergences (state signature, example and the changed state lines),
   the check-mode mutations (engine-labelled signature, example, repro and
   the mutated paths),
@@ -654,6 +685,14 @@ Documented deliberately, not silently:
   write from intended output. The `(task: ...)` owner is the last task
   that printed a `fatal:` line, so a module that fails several tasks can
   name the wrong one.
+- The identity axis only exists on the podman and microVM backends: the
+  shared local host runs as the invoking account (recorded as `local`)
+  and Atlantic's VMs are only provisioned as root. The non-root HOME
+  (`/home/kpg`) is outside the snapshot roots, so staging leftovers there
+  are invisible to the state oracle; the writable work root is covered.
+  Modules that genuinely need root (`user`, package installs) fail on the
+  reference engine under the nonroot profile and show up as wasted
+  coverage, not as divergences.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is now BUILT (`--tasks-per-playbook N`) — but still one play per
   playbook (no multi-PLAY playbooks, no role plays), and the batch-level
@@ -728,7 +767,14 @@ the check-mode policy (per-engine delta, control-state keeper filtering,
 signature stability) and the snapshot script's roots/exclusions,
 `#temps` section and staging prefixes. `runner_spec.cr` covers the
 leftover policy (the surviving file, the task the log blames, the
-matched-delta fallback) and `last_failed_task` itself.
+matched-delta fallback), `last_failed_task` itself and the umask matrix
+rows + their `user`/`umask` results fields. `fixtures_spec.cr` covers the
+role/HTTP fixtures plus `IDENTITY_SCRIPT` and `ownership_command`.
+`options_spec.cr` covers the identity/umask defaults, parsing,
+normalization and target restrictions; `triage_spec.cr` groups by
+identity and umask and pins them in the repro. `podman_backend_spec.cr`
+runs a real playbook as the provisioned nonroot account under umask 077
+and asserts the observed file mode.
 `masks_spec.cr` unit-tests the mask list, the
 LCS diff and signature stability. `generator_spec.cr` also covers the
 Jinja kind (the templated value must be equivalent to the baseline

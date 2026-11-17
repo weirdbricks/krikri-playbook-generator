@@ -1,4 +1,5 @@
 require "./cmd"
+require "./run_context"
 
 module KrikriPlaybookGenerator
   # The fixture tree the generator's happy-path values point at, seeded
@@ -14,6 +15,36 @@ module KrikriPlaybookGenerator
   module Fixtures
     FIXTURE_ROOT = "/opt/kpg-fixtures"
     WORK_ROOT    = "/tmp/kpg-work"
+
+    # The unprivileged account the `--user-profile nonroot` axis runs the
+    # engines as. Provisioned into every isolated host by IDENTITY_SCRIPT
+    # (podman template and microVM golden), with passwordless sudo so a
+    # playbook's own `become` still works.
+    UNPRIVILEGED_USER = "kpg"
+    UNPRIVILEGED_HOME = "/home/kpg"
+
+    # Idempotent, so a golden/template rebuilt from a cache that already
+    # has the account keeps working. `sudo` itself comes from the package
+    # union (deb_modules/rpm both lists); the sudoers file is written
+    # regardless so a host that later gains sudo still gets the rule.
+    IDENTITY_SCRIPT = <<-BASH
+      id -u #{UNPRIVILEGED_USER} >/dev/null 2>&1 || useradd -m -s /bin/bash #{UNPRIVILEGED_USER}
+      chmod 0755 #{UNPRIVILEGED_HOME}
+      mkdir -p /etc/sudoers.d
+      printf '%s\\n' '#{UNPRIVILEGED_USER} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/#{UNPRIVILEGED_USER}
+      chmod 0440 /etc/sudoers.d/#{UNPRIVILEGED_USER}
+      BASH
+
+    # The fixture roots are seeded once into the shared image as root, so
+    # the writable half has to be re-owned for whichever identity the row
+    # runs as. Doing it per run (before the first snapshot) keeps both
+    # engines' hosts identical without baking a profile-specific image.
+    def self.ownership_command(user : UserProfile) : String
+      owner = user.nonroot? ? "#{UNPRIVILEGED_USER}:#{UNPRIVILEGED_USER}" : "root:root"
+      "chown -R #{owner} #{WORK_ROOT} && chmod 0755 #{WORK_ROOT} && " \
+      "chown -R root:root #{READONLY_DIR} && chmod 0555 #{READONLY_DIR} && " \
+      "chmod 0444 #{READONLY_DEST} && chmod -R a+rX #{FIXTURE_ROOT}"
+    end
 
     SOURCE_FILES = [
       "#{FIXTURE_ROOT}/src.txt",
@@ -59,11 +90,20 @@ module KrikriPlaybookGenerator
       "#{FIXTURE_ROOT}/dir",
     ]
 
+    # A destination whose parent directory is root-owned and read-only: on
+    # the nonroot profile a write proves the identity axis (real ansible
+    # fails with the permission error), while the root profile still runs.
+    # It is seeded on every pre-existing image and restored after each
+    # ownership fix, so both engines meet the same starting state.
+    READONLY_DIR  = "#{WORK_ROOT}/readonly"
+    READONLY_DEST = "#{READONLY_DIR}/dest.txt"
+
     DEST_PATHS = [
       "#{WORK_ROOT}/out1.txt",
       "#{WORK_ROOT}/out2.txt",
       "#{WORK_ROOT}/out3.cfg",
       "#{WORK_ROOT}/sub",
+      READONLY_DEST,
     ]
 
     # get_url/uri need a URL that actually serves something: a random URL
@@ -97,6 +137,10 @@ module KrikriPlaybookGenerator
       printf 'frag two\n' > #{FIXTURE_ROOT}/frags/02-b.txt
       printf 'kpg existing alpha\nsecond line\nkpg existing omega\n' > #{WORK_ROOT}/existing.txt
       printf 'key = value\nkpg setting = on\n' > #{WORK_ROOT}/existing2.txt
+      mkdir -p #{READONLY_DIR}
+      printf 'kpg read-only dest\n' > #{READONLY_DEST}
+      chmod 0444 #{READONLY_DEST}
+      chmod 0555 #{READONLY_DIR}
       printf 'tree a\n' > #{WORK_ROOT}/tree/a.txt
       printf 'tree b\n' > #{WORK_ROOT}/tree/b.conf
       printf 'hidden\n' > #{WORK_ROOT}/tree/.hidden

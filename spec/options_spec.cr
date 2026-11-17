@@ -381,5 +381,53 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--all-modules"))
       assert((err.message || "").includes?("--modules"))
     end
+
+    it "defaults to the root identity and the 022 umask" do
+      opts = Options.parse(["run", "--run-on-podman"])
+      assert_equal([UserProfile::Root], Options.effective_user_profiles(opts))
+      assert_equal(["022"], Options.effective_umasks(opts))
+      refute(opts.user_profiles_given?)
+      refute(opts.umasks_given?)
+    end
+
+    it "parses --user-profile root|nonroot|both on an isolated backend" do
+      opts = Options.parse(["run", "--run-on-podman", "--user-profile", "both"])
+      assert_equal([UserProfile::Root, UserProfile::Nonroot], opts.user_profiles)
+      assert_equal([UserProfile::Root, UserProfile::Nonroot], Options.effective_user_profiles(opts))
+
+      nonroot = Options.parse(["run", "--run-on-microvm", "--user-profile", "nonroot"])
+      assert_equal([UserProfile::Nonroot], Options.effective_user_profiles(nonroot))
+    end
+
+    it "refuses --user-profile without an isolated backend" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--user-profile", "nonroot"]) }
+      assert((err.message || "").includes?("--user-profile"))
+
+      err = assert_raises(InvalidOptionsError) do
+        Options.parse(["run", "--run-on-atlantic", "--user-profile", "nonroot"])
+      end
+      assert((err.message || "").includes?("--user-profile"))
+    end
+
+    it "keeps local runs labelled as the invoking account" do
+      opts = Options.parse(["run"])
+      assert_equal([UserProfile::Local], Options.effective_user_profiles(opts))
+    end
+
+    it "parses an octal --umask list and normalizes the shorthand" do
+      opts = Options.parse(["run", "--run-on-podman", "--umask", "002,22,077"])
+      assert_equal(["002", "022", "077"], opts.umasks)
+      assert(opts.umasks_given?)
+    end
+
+    it "refuses a non-octal --umask, naming the value" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--umask", "0778"]) }
+      assert((err.message || "").includes?("0778"))
+    end
+
+    it "refuses the context flags outside run/generate" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["report", "--umask", "077"]) }
+      assert((err.message || "").includes?("--umask"))
+    end
   end
 end

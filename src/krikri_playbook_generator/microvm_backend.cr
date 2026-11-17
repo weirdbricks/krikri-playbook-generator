@@ -285,7 +285,8 @@ module KrikriPlaybookGenerator
     end
 
     def self.prep_for(os : String) : String
-      os == "rocky" ? ROCKY_PREP : UBUNTU_PREP
+      base = os == "rocky" ? ROCKY_PREP : UBUNTU_PREP
+      "#{Fixtures::IDENTITY_SCRIPT}\n#{base}"
     end
 
     def self.collections_for(os : String, deps : Dependencies) : Array(String)
@@ -385,12 +386,17 @@ module KrikriPlaybookGenerator
     end
 
     # The engine command inside the VM: identical for both engines, run from
-    # /work with the same env strip the other backends use.
+    # /work with the same env strip the other backends use, under the
+    # requested umask and with the fixture owner/group the generated
+    # owner/group options template to.
     def self.engine_command(binary : String, basename : String, timeout : Int32,
-                            check_mode : Bool, diff : Bool = true) : String
+                            check_mode : Bool, diff : Bool = true,
+                            umask : String = DEFAULT_UMASK,
+                            owner : String = "root", group : String = "root") : String
       flags = "#{check_mode ? " --check" : ""}#{diff ? " --diff" : ""}"
-      "cd /work && #{ENGINE_ENV_STRIP} timeout #{timeout} " \
-      "#{binary}#{flags} -i inventory.ini /work/#{basename} </dev/null"
+      "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} timeout #{timeout} " \
+      "#{binary}#{flags} -e kpg_owner=#{owner} -e kpg_group=#{group} " \
+      "-i inventory.ini /work/#{basename} </dev/null"
     end
 
     # Bakes (or reuses) the golden for each OS in `oses`, then runs every
@@ -428,7 +434,8 @@ module KrikriPlaybookGenerator
     # idempotency pass); each pass is returned separately.
     def run_playbook(playbook_path : String, os : String,
                      check : Bool? = nil, second_run : Bool = false,
-                     diff : Bool? = nil) : Array(HostState::Comparison)
+                     diff : Bool? = nil, user : UserProfile = UserProfile::Root,
+                     umask : String = DEFAULT_UMASK) : Array(HostState::Comparison)
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
       effective_check = check.nil? ? @check_mode : check
       effective_diff = diff.nil? ? @diff : diff
@@ -437,14 +444,14 @@ module KrikriPlaybookGenerator
       begin
         pair = boot_pair(gold, os, lease)
         begin
-          pair.vms.each { |host| prep_vm(host, playbook_path) }
+          pair.vms.each { |host| prep_vm(host, playbook_path, user) }
           basename = File.basename(playbook_path)
           krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
           runs = [] of HostState::Comparison
-          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff)
+          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask)
           if second_run && HostState.succeeded?(runs.first[:ansible]) &&
              HostState.succeeded?(runs.first[:krikri])
-            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff)
+            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask)
           end
           runs
         ensure
@@ -456,15 +463,17 @@ module KrikriPlaybookGenerator
     end
 
     private def comparison(pair : Pair, basename : String, krikri_engine : String,
-                           check : Bool, diff : Bool) : HostState::Comparison
-      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff),
-       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff)}
+                           check : Bool, diff : Bool, user : UserProfile,
+                           umask : String) : HostState::Comparison
+      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff, user, umask),
+       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff, user, umask)}
     end
 
     private def observe(vm : Vm, binary : String, basename : String,
-                        check : Bool, diff : Bool) : HostState::Observation
+                        check : Bool, diff : Bool, user : UserProfile,
+                        umask : String) : HostState::Observation
       before = snapshot_state(vm)
-      result = exec_engine(vm, binary, basename, check, diff)
+      result = exec_engine(vm, binary, basename, check, diff, user, umask)
       HostState::Observation.new(result, before, snapshot_state(vm))
     end
 
@@ -849,8 +858,14 @@ module KrikriPlaybookGenerator
       MicrovmBackend.ssh_options(vm.key)
     end
 
-    private def prep_vm(vm : Vm, playbook_path : String) : Nil
+    private def prep_vm(vm : Vm, playbook_path : String, user : UserProfile) : Nil
       seed_fixtures(vm)
+      # Re-own the writable fixture root for this row's identity before the
+      # first snapshot, so both engines start from identical state.
+      ownership = run_script(vm, Fixtures.ownership_command(user), 120.0)
+      unless ownership.rc == 0
+        raise MicrovmProvisionError.new("fixture ownership on #{vm.ip} failed: #{ownership.stderr}")
+      end
       basename = File.basename(playbook_path)
       copy = Cmd.run("scp", ["-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
                              "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
@@ -899,14 +914,26 @@ module KrikriPlaybookGenerator
     end
 
     private def exec_engine(vm : Vm, binary : String, basename : String,
-                            check : Bool = @check_mode, diff : Bool = @diff) : Cmd::Result
-      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff)
+                            check : Bool = @check_mode, diff : Bool = @diff,
+                            user : UserProfile = UserProfile::Root,
+                            umask : String = DEFAULT_UMASK) : Cmd::Result
+      owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
+      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff, umask, owner, owner)
+      command = MicrovmBackend.as_unprivileged(command) if user.nonroot?
       result = Cmd.run("timeout", [(@engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
         timeout: @engine_timeout + 150.0)
       if result.rc == 255
         raise MicrovmProvisionError.new("ssh session failed running #{binary}: #{result.stderr.lines.last(3).join(" | ")}")
       end
       result
+    end
+
+    # Visible for specs: the same command, switched to the provisioned
+    # unprivileged account with a writable HOME so both engines stage under
+    # /home/kpg instead of root's own tree.
+    def self.as_unprivileged(command : String) : String
+      "runuser -u #{Fixtures::UNPRIVILEGED_USER} -- env HOME=#{Fixtures::UNPRIVILEGED_HOME} " \
+      "bash -c '#{command.gsub("'", "'\\''")}'"
     end
 
     private def run_script(vm : Vm, script : String, timeout : Float64) : Cmd::Result

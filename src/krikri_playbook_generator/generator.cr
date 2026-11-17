@@ -127,7 +127,10 @@ module KrikriPlaybookGenerator
   # in `GeneratedTask#mutations`, never applied silently.
   class Generator
     ALPHABET = ("a".."z").to_a
-    MODES    = ["0644", "0755", "0600", "0750"]
+    # Includes read-only modes: a destination's final mode is written after
+    # the content, so they stay runnable for both engines and expose a
+    # module that instead writes through the (now read-only) existing file.
+    MODES = ["0644", "0755", "0600", "0750", "0440", "0400", "0444"]
 
     # Enum members that put a module into its working mode, in preference
     # order. Half a batch sampling `absent`/`stopped` turns a happy path
@@ -682,7 +685,11 @@ module KrikriPlaybookGenerator
       when "mode"
         YAML::Any.new((override.pool || MODES).sample(@rng))
       when "owner", "group"
-        YAML::Any.new("root")
+        # Resolved per run: root on the root profile, the provisioned
+        # unprivileged account under --user-profile nonroot (a non-root
+        # task cannot chown to root, which would make every owner/group
+        # happy path fail on the reference engine).
+        YAML::Any.new("{{ kpg_#{override.kind} }}")
       when "validate"
         YAML::Any.new("/bin/true %s")
       end

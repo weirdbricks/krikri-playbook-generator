@@ -143,20 +143,28 @@ module KrikriPlaybookGenerator
     it "gains --check in the engine script only in check mode, and never --diff" do
       env = PodmanBackend::ENGINE_ENV_STRIP
       plain = PodmanBackend.engine_script("ansible-playbook", "001-debug-happy.yml", 120, false)
-      assert_equal("cd /work && #{env} timeout 120 ansible-playbook --diff -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("umask 022 && cd /work && #{env} timeout 120 ansible-playbook --diff " \
+                   "-e kpg_owner=root -e kpg_group=root -i inventory.ini /work/001-debug-happy.yml </dev/null",
         plain)
 
       checked = PodmanBackend.engine_script("ansible-playbook", "001-debug-happy.yml", 120, true)
-      assert_equal("cd /work && #{env} timeout 120 ansible-playbook --check --diff -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("umask 022 && cd /work && #{env} timeout 120 ansible-playbook --check --diff " \
+                   "-e kpg_owner=root -e kpg_group=root -i inventory.ini /work/001-debug-happy.yml </dev/null",
         checked)
 
       krikri = PodmanBackend.engine_script("/opt/krikri/bin/krikri-playbook", "001-debug-happy.yml", 120, true)
-      assert_equal("cd /work && #{env} timeout 120 /opt/krikri/bin/krikri-playbook --check --diff -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("umask 022 && cd /work && #{env} timeout 120 /opt/krikri/bin/krikri-playbook --check --diff " \
+                   "-e kpg_owner=root -e kpg_group=root -i inventory.ini /work/001-debug-happy.yml </dev/null",
         krikri)
 
       no_diff = PodmanBackend.engine_script("ansible-playbook", "001-debug-happy.yml", 120, false, false)
-      assert_equal("cd /work && #{env} timeout 120 ansible-playbook -i inventory.ini /work/001-debug-happy.yml </dev/null",
+      assert_equal("umask 022 && cd /work && #{env} timeout 120 ansible-playbook " \
+                   "-e kpg_owner=root -e kpg_group=root -i inventory.ini /work/001-debug-happy.yml </dev/null",
         no_diff)
+
+      nonroot = PodmanBackend.engine_script("ansible-playbook", "x.yml", 120, false, true, "077", "kpg", "kpg")
+      assert_includes(nonroot, "umask 077")
+      assert_includes(nonroot, "-e kpg_owner=kpg -e kpg_group=kpg")
     end
 
     it "runs each playbook on its own profile's template image, even after another profile was provisioned", tags: :slow do
@@ -182,6 +190,51 @@ module KrikriPlaybookGenerator
         assert_equal(0, outcome[:ansible].result.rc)
         assert(outcome[:ansible].result.stdout.includes?("ignored=0"),
           "the Debian playbook was not run on the Debian image:\n#{outcome[:ansible].result.stdout}")
+      ensure
+        backend.teardown
+      end
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "runs as the provisioned non-root account under the requested umask", tags: :slow do
+      skip("podman not available on this machine") unless PodmanBackend.available?
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      skip("no krikri-playbook binary to stage into the container") unless File.exists?(krikri_bin)
+
+      dir = File.tempname("kpg-spec-podman")
+      Dir.mkdir_p(dir)
+      playbook_path = File.join(dir, "000000-umask-happy.yml")
+      File.write(playbook_path, <<-YAML)
+        ---
+        - name: Identity and umask check
+          hosts: all
+          gather_facts: false
+          tasks:
+            - name: Touch a file with the process umask
+              ansible.builtin.file:
+                path: #{Fixtures::WORK_ROOT}/umask.txt
+                state: touch
+            - name: Read the mode back
+              ansible.builtin.command: stat -c %a #{Fixtures::WORK_ROOT}/umask.txt
+              register: kpg_mode
+            - name: Show the mode
+              ansible.builtin.debug:
+                var: kpg_mode.stdout
+        YAML
+
+      backend = PodmanBackend.new(krikri_bin)
+      backend.provision
+      begin
+        outcome = backend.run_playbook(playbook_path, check: false,
+          user: UserProfile::Nonroot, umask: "077").first
+        [outcome[:ansible], outcome[:krikri]].each do |run|
+          assert_equal(0, run.result.rc, run.result.stderr)
+          # 0666 masked by 077: proof the umask actually reached the engine.
+          assert(run.result.stdout.includes?("600"),
+            "the engine did not run under umask 077:\n#{run.result.stdout}")
+        end
       ensure
         backend.teardown
       end

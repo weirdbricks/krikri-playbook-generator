@@ -154,7 +154,8 @@ engine can run the task at all.
 
 Both axes cost runtime, so the cost is visible: the report's `Batch`
 section prints the modes, the idempotency flag and wall time, and
-`versions.txt` records `modes:`, `idempotency:` and `batch duration:`.
+`versions.txt` records `modes:`, `user-profiles:`, `umasks:`,
+`idempotency:` and `batch duration:`.
 
 ## Host state
 
@@ -196,6 +197,26 @@ run is a `check-mode-mutation` finding (`check_mode_mutated` and
 tolerated residue is engine control-side state (`~/.ansible`, already
 pruned from the snapshot). A playbook that also differs on printed output
 is counted once, as an output finding.
+
+## Identity and umask
+
+Root hides permission bugs, so an isolated backend also has an identity
+axis: `--user-profile root|nonroot|both` (default `root`) runs the engine
+process as a provisioned unprivileged account (`kpg`, passwordless sudo)
+instead of root, and `--umask LIST` (default `022`; `002`, `022`, `077`)
+sets the umask both engines start under. Every (identity, umask) pair gets
+its own fresh host/pair, so a non-root row can never share state with a
+root one; each row records `user` and `umask` in results.jsonl and triage
+groups by them, so a non-root-only divergence is reported separately and
+the repro command pins both.
+
+The writable fixture root is re-owned for the row's identity before the
+first snapshot, so both engines still start from identical state. The
+generated `owner`/`group` options template to `{{ kpg_owner }}` /
+`{{ kpg_group }}`, resolved by the invocation to root or to the
+unprivileged account, because a non-root task cannot chown to root and
+would otherwise fail on the reference engine. Local runs stay the
+invoking account and Atlantic runs stay root; both still honor `--umask`.
 
 See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for the full proposal,
 open questions, and rationale for a separate repo.

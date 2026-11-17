@@ -22,7 +22,9 @@ module KrikriPlaybookGenerator
         keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
         refresh_podman_templates: opts.refresh_podman_templates?,
         podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
-        microvm_parallel: opts.microvm_parallel).run
+        microvm_parallel: opts.microvm_parallel,
+        user_profiles: Options.effective_user_profiles(opts),
+        umasks: Options.effective_umasks(opts)).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -152,7 +154,9 @@ module KrikriPlaybookGenerator
       keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
       refresh_podman_templates: opts.refresh_podman_templates?,
       podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
-      microvm_parallel: opts.microvm_parallel).run
+      microvm_parallel: opts.microvm_parallel,
+      user_profiles: Options.effective_user_profiles(opts),
+      umasks: Options.effective_umasks(opts)).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)
@@ -179,7 +183,7 @@ module KrikriPlaybookGenerator
       next unless result.error || result.divergent?
       verdict = result.error ? "ERROR" : "DIVERGENT"
       color = result.error ? Log::RED : Log::YELLOW
-      puts Log.paint(color, "[#{verdict}] #{result.playbook} (#{result.mode.label}, run #{result.run})")
+      puts Log.paint(color, "[#{verdict}] #{result.playbook} #{result.context_label}")
     end
   end
 
@@ -245,6 +249,11 @@ module KrikriPlaybookGenerator
     puts "modes: #{modes} | idempotency pass: #{info[:second_run] ? "on" : "off"} | wall time: #{duration}"
   end
 
+  # (mode, run, identity, umask, signature label) for one finding's example.
+  private def self.finding_context(example : Triage::ResultLine, label : String) : String
+    "(#{example.mode}, run #{example.run}, #{example.user}, umask #{example.umask}, #{label})"
+  end
+
   private def self.print_divergences(findings : Array(Triage::Finding), diff : Bool = true) : Nil
     puts "== Divergences (grouped by module + diff signature) =="
     if findings.empty?
@@ -255,12 +264,12 @@ module KrikriPlaybookGenerator
     findings.each do |finding|
       label = finding.signature ? "signature #{finding.signature}" : "no signature"
       example = finding.example
-      puts "#{finding.module_name} (#{example.mode}, run #{example.run}, #{label}): #{finding.count} divergent playbook(s)"
+      puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} divergent playbook(s)"
       unless finding.example_mutations.empty?
         puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
       puts "  example: #{finding.playbooks.first}"
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff)}"
+      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask)}"
     end
   end
 
@@ -271,9 +280,9 @@ module KrikriPlaybookGenerator
     findings.each do |finding|
       label = finding.signature ? "state signature #{finding.signature}" : "no signature"
       example = finding.example
-      puts "#{finding.module_name} (#{example.mode}, run #{example.run}, #{label}): #{finding.count} state-only playbook(s)"
+      puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
         puts "  leftover staging files:"
@@ -296,10 +305,10 @@ module KrikriPlaybookGenerator
     findings.each do |finding|
       label = finding.signature ? "check-mode signature #{finding.signature}" : "no signature"
       example = finding.example
-      puts "#{finding.module_name} (#{example.mode}, run #{example.run}, #{label}): " \
+      puts "#{finding.module_name} #{finding_context(example, label)}: " \
            "#{finding.count} playbook(s) mutated the host in check mode"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask)}"
       lines = example.check_mode_diff.lines
       lines.first(10).each { |line| puts "  #{line}" }
       puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10

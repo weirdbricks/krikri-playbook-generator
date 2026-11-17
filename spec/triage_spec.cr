@@ -9,6 +9,7 @@ module KrikriPlaybookGenerator
     def write_result(dir : String, name : String, module_name : String, divergent : Bool,
                      signature : String? = nil, chaos : Bool = false,
                      mode : String = "real", run : Int32 = 1,
+                     user : String = "root", umask : String = "022",
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
                      error : String? = nil, masked_diff : String = "",
@@ -23,6 +24,8 @@ module KrikriPlaybookGenerator
         "module"             => module_name,
         "mode"               => mode,
         "run"                => run,
+        "user"               => user,
+        "umask"              => umask,
         "chaos"              => chaos,
         "divergent"          => divergent,
         "masked_identical"   => masked_identical.nil? ? !divergent : masked_identical,
@@ -75,6 +78,36 @@ module KrikriPlaybookGenerator
       assert(findings.first.playbooks.all?(&.ends_with?(".yml")))
     ensure
       FileUtils.rm_rf(dir) if dir
+    end
+
+    it "groups the same signature separately per identity and umask" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      diff = "stdout:\n--- a\n+++ b\n"
+      write_result(dir, "root-a", "file", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff)
+      write_result(dir, "root-b", "file", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff)
+      write_result(dir, "nr", "file", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff, user: "nonroot")
+      write_result(dir, "u77", "file", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff, umask: "077")
+
+      findings = Triage.new(dir).report
+      assert_equal(3, findings.size)
+      assert_equal([1, 1, 2], findings.map(&.count).sort!)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "pins the identity and umask in a nonroot finding's repro" do
+      command = Triage.repro_command("/tmp/p.yml", ["copy"], "real", 2, true, "nonroot", "077")
+      assert(command.includes?("--user-profile nonroot"))
+      assert(command.includes?("--umask 077"))
+
+      root = Triage.repro_command("/tmp/p.yml", ["copy"], "real", 2, true, "root", "022")
+      refute(root.includes?("--user-profile"))
+      assert(root.includes?("--umask 022"))
     end
 
     it "groups the same playbook separately per mode and run" do

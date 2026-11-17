@@ -128,7 +128,10 @@ module KrikriPlaybookGenerator
       assert_includes(command, "cd /work")
       assert_includes(command, "ANSIBLE_NOCOLOR=1")
       refute_includes(command, "ANSIBLE_GATHERING=")
-      assert_includes(command, "timeout 120 ansible-playbook --diff -i inventory.ini /work/000001-copy-happy.yml </dev/null")
+      assert_includes(command, "umask 022")
+      assert_includes(command, "timeout 120 ansible-playbook --diff")
+      assert_includes(command, "-e kpg_owner=root -e kpg_group=root")
+      assert_includes(command, "-i inventory.ini /work/000001-copy-happy.yml </dev/null")
       refute_includes(command, "--check")
 
       check = MicrovmBackend.engine_command("/opt/krikri/bin/krikri-playbook", "x.yml", 60, true)
@@ -136,6 +139,12 @@ module KrikriPlaybookGenerator
 
       no_diff = MicrovmBackend.engine_command("ansible-playbook", "x.yml", 60, false, false)
       refute_includes(no_diff, "--diff")
+
+      nonroot = MicrovmBackend.as_unprivileged(
+        MicrovmBackend.engine_command("ansible-playbook", "x.yml", 60, false, true, "002", "kpg", "kpg"))
+      assert(nonroot.starts_with?("runuser -u kpg -- env HOME=/home/kpg bash -c '"))
+      assert_includes(nonroot, "umask 002")
+      assert_includes(nonroot, "-e kpg_owner=kpg -e kpg_group=kpg")
     end
 
     it "installs the pinned ansible-core and the profile's own service packages in the golden" do

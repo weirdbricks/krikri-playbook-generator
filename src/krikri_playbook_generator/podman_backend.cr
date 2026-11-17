@@ -178,10 +178,18 @@ module KrikriPlaybookGenerator
     # part of user-visible behavior, it is compared byte-for-byte like the
     # rest of stdout, and it is masked by nothing - a formatting gap is a
     # finding, not a reason to switch the flag off.
+    #
+    # The umask and the fixture owner/group are part of the invocation so
+    # both sides see the same environment; `kpg_owner`/`kpg_group` are the
+    # values the generator's owner/group options template to, defaulting
+    # to root for the root profile and to the unprivileged account for
+    # `--user-profile nonroot` (a non-root task cannot chown to root).
     def self.engine_script(engine_cmd : String, playbook_basename : String, engine_timeout : Int32,
-                           check : Bool, diff : Bool = true) : String
-      "cd /work && #{ENGINE_ENV_STRIP} timeout #{engine_timeout} " \
+                           check : Bool, diff : Bool = true, umask : String = DEFAULT_UMASK,
+                           owner : String = "root", group : String = "root") : String
+      "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} timeout #{engine_timeout} " \
       "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""} " \
+      "-e kpg_owner=#{owner} -e kpg_group=#{group} " \
       "-i inventory.ini /work/#{playbook_basename} </dev/null"
     end
 
@@ -310,6 +318,8 @@ module KrikriPlaybookGenerator
         assert_collection_versions!(sets.collections)
       end
 
+      Log.info("podman", "#{label} template: provisioning the #{Fixtures::UNPRIVILEGED_USER} account")
+      [@name_real, @name_krikri].each { |name| exec!(name, Fixtures::IDENTITY_SCRIPT) }
       Log.info("podman", "#{label} template: seeding fixtures (identical on both sides)")
       seed_fixtures
       Log.info("podman", "#{label} template: preparing /work + inventory")
@@ -340,7 +350,8 @@ module KrikriPlaybookGenerator
     # idempotency pass); each pass is returned separately.
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
                      check : Bool? = nil, second_run : Bool = false,
-                     diff : Bool? = nil) : Array(HostState::Comparison)
+                     diff : Bool? = nil, user : UserProfile = UserProfile::Root,
+                     umask : String = DEFAULT_UMASK) : Array(HostState::Comparison)
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       # Per-profile images: a mixed batch provisions both templates, and a
@@ -365,12 +376,20 @@ module KrikriPlaybookGenerator
 
         copy_playbook(playbook_path, real)
         copy_playbook(playbook_path, krikri)
+        # The writable fixture root is re-owned for this row's identity
+        # before the first snapshot, so both engines start identical and
+        # the chown itself never shows up as a mutation.
+        ownership = Fixtures.ownership_command(user)
+        exec!(real, ownership)
+        exec!(krikri, ownership)
 
         runs = [] of HostState::Comparison
-        runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff)
+        runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
+          user, umask)
         if second_run && HostState.succeeded?(runs.first[:ansible]) &&
            HostState.succeeded?(runs.first[:krikri])
-          runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff)
+          runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
+            user, umask)
         end
         runs
       ensure
@@ -382,15 +401,17 @@ module KrikriPlaybookGenerator
     end
 
     private def comparison(real : String, krikri : String, playbook_path : String,
-                           krikri_engine : String, check : Bool, diff : Bool) : HostState::Comparison
-      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff),
-       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff)}
+                           krikri_engine : String, check : Bool, diff : Bool,
+                           user : UserProfile, umask : String) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask)}
     end
 
     private def observe(name : String, engine_cmd : String, playbook_path : String,
-                        check : Bool, diff : Bool) : HostState::Observation
+                        check : Bool, diff : Bool, user : UserProfile,
+                        umask : String) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path, check, diff)
+      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -667,6 +688,7 @@ module KrikriPlaybookGenerator
         sets.python.join(","), sets.collections.join(","),
         INVENTORY,
         Digest::SHA256.hexdigest(Fixtures::SEED_SCRIPT),
+        Digest::SHA256.hexdigest(Fixtures::IDENTITY_SCRIPT),
       ]
     end
 
@@ -703,9 +725,19 @@ module KrikriPlaybookGenerator
     end
 
     private def exec_engine(name : String, engine_cmd : String, playbook_path : String,
-                            check : Bool = @check_mode, diff : Bool = @diff) : Cmd::Result
-      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout, check, diff)
-      Cmd.run("podman", ["exec", "-w", "/work", name, "bash", "-c", script], timeout: @engine_timeout + 60.0)
+                            check : Bool = @check_mode, diff : Bool = @diff,
+                            user : UserProfile = UserProfile::Root,
+                            umask : String = DEFAULT_UMASK) : Cmd::Result
+      owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
+      script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout,
+        check, diff, umask, owner, owner)
+      args = ["exec", "-w", "/work"]
+      if user.nonroot?
+        args += ["--user", "#{Fixtures::UNPRIVILEGED_USER}:#{Fixtures::UNPRIVILEGED_USER}",
+                 "-e", "HOME=#{Fixtures::UNPRIVILEGED_HOME}"]
+      end
+      args += [name, "bash", "-c", script]
+      Cmd.run("podman", args, timeout: @engine_timeout + 60.0)
     end
 
     private def exec!(name : String, script : String, timeout : Float64 = 120.0) : Nil

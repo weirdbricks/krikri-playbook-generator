@@ -28,15 +28,18 @@ module KrikriPlaybookGenerator
     def self.write(results_dir : String, version : String, krikri_bin : String,
                    ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
                    second_run : Bool, diff : Bool, duration : Time::Span, started : Time,
-                   runner : CommandRunner = DEFAULT_RUNNER) : Nil
+                   runner : CommandRunner = DEFAULT_RUNNER,
+                   user_profiles : Array(String)? = nil, umasks : Array(String)? = nil) : Nil
       File.write(File.join(results_dir, "versions.txt"),
-        render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, diff, duration, runner))
+        render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, diff,
+          duration, runner, user_profiles: user_profiles, umasks: umasks))
     end
 
     def self.render(version : String, started : Time, krikri_bin : String,
                     ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
                     second_run : Bool, diff : Bool, duration : Time::Span,
-                    runner : CommandRunner) : String
+                    runner : CommandRunner, user_profiles : Array(String)? = nil,
+                    umasks : Array(String)? = nil) : String
       binary = Path[krikri_bin].expand(home: true).to_s
       checkout = File.dirname(File.dirname(binary))
       subject_args = ["-C", checkout, "log", "-1", "--format=%s"]
@@ -56,6 +59,11 @@ module KrikriPlaybookGenerator
         "diff: #{diff}",
         "batch duration: #{duration.total_seconds.round(1)}s",
       ]
+
+      # The identity/umask matrix, so a repro can pin both; omitted for a
+      # legacy call that predates the axes.
+      lines.insert(10, "user-profiles: #{user_profiles.join(",")}") if user_profiles
+      lines.insert(11, "umasks: #{umasks.join(",")}") if umasks
 
       # krikri-role-triager uses "check: true" to tell a check-mode repro
       # from a real one; a mixed-mode batch is not a check run.
