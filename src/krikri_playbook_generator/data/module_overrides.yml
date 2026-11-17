@@ -82,7 +82,9 @@ modules:
   # report the permission failure and its staging file. destination modes
   # stay in the pool that can actually be set on a file.
   copy:
-    src: {kind: source_path, pool: ["/opt/kpg-fixtures/src.txt", "/opt/kpg-fixtures/src2.txt", "/opt/kpg-fixtures/script.sh"]}
+    src: {kind: source_path, pool: ["/opt/kpg-fixtures/src.txt", "/opt/kpg-fixtures/src2.txt",
+                                    "/opt/kpg-fixtures/script.sh", "/opt/kpg-fixtures/binary.bin",
+                                    "/opt/kpg-fixtures/no-newline.txt", "/opt/kpg-fixtures/dir/inner.txt"]}
     dest: {kind: literal_pool, pool: ["/tmp/kpg-work/out1.txt", "/tmp/kpg-work/out2.txt",
                                       "/tmp/kpg-work/dest-0444.txt", "/tmp/kpg-work/dest-0400.txt",
                                       "/tmp/kpg-work/dest-0440.txt", "/tmp/kpg-work/readonly/dest.txt",
@@ -95,7 +97,7 @@ modules:
     require_one_of: [[src, content]]
 
   template:
-    src: {kind: source_path, pool: ["/opt/kpg-fixtures/template.j2"]}
+    src: {kind: source_path, pool: ["/opt/kpg-fixtures/template.j2", "/opt/kpg-fixtures/rich.j2"]}
     dest: {kind: literal_pool, pool: ["/tmp/kpg-work/out1.cfg", "/tmp/kpg-work/out2.cfg",
                                       "/tmp/kpg-work/dest-0444.txt", "/tmp/kpg-work/dest-0400.txt",
                                       "/tmp/kpg-work/readonly/dest.txt", "/tmp/kpg-work/dir-setgid/out.cfg"]}
@@ -174,14 +176,18 @@ modules:
     encoding: {kind: literal_pool, pool: ["utf-8"]}
 
   stat:
-    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/tree", "/tmp/kpg-work/existing.txt", "/tmp/kpg-work/missing"]}
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/tree",
+                                      "/tmp/kpg-work/mixed", "/tmp/kpg-work/mixed/one/two/b.conf",
+                                      "/opt/kpg-fixtures/binary.bin", "/tmp/kpg-work/existing.txt",
+                                      "/tmp/kpg-work/missing"]}
     checksum_algorithm: {kind: literal_pool, pool: ["sha1", "sha256", "md5"]}
 
   slurp:
-    src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/existing.txt"]}
+    src: {kind: literal_pool, pool: ["/opt/kpg-fixtures/src.txt", "/tmp/kpg-work/existing.txt",
+                                     "/opt/kpg-fixtures/binary.bin"]}
 
   find:
-    paths: {kind: literal_pool, pool: ["/tmp/kpg-work/tree", "/opt/kpg-fixtures/dir", "/opt/kpg-fixtures"]}
+    paths: {kind: literal_pool, pool: ["/tmp/kpg-work/tree", "/tmp/kpg-work/mixed", "/opt/kpg-fixtures/dir", "/opt/kpg-fixtures"]}
     patterns: {kind: literal_pool, pool: ["*.txt", "*.conf", "a*"]}
     excludes: {exclude: true}
     contains: {kind: literal_pool, pool: ["tree", "kpg"]}

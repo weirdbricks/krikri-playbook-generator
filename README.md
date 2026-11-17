@@ -15,7 +15,10 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
    chaos-percentage, builds random-but-schema-aware argument sets:
    - happy-path: a runnable, valid baseline. Path-typed options point at
      pre-seeded fixture files (`/opt/kpg-fixtures/...` read-only sources,
-     `/tmp/kpg-work/...` writable dests — nothing outside those roots),
+     `/tmp/kpg-work/...` writable dests — nothing outside those roots;
+     the fixture set includes a binary file, a file without a trailing
+     newline, a template with literal text/expressions/comments/a
+     statement block, and a mixed file-and-directory tree),
      `mode` is a valid octal string, `owner`/`group` are `root`,
      `validate` contains the `%s` placeholder, `choices` are respected,
      ints stay in sane ranges, dict and list-of-dict options carry their

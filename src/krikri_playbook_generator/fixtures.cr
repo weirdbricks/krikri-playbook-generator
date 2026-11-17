@@ -52,12 +52,29 @@ module KrikriPlaybookGenerator
       "#{RESTORE_UNUSUAL_SCRIPT}"
     end
 
+    # Content shapes production playbooks actually copy: a binary file (NUL
+    # bytes, not text - copy must not translate line endings and --diff
+    # output differs from a text diff), a file without a trailing newline,
+    # and a template with literal text, expressions, a comment and a
+    # statement block.
+    BINARY_FILE     = "#{FIXTURE_ROOT}/binary.bin"
+    NO_NEWLINE_FILE = "#{FIXTURE_ROOT}/no-newline.txt"
+    RICH_TEMPLATE   = "#{FIXTURE_ROOT}/rich.j2"
+
+    # A tree with files AND directories at several depths, so find/stat and
+    # recursive copy have an ordering shape to compare (a flat tree cannot
+    # differ in traversal order).
+    MIXED_TREE = "#{WORK_ROOT}/mixed"
+
     SOURCE_FILES = [
       "#{FIXTURE_ROOT}/src.txt",
       "#{FIXTURE_ROOT}/src2.txt",
       "#{FIXTURE_ROOT}/template.j2",
       "#{FIXTURE_ROOT}/script.sh",
       "#{FIXTURE_ROOT}/dir/inner.txt",
+      BINARY_FILE,
+      NO_NEWLINE_FILE,
+      RICH_TEMPLATE,
     ]
 
     # A task file for the import_tasks/include_tasks actions, which resolve
@@ -205,6 +222,19 @@ module KrikriPlaybookGenerator
       set -e
       mkdir -p #{FIXTURE_ROOT}/dir #{WORK_ROOT}
       printf 'kpg fixture alpha\\nsecond line\\n' > #{FIXTURE_ROOT}/src.txt
+      printf '\\000\\001kpg\\000binary\\377\\n' > #{BINARY_FILE}
+      printf 'kpg no trailing newline' > #{NO_NEWLINE_FILE}
+      cat > #{RICH_TEMPLATE} <<'KPG_RICH_TEMPLATE_EOF'
+      literal line
+      value: {{ 1 + 1 }}
+      {# kpg comment #}
+      {% if true %}kpg-true{% endif %}
+      KPG_RICH_TEMPLATE_EOF
+      mkdir -p #{MIXED_TREE}/one #{MIXED_TREE}/one/two #{MIXED_TREE}/three
+      printf 'mixed root\\n' > #{MIXED_TREE}/root.txt
+      printf 'mixed one\\n' > #{MIXED_TREE}/one/a.txt
+      printf 'mixed two\\n' > #{MIXED_TREE}/one/two/b.conf
+      printf 'mixed three\\n' > #{MIXED_TREE}/three/c.txt
       printf 'kpg fixture bravo\\n' > #{FIXTURE_ROOT}/src2.txt
       printf 'kpg says {{ 1 + 1 }}\\n' > #{FIXTURE_ROOT}/template.j2
       printf '#!/bin/sh\\necho kpg-fixture-script\\n' > #{FIXTURE_ROOT}/script.sh
@@ -340,7 +370,7 @@ module KrikriPlaybookGenerator
           msg: kpg-fixture-role-handler
       KPG_ROLE_HANDLERS_EOF
       chmod 0755 #{FIXTURE_ROOT}/script.sh #{RETRY_SCRIPT} #{RETRY_NEVER_SCRIPT}
-      chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt #{TASKS_FILE}
+      chmod 0644 #{FIXTURE_ROOT}/src.txt #{FIXTURE_ROOT}/src2.txt #{FIXTURE_ROOT}/template.j2 #{FIXTURE_ROOT}/dir/inner.txt #{TASKS_FILE} #{BINARY_FILE} #{NO_NEWLINE_FILE} #{RICH_TEMPLATE}
       BASH
 
     # Best-effort for local (non-podman) runs: the local backend defaults to

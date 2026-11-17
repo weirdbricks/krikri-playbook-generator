@@ -164,6 +164,15 @@ checklist before closing the issue.
   `ownership_command(user)` re-owns the writable work root for the row's
   identity before the first snapshot, so root and nonroot rows start from
   identical fixture state without a profile-specific image.
+  Content shapes are real too: `BINARY_FILE` (a small file with NUL bytes
+  and a 0xff byte, so copy/slurp/--diff meet non-text content),
+  `NO_NEWLINE_FILE` (no trailing newline), `RICH_TEMPLATE` (literal text,
+  `{{ }}` expression, `{# #}` comment and a `{% if %}` statement block,
+  all of which the template module renders and both engines must agree
+  on) and `MIXED_TREE` (files AND directories at several depths under the
+  writable root, so find/stat traversal has an ordering shape). The same
+  script seeds them in both containers/goldens, and they are offered
+  through `SOURCE_FILES` and the copy/template/slurp/stat/find pools.
   It also seeds the destination STATE production playbooks meet:
   `UNUSUAL_FILES` (0444/0400/0440 locked files in the writable work root,
   where both engines can still replace them by atomic rename, so the
@@ -953,8 +962,9 @@ engine outputs name `target2`, the recap has the host, the row records
 and landing in results.jsonl. `fixtures_spec.cr` covers the
 role/HTTP fixtures plus `IDENTITY_SCRIPT`, `ownership_command`, the
 unusual-mode destinations/directories, `RESTORE_UNUSUAL_SCRIPT`'s
-idempotency, the retry fixtures' attempt counting and the include/import
-fixtures. `play_keywords_spec.cr` covers the kind list, valid vs
+idempotency, the retry fixtures' attempt counting, the include/import
+fixtures and the content fixtures (binary NUL bytes, missing trailing
+newline, rich template syntax, nested tree). `play_keywords_spec.cr` covers the kind list, valid vs
 chaos value pools, determinism, env-only `forks` and the 50/50 env door;
 `block_shapes_spec.cr`, `handler_shapes_spec.cr` and
 `retry_shapes_spec.cr` and `include_shapes_spec.cr` cover the shape

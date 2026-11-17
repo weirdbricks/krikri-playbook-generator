@@ -152,6 +152,32 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "seeds the content fixtures: binary, no trailing newline, rich template, mixed tree" do
+      with_seeded_fixtures do |fixture_root|
+        work = File.join(fixture_root, "..", "work")
+
+        binary = File.read(Fixtures::BINARY_FILE.sub(Fixtures::FIXTURE_ROOT, fixture_root))
+        assert(binary.bytes.includes?(0_u8), "binary fixture has no NUL byte")
+
+        no_newline = File.read(Fixtures::NO_NEWLINE_FILE.sub(Fixtures::FIXTURE_ROOT, fixture_root))
+        refute(no_newline.ends_with?('\n'), "no-newline fixture ends with a newline")
+
+        rich = File.read(Fixtures::RICH_TEMPLATE.sub(Fixtures::FIXTURE_ROOT, fixture_root))
+        assert(rich.includes?("{{ 1 + 1 }}"))
+        assert(rich.includes?("{# kpg comment #}"))
+        assert(rich.includes?("{% if true %}"))
+
+        mixed = File.join(work, "mixed")
+        assert File.file?(File.join(mixed, "root.txt"))
+        assert File.file?(File.join(mixed, "one", "two", "b.conf"))
+        assert File.file?(File.join(mixed, "three", "c.txt"))
+
+        [Fixtures::BINARY_FILE, Fixtures::NO_NEWLINE_FILE, Fixtures::RICH_TEMPLATE].each do |path|
+          assert(Fixtures::SOURCE_FILES.includes?(path), "#{path} is not a generator source")
+        end
+      end
+    end
+
     it "seeds the include/import fixtures (task files, nested role tasks, child play)" do
       with_seeded_fixtures do |fixture_root|
         [
