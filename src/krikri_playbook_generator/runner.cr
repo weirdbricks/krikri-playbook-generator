@@ -106,10 +106,17 @@ module KrikriPlaybookGenerator
       # Per-engine check-mode deltas (only populated for a check-mode row).
       getter check_mode_ansible : Array(String)?
       getter check_mode_krikri : Array(String)?
+      # Staging files each engine left behind (nil when no snapshots were
+      # captured), each line annotated with the task the log blames when it
+      # names one.
+      getter leftover_temps_ansible : Array(String)?
+      getter leftover_temps_krikri : Array(String)?
 
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil,
                      @mode = RunMode::Real, @run = 1)
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
+        @leftover_temps_ansible = PlaybookResult.annotate_leftovers(@ansible)
+        @leftover_temps_krikri = PlaybookResult.annotate_leftovers(@krikri)
         diff = compute_state_diff
         @state_diff = diff
         @state_divergent = !diff.nil?
@@ -120,6 +127,14 @@ module KrikriPlaybookGenerator
           @check_mode_ansible = nil
           @check_mode_krikri = nil
         end
+      end
+
+      def self.annotate_leftovers(run : EngineRun) : Array(String)?
+        leftovers = HostState.leftover_temps(run.state_before, run.state_after)
+        return unless leftovers
+
+        owner = Runner.last_failed_task(run.stdout)
+        leftovers.map { |line| owner ? "#{line} (task: #{owner})" : line }
       end
 
       UNRESOLVED      = /couldn't resolve module\/action '[^']+'/
@@ -159,7 +174,27 @@ module KrikriPlaybookGenerator
       def divergent? : Bool
         return false if @error
 
-        !masked_identical? || @state_divergent || check_mode_mutation?
+        !masked_identical? || @state_divergent || check_mode_mutation? || leftover_temp?
+      end
+
+      # A staging file survived an engine's run: `copy`/`template`/
+      # `blockinfile` with a failing `validate`, or a killed engine.
+      def leftover_temp? : Bool
+        return false if @error
+
+        @leftover_temps_ansible.try { |list| !list.empty? } ||
+          @leftover_temps_krikri.try { |list| !list.empty? } || false
+      end
+
+      # Each engine's leftovers with the task the log blames, so a state
+      # finding can name the file instead of only showing a raw delta.
+      def leftover_temps_diff : String?
+        return unless leftover_temp?
+
+        String.build do |str|
+          append_leftovers(str, "ansible", @leftover_temps_ansible)
+          append_leftovers(str, "krikri", @leftover_temps_krikri)
+        end
       end
 
       # What each engine changed on its own host, from the snapshots taken
@@ -225,6 +260,15 @@ module KrikriPlaybookGenerator
         list.each { |line| str << "+ #{engine}: " << line << '\n' }
       end
 
+      private def append_leftovers(str : String::Builder, engine : String,
+                                   leftovers : Array(String)?) : Nil
+        return unless list = leftovers
+        return if list.empty?
+
+        str << engine << ":\n"
+        list.each { |line| str << "+ #{line}\n" }
+      end
+
       private def state_changes(run : EngineRun) : Array(String)?
         before = run.state_before
         after = run.state_after
@@ -239,7 +283,11 @@ module KrikriPlaybookGenerator
         return unless a && k
 
         diff = HostState.diff(a, k)
-        diff.empty? ? nil : diff
+        return diff unless diff.empty?
+
+        # Both engines' deltas matched, but a staging file survived on one
+        # of them: still a finding, shown by the same state section.
+        leftover_temp? ? leftover_temps_diff : nil
       end
 
       # The old counter-only comparison, kept as an extra results field.
@@ -308,6 +356,23 @@ module KrikriPlaybookGenerator
           str << ByteDiff.unified(a_stderr, k_stderr)
         end
       end
+    end
+
+    # The task the run log blames for a leftover staging file: the last
+    # `TASK [name]` that printed a `fatal:` line. Generated playbooks carry
+    # `ignore_errors: true`, so "the last task in the log" is not good
+    # enough - the batch keeps going after a failure.
+    def self.last_failed_task(output : String) : String?
+      current = nil
+      failed = nil
+      output.each_line do |line|
+        if match = line.match(/^TASK \[(.+?)\]/)
+          current = match[1]
+        elsif current && (line.includes?("fatal:") || line.includes?("FAILED!"))
+          failed = current
+        end
+      end
+      failed
     end
 
     @completed : Atomic(Int32) = Atomic.new(0)
@@ -835,6 +900,7 @@ module KrikriPlaybookGenerator
           json.field "state_diff", result.state_diff
           json.field "check_mode_mutated", result.check_mode_mutation?
           json.field "check_mode_diff", result.check_mode_diff
+          json.field "leftover_temps", result.leftover_temps_diff
           json.field "diff" do
             json.object do
               json.field "masked", result.masked_diff

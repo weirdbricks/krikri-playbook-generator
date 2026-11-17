@@ -198,7 +198,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   agree on a mutation are still both reported, and the only tolerated
   residue is `CHECK_MODE_IGNORED_PATHS` (`~/.ansible`, already pruned).
   `check_mode_signature` keys those findings by the engine that broke the
-  promise.
+  promise. A `temps` section scans the same roots plus `/tmp` for the
+  engines' staging prefixes (`TEMP_PATTERNS`) and is pruned out of the
+  files/hashes scans, so `leftover_temps` reports a temp or partial write
+  a failed task never cleaned up exactly once, as one `temp` change.
+  Neither engine keeps a staging file on any path it controls, so
+  `CHECK_MODE_IGNORED_PATHS`/`~/.ansible` stays the only tolerated
+  residue.
 - `src/krikri_playbook_generator/runner.cr` — `Runner`. **Implemented
   (v0.0.8, rewritten for byte parity)**: the comparison is now
   byte-for-byte — raw stdout, stderr and rc from both engines under the
@@ -229,7 +235,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   A check-mode row also records `check_mode_mutated` and
   `check_mode_diff` (each engine's unexpected check-mode delta, engine
   labelled) and counts as divergent on its own: `--check` must not change
-  the host even when both engines change it the same way.
+  the host even when both engines change it the same way. Every row also
+  records `leftover_temps` when an engine left a staging file behind:
+  the file plus `(task: <name>)` from `Runner.last_failed_task` (the last
+  `TASK [...]` that printed a `fatal:` line, since `ignore_errors: true`
+  keeps the batch going). A matched delta with a survivor on either side
+  still becomes a state finding, using the leftover text as its diff.
   Local and Atlantic runs capture no state (locally the two engines share
   one live host, so a delta cannot be attributed to one engine).
   Every playbook is compared once per MODE (`RunMode::Check` and
@@ -430,8 +441,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `check_mode_findings` in the
   same grouping/order as `report` (each with playbooks and an example
   carrying mode/run/chaos/mutations/masked_diff/state_diff/
-  check_mode_diff/ansible_error and a `kind` of `output`, `state` or
-  `check-mode`), a `batch` object (modes,
+  leftover_temps/check_mode_diff/ansible_error and a `kind` of `output`,
+  `state` or `check-mode`), a `batch` object (modes,
   duration, second-run flag read back from versions.txt), errors,
   not_applicable, happy_coverage, rates. The human report starts with the
   same `== Batch ==` line, and `Triage.repro_command` pins the finding's
@@ -635,6 +646,14 @@ Documented deliberately, not silently:
   (a module that ignores check mode) is therefore reported exactly like
   a krikri one, with the engine named in the finding's signature, rather
   than silently excused as "both did it".
+- Leftover detection covers staging files (the engines' temp prefixes),
+  not destination files. A destination one engine leaves and the other
+  does not is caught by the ordinary state delta; a destination BOTH
+  engines create and keep identically is treated as module output, since
+  without per-task cleanup metadata the harness cannot tell a partial
+  write from intended output. The `(task: ...)` owner is the last task
+  that printed a `fatal:` line, so a module that fails several tasks can
+  name the wrong one.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is now BUILT (`--tasks-per-playbook N`) — but still one play per
   playbook (no multi-PLAY playbooks, no role plays), and the batch-level
@@ -706,7 +725,10 @@ fixtures and covers parsing/canonicalization (including a truncated
 capture), the change list (mode, owner-visible fields, leftover file,
 hash/content, package, unit, port and reboot), delta-vs-delta diffing,
 the check-mode policy (per-engine delta, control-state keeper filtering,
-signature stability) and the snapshot script's roots/exclusions.
+signature stability) and the snapshot script's roots/exclusions,
+`#temps` section and staging prefixes. `runner_spec.cr` covers the
+leftover policy (the surviving file, the task the log blames, the
+matched-delta fallback) and `last_failed_task` itself.
 `masks_spec.cr` unit-tests the mask list, the
 LCS diff and signature stability. `generator_spec.cr` also covers the
 Jinja kind (the templated value must be equivalent to the baseline

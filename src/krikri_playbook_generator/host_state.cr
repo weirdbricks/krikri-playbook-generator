@@ -14,8 +14,31 @@ module KrikriPlaybookGenerator
   # absolute state can never be equal - comparing it would report the
   # images' own difference as a finding.
   module HostState
-    SECTIONS = %w[boot files hashes packages units ports]
+    SECTIONS = %w[boot files hashes temps packages units ports]
     ROOTS    = %w[/etc /tmp/kpg-work /var/spool/cron /root]
+
+    # Heads a failing task leaves behind if its cleanup never ran: krikri's
+    # own staging files (`${dest}/.krikri-playbook-copy-<hex>.tmp`,
+    # `${TMPDIR}/.krikri-playbook-<module>-<hex>`) and real ansible's
+    # atomic_move temp in the destination directory (`.ansible_tmp<rand>`)
+    # plus its remote module tmp directory (`ansible-moduletmp-<epoch>-`).
+    # These are listed in their own `#temps` section (and pruned from the
+    # files/hashes scans) so one leftover is reported once, as `temp`,
+    # instead of twice as a guessed-at file.
+    #
+    # Neither engine keeps a staging file on any success or failure path
+    # it controls, so there is nothing legitimate to ignore: the only
+    # keeper is `~/.ansible` (already in EXCLUDED_PATHS). A module that
+    # deliberately names a file after one of these prefixes is invisible to
+    # this oracle, the same documented blind spot as EXCLUDED_PATHS.
+    TEMP_PATTERNS = %w[.krikri-playbook-* .ansible_tmp* ansible-moduletmp-* ansible-tmp-*]
+
+    TEMP_PREDICATE = TEMP_PATTERNS.map { |pattern| "-name '#{pattern}'" }.join(" -o ")
+
+    # `/tmp` is where krikri stages copy/apt_key/rpm_key work and where a
+    # remote module tmp could land, so leftovers there are scanned even
+    # though the rest of /tmp is unrelated engine/host churn.
+    TEMP_ROOTS = ROOTS + %w[/tmp]
 
     # Files every host (container or VM) regenerates for itself: hostname,
     # resolver, machine id. The two engines' hosts are distinct machines, so
@@ -57,14 +80,22 @@ module KrikriPlaybookGenerator
       for root in KPG_ROOTS; do
         [ -e "$root" ] || continue
         find "$root" -xdev \( EXCLUDE_PREDICATE \) -prune -o \
+          \( TEMP_PREDICATE \) -prune -o \
           -printf '%y\t%U\t%G\t%m\t%s\t%p\n' 2>/dev/null
       done | LC_ALL=C sort
       printf '#hashes\n'
       for root in KPG_ROOTS; do
         [ -e "$root" ] || continue
         find "$root" -xdev \( EXCLUDE_PREDICATE \) -prune -o \
+          \( TEMP_PREDICATE \) -prune -o \
           -type f -size -1048576c -exec sha256sum {} + 2>/dev/null
       done | LC_ALL=C sort
+      printf '#temps\n'
+      for root in KPG_TEMP_ROOTS; do
+        [ -e "$root" ] || continue
+        find "$root" -xdev \( EXCLUDE_PREDICATE \) -prune -o \
+          \( TEMP_PREDICATE \) -printf '%y\t%p\n' 2>/dev/null
+      done | LC_ALL=C sort -u
       printf '#packages\n'
       { dpkg-query -W -f='${Package}\t${Version}\n' 2>/dev/null ||
         rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\n' 2>/dev/null; } | LC_ALL=C sort
@@ -78,7 +109,9 @@ module KrikriPlaybookGenerator
 
     SNAPSHOT_SCRIPT = SNAPSHOT_TEMPLATE
       .gsub("KPG_ROOTS", ROOTS.join(" "))
+      .gsub("KPG_TEMP_ROOTS", TEMP_ROOTS.join(" "))
       .gsub("EXCLUDE_PREDICATE", EXCLUDE_PREDICATE)
+      .gsub("TEMP_PREDICATE", TEMP_PREDICATE)
 
     # One engine run's command result plus the state around it; nil before
     # or after means the snapshot could not be taken (the playbook is still
@@ -161,6 +194,7 @@ module KrikriPlaybookGenerator
       lines << "boot\trebooted" if before["boot"] != after["boot"]
       compare(before["files"], after["files"], "file", lines, ->(line : String) { file_path(line) })
       compare(before["hashes"], after["hashes"], "hash", lines, ->(line : String) { hash_path(line) })
+      compare(before["temps"], after["temps"], "temp", lines, ->(line : String) { temp_path(line) })
       compare(before["packages"], after["packages"], "package", lines, ->(line : String) { line.split('\t', 2).first })
       compare(before["units"], after["units"], "unit", lines, ->(line : String) { line })
       compare(before["ports"], after["ports"], "port", lines, ->(line : String) { line })
@@ -200,6 +234,22 @@ module KrikriPlaybookGenerator
     # `sha256<two spaces>path`
     def self.hash_path(line : String) : String
       line.split("  ", 2).last
+    end
+
+    # `type<TAB>path`
+    def self.temp_path(line : String) : String
+      line.split('\t', 2).last
+    end
+
+    # Staging files present now but not before the run: a temp or partial
+    # write a failed task never cleaned up. Full `<type>\t<path>` lines so
+    # the caller can name what kind of entry survived.
+    def self.leftover_temps(before : Snapshot?, after : Snapshot?) : Array(String)?
+      return unless before && after
+
+      old = before["temps"].map { |line| temp_path(line) }
+      leftovers = after["temps"].reject { |line| old.includes?(temp_path(line)) }
+      leftovers.sort!
     end
 
     # Unified diff of the two engines' change lists ("" when identical).

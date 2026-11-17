@@ -14,7 +14,7 @@ module KrikriPlaybookGenerator
                      error : String? = nil, masked_diff : String = "",
                      masked_identical : Bool? = nil, state_divergent : Bool = false,
                      state_diff : String = "", check_mode_mutated : Bool = false,
-                     check_mode_diff : String = "") : String
+                     check_mode_diff : String = "", leftover_temps : String = "") : String
       playbook = File.join(dir, "#{name}.yml")
       File.write(playbook, "---\n")
 
@@ -30,6 +30,7 @@ module KrikriPlaybookGenerator
         "state_diff"         => state_diff.empty? ? nil : state_diff,
         "check_mode_mutated" => check_mode_mutated,
         "check_mode_diff"    => check_mode_diff.empty? ? nil : check_mode_diff,
+        "leftover_temps"     => leftover_temps.empty? ? nil : leftover_temps,
         "signature"          => signature,
         "ansible_failed"     => ansible_failed,
         "ansible_error"      => ansible_error,
@@ -455,8 +456,9 @@ module KrikriPlaybookGenerator
       dir = File.tempname("kpg-spec-triage")
       Dir.mkdir_p(dir)
       state_diff = "-file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover\n"
+      leftover = "krikri:\n+ f\t/tmp/kpg-work/.krikri-playbook-copy-abc.tmp (task: Copy)\n"
       write_result(dir, "a", "copy", divergent: true, masked_identical: true,
-        state_divergent: true, state_diff: state_diff)
+        state_divergent: true, state_diff: state_diff, leftover_temps: leftover)
 
       report = JSON.parse(Triage.new(dir).report_json)
       assert_equal(1, report["state_divergent"].as_i)
@@ -465,6 +467,22 @@ module KrikriPlaybookGenerator
       assert_equal(1, findings.size)
       assert_equal("state", findings.first["kind"].as_s)
       assert_equal(state_diff, findings.first["example"]["state_diff"].as_s)
+      assert_equal(leftover, findings.first["example"]["leftover_temps"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps a state finding whose only detail is the leftover staging file" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      leftover = "krikri:\n+ f\t/tmp/kpg-work/.krikri-playbook-copy-abc.tmp\n"
+      write_result(dir, "a", "copy", divergent: true, masked_identical: true,
+        state_divergent: true, leftover_temps: leftover)
+
+      triage = Triage.new(dir)
+      findings = triage.state_report
+      assert_equal(1, findings.size)
+      assert_equal(leftover, findings.first.example.leftover_temps)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

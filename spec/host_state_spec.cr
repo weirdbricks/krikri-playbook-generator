@@ -104,6 +104,29 @@ module KrikriPlaybookGenerator
       assert_includes(script, "\\( -path /etc/hostname")
     end
 
+    it "scans the staging-file prefixes in their own temp section" do
+      script = HostState::SNAPSHOT_SCRIPT
+      assert_equal(HostState::ROOTS + %w[/tmp], HostState::TEMP_ROOTS)
+      assert_includes(script, "#temps")
+      HostState::TEMP_PATTERNS.each { |pattern| assert_includes(script, pattern) }
+      refute_includes(script, "TEMP_PREDICATE")
+      refute_includes(script, "KPG_TEMP_ROOTS")
+    end
+
+    it "reports a leftover staging file as one temp change, not a file change" do
+      temp = "f\t/tmp/kpg-work/.krikri-playbook-copy-abc.tmp"
+      before_snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
+      after = HostState::Snapshot.parse(
+        baseline.sub("#packages\n", "#temps\n#{temp}\n#packages\n")).as(HostState::Snapshot)
+
+      assert_equal(["temp\tadded\t#{temp}"], HostState.changes(before_snapshot, after))
+      assert_equal([temp], HostState.leftover_temps(before_snapshot, after))
+      assert_equal([] of String, HostState.leftover_temps(before_snapshot, before_snapshot))
+      assert_equal([] of String, HostState.leftover_temps(after, before_snapshot))
+      assert_nil(HostState.leftover_temps(nil, after))
+      assert_equal("/tmp/kpg-work/.krikri-playbook-copy-abc.tmp", HostState.temp_path(temp))
+    end
+
     it "finds nothing to report when a check-mode run left the host alone" do
       snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
       assert_equal([] of String, HostState.check_mode_changes(snapshot, snapshot))

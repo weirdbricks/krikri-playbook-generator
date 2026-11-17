@@ -174,6 +174,17 @@ both output and state is counted once, as an output finding). Local and
 Atlantic runs have no per-engine isolated host, so they do not compare
 state.
 
+Leftover staging files are part of that same state finding. The snapshot
+carries a `temps` section scanning the roots and `/tmp` for the engines'
+staging prefixes (`.krikri-playbook-*`, `.ansible_tmp*`,
+`ansible-moduletmp-*`, `ansible-tmp-*`), so a temp or partial write a
+failed task never cleaned up is reported with the engine and the task the
+run log blames (`leftover_temps` in results.jsonl), instead of being
+guessed at as ordinary module output. Neither engine keeps a staging file
+on any path it controls, so there is no legitimate residue to ignore
+beyond `~/.ansible`; a destination file that both engines create and keep
+identically is treated as module output.
+
 ## Check mode is read-only
 
 `--check` promises to change nothing, so each **engine's own** before/after

@@ -33,7 +33,8 @@ module KrikriPlaybookGenerator
       ansible_error : String?, mutations : Array(MutationEntry), error : String?,
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
       state_signature : String?, state_diff : String, check_mode_mutated : Bool,
-      check_mode_diff : String, check_mode_signature : String? do
+      check_mode_diff : String, check_mode_signature : String?,
+      leftover_temps : String do
       def errored? : Bool
         !error.nil?
       end
@@ -249,6 +250,7 @@ module KrikriPlaybookGenerator
             end
             json.field "masked_diff", example.masked_diff
             json.field "state_diff", example.state_diff.empty? ? nil : example.state_diff
+            json.field "leftover_temps", example.leftover_temps.empty? ? nil : example.leftover_temps
             json.field "check_mode_diff", example.check_mode_diff.empty? ? nil : example.check_mode_diff
             if error = example.ansible_error
               json.field "ansible_error", error
@@ -447,6 +449,7 @@ module KrikriPlaybookGenerator
       masked_identical, state_divergent, state_signature, state_diff = parse_state_fields(parsed, divergent)
       check_mode_mutated = parsed["check_mode_mutated"]?.try(&.as_bool?) || false
       check_mode_diff = parsed["check_mode_diff"]?.try(&.as_s?) || ""
+      leftover_temps = parsed["leftover_temps"]?.try(&.as_s?) || ""
 
       ResultLine.new(
         playbook, module_name,
@@ -466,7 +469,8 @@ module KrikriPlaybookGenerator
         state_diff,
         check_mode_mutated,
         check_mode_diff,
-        HostState.check_mode_signature(check_mode_diff)
+        HostState.check_mode_signature(check_mode_diff),
+        leftover_temps
       )
     end
 

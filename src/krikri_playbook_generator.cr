@@ -275,6 +275,11 @@ module KrikriPlaybookGenerator
       puts "  example: #{example.playbook}"
       puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff)}"
       print_state_diff(example.state_diff)
+      unless example.leftover_temps.empty?
+        puts "  leftover staging files:"
+        example.leftover_temps.lines.first(10).each { |line| puts "    #{line}" }
+        puts "    ... #{example.leftover_temps.lines.size - 10} more line(s)" if example.leftover_temps.lines.size > 10
+      end
     end
   end
 

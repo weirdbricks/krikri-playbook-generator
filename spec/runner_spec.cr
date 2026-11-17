@@ -159,6 +159,13 @@ module KrikriPlaybookGenerator
         snapshot(before_files), snapshot(after_files, leftover))
     end
 
+    def temp_run(files : String, temp : String?, stdout : String = "same") : Runner::EngineRun
+      before_text = "#boot\nboot-1\n#files\n#{files}#hashes\n#temps\n#packages\n#units\n#ports\n"
+      after_text = "#boot\nboot-1\n#files\n#{files}#hashes\n#temps\n#{temp || ""}#packages\n#units\n#ports\n"
+      Runner::EngineRun.new("x", 0, nil, stdout, "", false,
+        HostState::Snapshot.parse(before_text), HostState::Snapshot.parse(after_text))
+    end
+
     it "is divergent when the engines printed the same thing but left a different host state" do
       files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
       result = Runner::PlaybookResult.new("p.yml",
@@ -239,6 +246,49 @@ module KrikriPlaybookGenerator
 
       refute(result.check_mode_mutation?)
       refute(result.divergent?)
+    end
+
+    it "names the task that left a staging file behind" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      temp = "f\t/tmp/kpg-work/.krikri-playbook-copy-abc.tmp"
+      stdout = "TASK [Copy with validate] ***\nfatal: [target]: FAILED! => boom\n"
+      result = Runner::PlaybookResult.new("p.yml",
+        temp_run(files, temp, stdout),
+        temp_run(files, nil), nil)
+
+      assert(result.leftover_temp?)
+      assert(result.state_divergent?)
+      assert(result.divergent?)
+      diff = result.leftover_temps_diff
+      refute_nil(diff)
+      assert(diff.as(String).includes?(".krikri-playbook-copy-abc.tmp"))
+      assert(diff.as(String).includes?("(task: Copy with validate)"))
+      assert_equal([] of String, result.leftover_temps_krikri)
+    end
+
+    it "reports a leftover even when both engines left the same staging path" do
+      files = "d\t0\t0\t755\t4096\t/tmp/kpg-work\n"
+      temp = "f\t/tmp/kpg-work/.krikri-playbook-copy-abc.tmp"
+      result = Runner::PlaybookResult.new("p.yml", temp_run(files, temp), temp_run(files, temp), nil)
+
+      assert(result.masked_identical?)
+      assert(result.leftover_temp?)
+      assert(result.state_divergent?)
+      assert(result.divergent?)
+      diff = result.state_diff
+      refute_nil(diff)
+      assert(diff.as(String).starts_with?("ansible:"))
+    end
+
+    it "blames the last task that actually failed, not the last one logged" do
+      log = <<-LOG
+        TASK [Bad copy] ***
+        fatal: [target]: FAILED! => {"changed": false}
+        TASK [Good debug] ***
+        ok: [target] => {"msg": "hi"}
+        LOG
+      assert_equal("Bad copy", Runner.last_failed_task(log))
+      assert_nil(Runner.last_failed_task("TASK [Good debug] ***\nok: [target]\n"))
     end
   end
 
