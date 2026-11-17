@@ -30,12 +30,12 @@ module KrikriPlaybookGenerator
   # data/module_dependencies.yml therefore changes the fingerprint and
   # triggers exactly one rebake.
   class MicrovmBackend
-    SSH_PORT     = 2422
-    VM_MEM_MB    = 1024
-    VM_CPUS      = 2
-    BOOT_SECS    = 240
-    BAKE_SECS    = 900
-    DOWNLOAD_SECS = 900
+    SSH_PORT             = 2422
+    VM_MEM_MB            = 1024
+    VM_CPUS              =    2
+    BOOT_SECS            =  240
+    BAKE_SECS            =  900
+    DOWNLOAD_SECS        =  900
     ANSIBLE_CORE_VERSION = "2.21.6"
     ANSIBLE_CORE_PIN     = "ansible-core==#{ANSIBLE_CORE_VERSION}"
 
@@ -137,11 +137,15 @@ module KrikriPlaybookGenerator
       apt-get install -y -qq --no-install-recommends "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
       depmod -a 2>/dev/null || true
       modprobe zfs 2>/dev/null || true
+      # Not under /tmp: Ubuntu's tmpfiles rule empties /tmp at every boot,
+      # so the pool's backing file vanished and every overlay boot failed its
+      # import (zfs then reports the confusing "missing pool name").
       if command -v zpool >/dev/null 2>&1 && ! zpool list kpgpool >/dev/null 2>&1; then
-        mkdir -p /tmp/kpg-zfs
-        truncate -s 128M /tmp/kpg-zfs/pool.img
-        zpool create -f kpgpool /tmp/kpg-zfs/pool.img >/dev/null 2>&1 || true
+        mkdir -p /var/lib/kpg-zfs
+        truncate -s 128M /var/lib/kpg-zfs/pool.img
+        zpool create -f kpgpool /var/lib/kpg-zfs/pool.img >/dev/null 2>&1 || true
       fi
+      systemctl enable zfs-import-cache 2>/dev/null || true
       systemctl enable --now snapd.socket 2>/dev/null || true
       systemctl enable --now rabbitmq-server 2>/dev/null || true
       systemctl enable --now libvirtd 2>/dev/null || true
@@ -384,7 +388,7 @@ module KrikriPlaybookGenerator
     def self.engine_command(binary : String, basename : String, timeout : Int32, check_mode : Bool) : String
       check = check_mode ? "--check --diff " : ""
       "cd /work && #{ENGINE_ENV_STRIP} timeout #{timeout} " \
-        "#{binary} -i inventory.ini #{check}/work/#{basename} </dev/null"
+      "#{binary} -i inventory.ini #{check}/work/#{basename} </dev/null"
     end
 
     # Bakes (or reuses) the golden for each OS in `oses`, then runs every
@@ -544,11 +548,13 @@ module KrikriPlaybookGenerator
 
       seed = write_seed("bake-#{profile.os}", profile.os, "kpg-bake-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-bake-#{profile.os}", BAKE_ADDR, File.join(work_dir, "bake"))
+      pool = false
       begin
         wait_ssh(vm, bake_secs)
         install_golden_packages(vm, profile)
         run_prep(vm, profile)
         seed_fixtures(vm)
+        pool = run_script(vm, "zpool list -H kpgpool 2>/dev/null", 60.0).rc == 0
         stop_vm(vm)
       rescue e
         stop_vm(vm) rescue nil
@@ -556,20 +562,37 @@ module KrikriPlaybookGenerator
         raise e
       end
 
-      verify_gold(gold, profile)
+      verify_gold(gold, profile, pool)
       File.write(MicrovmBackend.baked_marker(gold), "ok\n")
     end
 
     # A golden that has never booted is not trusted: a bake that died leaves
     # the file behind, and booting it would fail every playbook of the run.
-    private def verify_gold(gold : String, profile : Profile) : Nil
+    private def verify_gold(gold : String, profile : Profile, pool_expected : Bool) : Nil
       seed = write_seed("verify-#{profile.os}", profile.os, "kpg-verify-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-verify-#{profile.os}", BAKE_ADDR, File.join(work_dir, "verify"))
       begin
         wait_ssh(vm, boot_secs)
         assert_ansible_version(vm)
+        assert_zfs_pool(vm, profile, pool_expected)
       ensure
         stop_vm(vm) rescue nil
+      end
+    end
+
+    # The pool must survive the bake's reboot, or every zfs happy path is
+    # wasted. A pool that never got created is a softer failure (the rest of
+    # the profile still works), so it only warns.
+    private def assert_zfs_pool(vm : Vm, profile : Profile, expected : Bool) : Nil
+      return unless run_script(vm, "command -v zpool", 60.0).rc == 0
+      imported = run_script(vm, "zpool list -H kpgpool 2>/dev/null", 60.0).rc == 0
+      if expected && !imported
+        raise MicrovmProvisionError.new(
+          "the zfs pool did not import on boot on the #{profile.os} golden - " \
+          "its backing file must live outside /tmp (see UBUNTU_PREP)")
+      end
+      unless expected || imported
+        Log.info("microvm", "warning: golden #{profile.os}: no zfs pool to import; zfs happy paths stay unscorable")
       end
     end
 
@@ -767,7 +790,7 @@ module KrikriPlaybookGenerator
                              playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise MicrovmProvisionError.new("playbook upload to #{vm.ip} failed: #{copy.stderr}") unless copy.rc == 0
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
-        INVENTORY + "KPG_INVENTORY_EOF\n", 60.0)
+                                 INVENTORY + "KPG_INVENTORY_EOF\n", 60.0)
       unless inventory.rc == 0
         raise MicrovmProvisionError.new("writing inventory on #{vm.ip} failed: #{inventory.stderr}")
       end
@@ -810,7 +833,7 @@ module KrikriPlaybookGenerator
 
     private def exec_engine(vm : Vm, binary : String, basename : String) : Cmd::Result
       command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, @check_mode)
-      result = Cmd.run("timeout", [( @engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
+      result = Cmd.run("timeout", [(@engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
         timeout: @engine_timeout + 150.0)
       if result.rc == 255
         raise MicrovmProvisionError.new("ssh session failed running #{binary}: #{result.stderr.lines.last(3).join(" | ")}")

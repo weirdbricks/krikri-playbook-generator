@@ -738,6 +738,7 @@ modules:
 
   zfs:
     name: {kind: literal_pool, pool: ["kpgpool/kpgds", "kpgpool/kpgds2"]}
+    origin: {exclude: true}
     always: [name]
 
   snap:

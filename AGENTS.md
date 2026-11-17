@@ -249,7 +249,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   routes a batch here per playbook (`MicrovmBackend.microvm_only?`) and
   keeps everything else on podman; `--run-on-microvm` forces it for the
   whole batch. A golden without its `.ok` marker is discarded and re-baked
-  (a bake that died leaves the file behind). Missing optional packages
+  (a bake that died leaves the file behind). The verify boot also imports
+  the golden's zfs pool: its backing file lives under `/var/lib/kpg-zfs`,
+  never `/tmp` (Ubuntu's tmpfiles rule empties that at every boot, which
+  silently wiped the pool and made every zfs happy path fail on real
+  ansible). A pool the bake never created only warns, so the rest of the
+  profile still works. Missing optional packages
   warn instead of failing the bake, so one bad entry cannot cost the whole
   profile; a bake whose installs leave the root at 95% or more raises a
   disk-full error instead of letting the missing pip3 surface as a cryptic

@@ -168,5 +168,11 @@ module KrikriPlaybookGenerator
       assert_includes(MicrovmBackend.prep_for("ubuntu"), "zpool")
       assert_includes(MicrovmBackend.prep_for("rocky"), "firewalld")
     end
+
+    it "keeps the zfs pool's backing file out of /tmp, which empties on boot" do
+      prep = MicrovmBackend.prep_for("ubuntu")
+      refute_includes(prep, "/tmp/kpg-zfs")
+      assert_includes(prep, "/var/lib/kpg-zfs/pool.img")
+    end
   end
 end
