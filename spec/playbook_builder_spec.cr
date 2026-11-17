@@ -51,7 +51,7 @@ module KrikriPlaybookGenerator
 
       assert_equal(1, doc.size)
       play = doc.first
-      assert_equal("all", play["hosts"].as_s)
+      assert_equal(HostInventory::GROUP, play["hosts"].as_s)
       assert_equal(false, play["gather_facts"].as_bool)
 
       tasks = play["tasks"].as_a
@@ -204,6 +204,62 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "writes delegate_to, delegate_facts and the two probes for a delegated task" do
+      dir = File.tempname("kpg-spec")
+      task = GeneratedTask.new("debug", "ansible.builtin",
+        {"msg" => YAML::Any.new("hi")}, delegate_to: "target2", delegate_facts: true)
+      path = PlaybookBuilder.new(dir).build([task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      tasks = play["tasks"].as_a
+      assert_equal(3, tasks.size)
+      assert_equal("target2", tasks[0]["delegate_to"].as_s)
+      assert_equal(true, tasks[0]["delegate_facts"].as_bool)
+      assert_equal("ansible_host", tasks[1]["ansible.builtin.debug"]["var"].as_s)
+      assert_equal("ansible_delegated_vars", tasks[2]["ansible.builtin.debug"]["var"].as_s)
+      tasks[1..].each do |probe|
+        assert_equal("target2", probe["delegate_to"].as_s)
+        assert_equal(true, probe["ignore_errors"].as_bool)
+      end
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("target2", meta["delegate_to"].as_s)
+      assert_equal(true, meta["delegate_facts"].as_bool)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "defines the delegate play var for the templated spelling" do
+      dir = File.tempname("kpg-spec")
+      task = GeneratedTask.new("debug", "ansible.builtin",
+        {"msg" => YAML::Any.new("hi")}, delegate_to: "{{ kpg_delegate }}")
+      path = PlaybookBuilder.new(dir).build([task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_equal("target2", play["vars"]["kpg_delegate"].as_s)
+      assert_equal("{{ kpg_delegate }}", play["tasks"].as_a.first["delegate_to"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps v2 delegation on the task itself (no extra probe tasks to shift the chain)" do
+      dir = File.tempname("kpg-spec")
+      tasks = [GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")},
+        delegate_to: "target2", delegate_facts: true),
+               GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new("/tmp/kpg-work/out1.txt")},
+                 when_condition: "kpg_task_0 is succeeded")]
+      path = PlaybookBuilder.new(dir).build_scenarios([tasks]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      bodies = play["tasks"].as_a
+      assert_equal(2, bodies.size)
+      assert_equal("target2", bodies[0]["delegate_to"].as_s)
+      assert_equal(true, bodies[0]["delegate_facts"].as_bool)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert(meta["modules"][0]["wiring"].as_a.map(&.as_s).includes?("delegate_to:target2"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")
@@ -237,7 +293,7 @@ module KrikriPlaybookGenerator
         doc = YAML.parse(File.read(path)).as_a
         assert_equal(1, doc.size)
         play = doc.first
-        assert_equal("all", play["hosts"].as_s)
+        assert_equal(HostInventory::GROUP, play["hosts"].as_s)
         assert_equal(false, play["gather_facts"].as_bool)
 
         tasks = play["tasks"].as_a

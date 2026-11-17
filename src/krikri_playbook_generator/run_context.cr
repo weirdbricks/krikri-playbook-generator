@@ -49,15 +49,27 @@ module KrikriPlaybookGenerator
   # and `included:` grouping to be compared without a second machine (that
   # is what the SSH profile would add). The first alias keeps the
   # historical `target` name, so a one-host row's output is unchanged.
+  #
+  # Every play targets the `kpg_targets` group, never `all`, so the
+  # delegate-only aliases below can exist in the inventory without also
+  # becoming play hosts: a delegated task needs its delegate to resolve,
+  # even on a one-host row.
   module HostInventory
     MAX_HOSTS = 3
+    GROUP     = "kpg_targets"
 
     def self.aliases(count : Int32) : Array(String)
       (1..count).map { |index| index == 1 ? "target" : "target#{index}" }
     end
 
     def self.render(count : Int32) : String
-      aliases(count).map { |name| "#{name} ansible_connection=local" }.join("\n") + "\n"
+      targets = aliases(count)
+      leftovers = aliases(MAX_HOSTS) - targets
+      String.build do |io|
+        leftovers.each { |name| io << "#{name} ansible_connection=local\n" }
+        io << "\n[#{GROUP}]\n"
+        targets.each { |name| io << "#{name} ansible_connection=local\n" }
+      end
     end
   end
 

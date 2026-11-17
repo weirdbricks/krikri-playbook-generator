@@ -94,7 +94,8 @@ module KrikriPlaybookGenerator
                          "chaos=#{opts.chaos_percentage}%, seed=#{opts.seed}#{opts.seed_given? ? "" : ", random"})")
     schemas = SchemaScanner.new(opts.modules, all_modules: opts.all_modules?, supported_community: supported).scan
     chaos_kinds = Options.parse_chaos_kinds(opts.chaos_kinds)
-    generator = Generator.new(opts.seed, opts.chaos_percentage, chaos_kinds)
+    generator = Generator.new(opts.seed, opts.chaos_percentage, chaos_kinds,
+      delegation: opts.delegation)
     if opts.tasks_per_playbook > 1
       playbooks = build_multi_task_playbooks(opts, generator, schemas)
     else

@@ -465,6 +465,17 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("generate"))
     end
 
+    it "parses the --delegation axis and refuses unknown or non-generate use" do
+      assert_equal(DelegationMode::Literal, Options.parse(["generate", "--delegation", "literal"]).delegation)
+      assert_equal(DelegationMode::Both, Options.parse(["generate"]).delegation)
+      assert_equal(DelegationMode::Off, Options.parse(["generate", "--delegation", "off"]).delegation)
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--delegation", "sometimes"]) }
+      assert((err.message || "").includes?("sometimes"))
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--delegation", "off"]) }
+      assert((err.message || "").includes?("generate"))
+    end
+
     it "allows only one host count on Atlantic (one VM per profile)" do
       opts = Options.parse(["run", "--run-on-atlantic", "--hosts", "2"])
       assert_equal([2], opts.hosts)

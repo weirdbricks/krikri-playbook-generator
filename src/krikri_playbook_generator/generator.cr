@@ -21,6 +21,26 @@ module KrikriPlaybookGenerator
     Jinja
   end
 
+  # `delegate_to` spelling for the delegation axis: the literal inventory
+  # name and a play variable are different code paths in both engines (one
+  # is resolved during templating, the other is not), so a fix verified on
+  # one form must not hide the other. `Both` draws per task.
+  enum DelegationMode
+    Off
+    Literal
+    Templated
+    Both
+
+    def self.parse(value : String) : DelegationMode?
+      case value
+      when "off"       then Off
+      when "literal"   then Literal
+      when "templated" then Templated
+      when "both"      then Both
+      end
+    end
+  end
+
   # Where a happy-path argument's value came from. Recorded in the
   # playbook sidecar so wasted coverage stays diagnosable: a `Random`
   # source on an enum option is exactly the slot to reconsider, while
@@ -48,6 +68,11 @@ module KrikriPlaybookGenerator
     # Set for the handful of actions whose task body is a bare string rather
     # than an argument map (`meta: noop`), in which case `args` is empty.
     property free_form : String?
+    # Delegation axis: the target a task is delegated to (a literal alias
+    # or the `{{ kpg_delegate }}` variable) and whether facts land on the
+    # delegate. Both are structural wiring, never chaos mutations.
+    property delegate_to : String?
+    property? delegate_facts : Bool
     # v2 multi-task wiring (nil for the single-task playbook shape):
     # a `when:` condition referencing the previous task's register, a
     # `loop:` (with `loop_option` naming the argument replaced by
@@ -63,7 +88,8 @@ module KrikriPlaybookGenerator
     def initialize(@module_name, @collection = "ansible.builtin", @args = {} of String => YAML::Any,
                    @mutations = [] of {String, ChaosKind}, @free_form = nil,
                    @when_condition = nil, @loop_option = nil, @loop_items = nil, @notify = nil,
-                   @choice_sources = {} of String => ChoiceSource)
+                   @choice_sources = {} of String => ChoiceSource,
+                   @delegate_to = nil, @delegate_facts = false)
     end
 
     def fqcn : String
@@ -147,9 +173,18 @@ module KrikriPlaybookGenerator
     # Actions that accept no `notify:`; see GeneratedTask#notify_allowed?.
     NOTIFY_UNSUPPORTED = Set{"include_tasks", "include_role"}
 
+    # The alias a delegated task runs on. It exists in every inventory,
+    # even a one-host row, as a delegate-only host outside the play's
+    # group (HostInventory), so delegation does not force a wider play.
+    DELEGATE_HOST = "target2"
+    # The play variable the templated spelling resolves through; the
+    # builder writes it as a play-level `vars:` entry.
+    DELEGATE_VARIABLE = "kpg_delegate"
+
     def initialize(@seed : Int32, @chaos_percentage : Float64 = 0.0,
                    @chaos_kinds : Array(ChaosKind) = ChaosKind.values,
-                   @overrides : Overrides = Overrides.load)
+                   @overrides : Overrides = Overrides.load,
+                   @delegation : DelegationMode = DelegationMode::Both)
       @rng = Random::PCG32.new(@seed.to_u64)
       @choice_sources = {} of String => ChoiceSource
     end
@@ -238,8 +273,27 @@ module KrikriPlaybookGenerator
       mutations = [] of {String, ChaosKind}
       apply_chaos!(schema, args, mutations)
       mutations.each { |(name, _)| @choice_sources.delete(name) }
-      GeneratedTask.new(schema.module_name, schema.collection, args, mutations,
+      task = GeneratedTask.new(schema.module_name, schema.collection, args, mutations,
         choice_sources: @choice_sources.dup)
+      apply_delegation!(task)
+      task
+    end
+
+    # Delegation is wiring, not a mutation: the task stays a runnable
+    # baseline, it just runs on another inventory host. Actions that resolve
+    # their target at parse/include time are skipped, since ansible's
+    # delegation semantics for them are not the task-level ones under test.
+    private def apply_delegation!(task : GeneratedTask) : Nil
+      return if @delegation.off? || task.static_import? || NOTIFY_UNSUPPORTED.includes?(task.module_name)
+
+      templated = case @delegation
+                  in DelegationMode::Literal   then false
+                  in DelegationMode::Templated then true
+                  in DelegationMode::Both      then @rng.rand(2) == 0
+                  in DelegationMode::Off       then return
+                  end
+      task.delegate_to = templated ? "{{ #{DELEGATE_VARIABLE} }}" : DELEGATE_HOST
+      task.delegate_facts = @rng.rand(2) == 0
     end
 
     # Actions like `meta` take a bare string, not an argument map, so the

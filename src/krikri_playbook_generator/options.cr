@@ -56,6 +56,8 @@ module KrikriPlaybookGenerator
     property tasks_per_playbook : Int32
     property play_keywords : Array(String)
     property? play_keywords_given : Bool
+    property delegation : DelegationMode
+    property? delegation_given : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
@@ -82,6 +84,7 @@ module KrikriPlaybookGenerator
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
                    @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
                    @play_keywords = PlayKeywords::KINDS, @play_keywords_given = false,
+                   @delegation = DelegationMode::Both, @delegation_given = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
@@ -173,6 +176,10 @@ module KrikriPlaybookGenerator
         dsl.on("--diff", "pass --diff to both engines (the default; diff output is part of the compared bytes)") { opts.diff = true }
         dsl.on("--no-diff", "do not pass --diff to either engine (diff output is then never compared)") { opts.diff = false }
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
+        dsl.on("--delegation MODE", "delegate_to spelling for generated tasks: off, literal, templated (a play var) or both (default, drawn per task)") do |v|
+          opts.delegation = parse_delegation(v)
+          opts.delegation_given = true
+        end
         dsl.on("--play-keywords LIST", "play-level keyword axis: one keyword per playbook, drawn from strategy, serial, throttle, any_errors_fatal, run_once, max_fail_percentage, gather_facts, connection and forks (env-only); `none` turns it off") do |v|
           opts.play_keywords = parse_play_keywords(v)
           opts.play_keywords_given = true
@@ -318,6 +325,7 @@ module KrikriPlaybookGenerator
         raise InvalidOptionsError.new("--scope-from-krikri is only valid with the modules command")
       end
       check_play_keyword_target!(opts)
+      check_delegation_target!(opts)
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
@@ -332,6 +340,23 @@ module KrikriPlaybookGenerator
       return if opts.command.generate?
 
       raise InvalidOptionsError.new("--play-keywords is only valid with generate (the playbook carries the keyword)")
+    end
+
+    # Delegation is written into the generated playbook (and its probes), so
+    # it only means anything where playbooks are built.
+    private def self.check_delegation_target!(opts : Options) : Nil
+      return unless opts.delegation_given?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new("--delegation is only valid with generate (the playbook carries delegate_to)")
+    end
+
+    private def self.parse_delegation(value : String) : DelegationMode
+      mode = DelegationMode.parse(value)
+      return mode if mode
+
+      raise InvalidOptionsError.new(
+        "unknown --delegation value #{value.inspect} (expected: off, literal, templated, both)")
     end
 
     private def self.parse_play_keywords(value : String) : Array(String)

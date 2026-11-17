@@ -259,13 +259,16 @@ module KrikriPlaybookGenerator
 
     it "points path-typed options at pre-seeded fixture or work paths only" do
       Generator.new(3, 0.0).generate(copy_schema, 30).each do |task|
-        {"src" => Fixtures::SOURCE_FILES, "dest" => Fixtures::DEST_PATHS}.each do |name, allowed|
-          value = task.args[name]?
-          next unless value
+        src = task.args["src"]?
+        assert(Fixtures::SOURCE_FILES.includes?(src.as_s),
+          "src=#{src.as_s.inspect} is not a fixture source") if src
 
-          assert(allowed.includes?(value.as_s),
-            "#{name}=#{value.as_s.inspect} is outside the fixture/work roots")
-        end
+        dest = task.args["dest"]?
+        next unless dest
+
+        path = dest.as_s
+        assert(path.starts_with?(Fixtures::WORK_ROOT) || path.starts_with?(Fixtures::FIXTURE_ROOT),
+          "dest=#{path.inspect} is outside the fixture/work roots")
       end
     end
 
@@ -461,6 +464,39 @@ module KrikriPlaybookGenerator
 
       Generator.new(2, 0.0, ChaosKind.values, overrides).generate(schema, 5).each do |task|
         assert(task.args["spec"].raw.is_a?(Hash), "expected an empty dict, got #{task.args["spec"].raw.class}")
+      end
+    end
+
+    it "delegates tasks to the second alias literally, through a play var, or not at all" do
+      off = Generator.new(4, 0.0, ChaosKind.values, delegation: DelegationMode::Off)
+        .generate(copy_schema, 5)
+      off.each { |task| assert_nil(task.delegate_to) }
+
+      literal = Generator.new(4, 0.0, ChaosKind.values, delegation: DelegationMode::Literal)
+        .generate(copy_schema, 5)
+      literal.each { |task| assert_equal(Generator::DELEGATE_HOST, task.delegate_to) }
+
+      templated = Generator.new(4, 0.0, ChaosKind.values, delegation: DelegationMode::Templated)
+        .generate(copy_schema, 5)
+      templated.each do |task|
+        assert_equal("{{ #{Generator::DELEGATE_VARIABLE} }}", task.delegate_to)
+      end
+
+      both = Generator.new(4, 0.0, ChaosKind.values, delegation: DelegationMode::Both)
+        .generate(copy_schema, 20)
+      assert(both.any? { |task| task.delegate_to == Generator::DELEGATE_HOST })
+      assert(both.any? { |task| task.delegate_to.try(&.includes?("{{")) })
+    end
+
+    it "never records delegation as a chaos mutation" do
+      Generator.new(6, 50.0).generate(copy_schema, 30).each do |task|
+        refute(task.mutations.any? { |(name, _)| name == "delegate_to" })
+      end
+    end
+
+    it "leaves include/import actions undelegated (their target resolves at parse time)" do
+      Generator.new(6, 0.0).generate(include_role_schema, 10).each do |task|
+        assert_nil(task.delegate_to)
       end
     end
 

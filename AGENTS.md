@@ -103,6 +103,13 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `required_if` entry by forcing its condition to the demanded value
   and dropping every key it demands (skipped when a demanded key is a
   required option or excluded, which would trip an unrelated check).
+  Delegation is a separate axis (`--delegation off|literal|templated|both`,
+  default both): a generated task gets `delegate_to` to
+  `Generator::DELEGATE_HOST` (the second inventory alias) or to the
+  `{{ kpg_delegate }}` play variable, plus `delegate_facts` half the time.
+  It is structural wiring, recorded in the sidecar, never a chaos
+  mutation; include/import actions are left undelegated because their
+  target resolves at parse time.
   Deterministic per seed (`Random::PCG32`);
   every mutation is recorded in `GeneratedTask#mutations`, never applied
   silently. `generate_scenarios(schemas, per_playbook, count)` is the v2
@@ -193,7 +200,17 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   play-level keyword additionally appears as a typed play key (bools and
   numbers stay scalars) and, in the sidecar, as a `play` object
   (`keyword`/`value`/`source`/`env`) — an env-var variant writes NO play
-  key, so the `env` map is the only place it can live. For v2
+  key, so the `env` map is the only place it can live. A delegated v1 task
+  writes `delegate_to`/`delegate_facts`, defines `vars: {kpg_delegate:
+  target2}` for the templated spelling, and appends two probe tasks
+  (`debug: var=ansible_host` and `var=ansible_delegated_vars`, both
+  repeating the same `delegate_to` because that variable only exists
+  inside a delegated task); the sidecar records `delegate_to`/
+  `delegate_facts`. v2 keeps delegation on each task itself and records
+  it in that task's `wiring` instead, since extra probe tasks would shift
+  the register/when chain. Every play targets the `kpg_targets` group
+  (never `all`), so `HostInventory` can keep delegate-only aliases in the
+  inventory without turning them into play hosts. For v2
   the sidecar keeps the FIRST task's module as top-level `module` (runner
   profile selection and Triage keep working unchanged), aggregates all
   tasks' mutations with `t<i>:` prefixes, and adds a `modules` array with
@@ -289,8 +306,11 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `user`, `umask` and `hosts` in results.jsonl, and the context is part of
   the progress/summary labels; local rows are always the invoking account
   and Atlantic rows are always root. The host-count axis
-  (`HostInventory`, 1/2/3) writes an inventory of that many LOCAL aliases
-  (`target`, `target2`, `target3`) into the fresh pair — podman and
+  (`HostInventory`, 1/2/3) writes an inventory whose `kpg_targets` group
+  holds that many LOCAL aliases (`target`, `target2`, `target3`); the
+  remaining aliases stay in the inventory as delegate-only hosts, so a
+  delegated task resolves even on a one-host row. It is written into the
+  fresh pair — podman and
   microVM rebuild it per row, Atlantic once per VM (so it takes a single
   count), and local passes a temp inventory file (a one-host row keeps the
   historical implicit `localhost,` invocation). All aliases are the same
@@ -562,7 +582,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `typo`, `hallucinate`, `wrong-type`, `bad-choice`, `violate-constraint`
   and `jinja`. `--hosts LIST` (1/2/3, default 1) is the host-count
   matrix; `--play-keywords LIST` selects the play-level keyword axis
-  (`none` disables it) and is generate-only.
+  (`none` disables it); `--delegation off|literal|templated|both` is the
+  delegate_to axis. Both are generate-only.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -780,7 +801,9 @@ the real, locally-installed `ansible-doc`/`python3` — no fakes, since
 tracking whatever ansible-core is actually installed is the entire point —
 but skips exercising unfiltered discovery (`SchemaScanner.new.scan`, no
 `--modules`), which would spawn two subprocesses per one of ~9000+
-installed modules; verify that path live. `generator_spec.cr` builds a
+installed modules; verify that path live. `generator_spec.cr` also covers the delegation axis (off/literal/
+templated/both, include/import skipped, never recorded as a mutation) and
+builds a
 small hand-written `ModuleSchema` fixture rather than going through
 `SchemaScanner`, so it stays fast and doesn't depend on any particular
 module's real constraints; it also covers the v2 scenarios (distinct
@@ -837,8 +860,8 @@ role/HTTP fixtures plus `IDENTITY_SCRIPT`, `ownership_command`, the
 unusual-mode destinations/directories and `RESTORE_UNUSUAL_SCRIPT`'s
 idempotency. `play_keywords_spec.cr` covers the kind list, valid vs
 chaos value pools, determinism, env-only `forks` and the 50/50 env door;
-`run_context_spec.cr` covers `HostInventory`'s aliases and rendered
-inventory. `options_spec.cr` covers the identity/umask defaults, parsing,
+`run_context_spec.cr` covers `HostInventory`'s aliases, the
+`kpg_targets` group and delegate-only hosts. `options_spec.cr` covers the identity/umask defaults, parsing,
 normalization and target restrictions, the `--hosts` matrix/validation
 (and Atlantic's single value) and `--play-keywords` (`none`, unknown
 values, generate-only); `triage_spec.cr` groups by

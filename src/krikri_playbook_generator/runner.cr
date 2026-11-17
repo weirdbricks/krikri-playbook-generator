@@ -729,37 +729,31 @@ module KrikriPlaybookGenerator
       end
       runs
     ensure
-      if inventory_path = inventory
-        File.delete(inventory_path) if File.exists?(inventory_path)
+      if path = inventory
+        File.delete(path) if File.exists?(path)
       end
     end
 
-    # A one-host local row keeps the historical implicit inventory (the
-    # exact invocation every earlier run compared); a multi-host row needs
-    # a real inventory file both engines can read.
-    private def local_inventory(hosts : Int32) : String?
-      return if hosts <= 1
-
+    # Local rows need a real inventory file as well: every play targets the
+    # `kpg_targets` group, which the implicit `localhost,` inventory does
+    # not define (the play would silently match no hosts).
+    private def local_inventory(hosts : Int32) : String
       path = File.tempname("kpg-inventory")
       File.write(path, HostInventory.render(hosts))
       path
     end
 
     private def local_comparison(path : String, mode : RunMode, umask : String,
-                                 inventory : String?,
+                                 inventory : String,
                                  env : Hash(String, String) = {} of String => String) : HostState::Comparison
       {ansible: HostState::Observation.new(run_engine_locally(path, "ansible", @ansible_playbook_bin, mode, umask, inventory, env)),
        krikri:  HostState::Observation.new(run_engine_locally(path, "krikri", @krikri_bin, mode, umask, inventory, env))}
     end
 
     private def run_engine_locally(path : String, engine : String, bin : String, mode : RunMode,
-                                   umask : String, inventory : String? = nil,
+                                   umask : String, inventory : String,
                                    env : Hash(String, String) = {} of String => String) : Cmd::Result
-      args = if file = inventory
-               [@engine_timeout.to_s, bin, "-i", file]
-             else
-               [@engine_timeout.to_s, bin, "-i", "localhost,", "-c", "local"]
-             end
+      args = [@engine_timeout.to_s, bin, "-i", inventory]
       args << "--check" if mode.check?
       args << "--diff" if @diff
       args << "-e" << "kpg_owner=root" << "-e" << "kpg_group=root"

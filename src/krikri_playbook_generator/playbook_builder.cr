@@ -189,13 +189,20 @@ module KrikriPlaybookGenerator
       task_body[YAML::Any.new(task.fqcn)] = task.free_form ? YAML::Any.new(task.free_form) : YAML::Any.new(args)
       task_body[YAML::Any.new("register")] = YAML::Any.new("krikri_playbook_generator_result")
       task_body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
+      delegate_fields(task_body, task)
 
       play = {} of YAML::Any => YAML::Any
       play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: #{task.module_name} ##{index}"))
-      play[YAML::Any.new("hosts")] = YAML::Any.new("all")
+      play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
-      play[YAML::Any.new("tasks")] = YAML::Any.new([YAML::Any.new(task_body)])
+      if task.delegate_to.try(&.includes?("{{"))
+        play[YAML::Any.new("vars")] = YAML::Any.new(
+          {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
+      end
+      bodies = [YAML::Any.new(task_body)]
+      bodies.concat(delegate_probe_bodies(task))
+      play[YAML::Any.new("tasks")] = YAML::Any.new(bodies)
 
       yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
@@ -221,6 +228,8 @@ module KrikriPlaybookGenerator
             json.object { choice_sources_json(json, task) }
           end
           play_setting_json(json, @play_settings[index]?)
+          json.field "delegate_to", task.delegate_to
+          json.field "delegate_facts", task.delegate_facts? if task.delegate_to
         end
       end
     end
@@ -255,14 +264,19 @@ module KrikriPlaybookGenerator
         if task.notify_allowed? && (target = task.notify)
           body[YAML::Any.new("notify")] = YAML::Any.new(target)
         end
+        delegate_fields(body, task)
         YAML::Any.new(body)
       end
 
       play = {} of YAML::Any => YAML::Any
       play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: multi-task ##{index}"))
-      play[YAML::Any.new("hosts")] = YAML::Any.new("all")
+      play[YAML::Any.new("hosts")] = YAML::Any.new(HostInventory::GROUP)
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
       apply_play_setting(play, @play_settings[index]?)
+      if tasks.any? { |task| task.delegate_to.try(&.includes?("{{")) }
+        play[YAML::Any.new("vars")] = YAML::Any.new(
+          {YAML::Any.new(Generator::DELEGATE_VARIABLE) => YAML::Any.new(Generator::DELEGATE_HOST)})
+      end
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
       if tasks.any? { |task| task.notify && task.notify_allowed? }
         handler = {} of YAML::Any => YAML::Any
@@ -375,11 +389,42 @@ module KrikriPlaybookGenerator
       end
     end
 
+    private def delegate_fields(body : Hash(YAML::Any, YAML::Any), task : GeneratedTask) : Nil
+      target = task.delegate_to
+      return unless target
+
+      body[YAML::Any.new("delegate_to")] = YAML::Any.new(target)
+      body[YAML::Any.new("delegate_facts")] = YAML::Any.new(true) if task.delegate_facts?
+    end
+
+    # A delegated task's connection context is invisible in its own result
+    # line, so two probes read what ansible resolved for the delegate:
+    # `ansible_host` and `ansible_delegated_vars`. They repeat the task's
+    # `delegate_to` because ansible_delegated_vars only exists inside a
+    # delegated task.
+    private def delegate_probe_bodies(task : GeneratedTask) : Array(YAML::Any)
+      target = task.delegate_to
+      return [] of YAML::Any unless target
+
+      [{"Delegate host probe", "ansible_host"}, {"Delegate vars probe", "ansible_delegated_vars"}].map do |(name, variable)|
+        body = {} of YAML::Any => YAML::Any
+        body[YAML::Any.new("name")] = YAML::Any.new(name)
+        args = {} of YAML::Any => YAML::Any
+        args[YAML::Any.new("var")] = YAML::Any.new(variable)
+        body[YAML::Any.new("ansible.builtin.debug")] = YAML::Any.new(args)
+        body[YAML::Any.new("delegate_to")] = YAML::Any.new(target)
+        body[YAML::Any.new("delegate_facts")] = YAML::Any.new(true) if task.delegate_facts?
+        body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
+        YAML::Any.new(body)
+      end
+    end
+
     private def wiring_descriptions(task : GeneratedTask) : Array(String)
       wiring = [] of String
       wiring << "when:#{task.when_condition}" if task.when_condition
       wiring << "loop:#{task.loop_option}" if task.loop_option && task.loop_items
       wiring << "notify:#{task.notify}" if task.notify
+      wiring << "delegate_to:#{task.delegate_to}" if task.delegate_to
       wiring
     end
   end
