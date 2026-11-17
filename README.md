@@ -9,7 +9,8 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
 1. **schema** — scans installed `ansible-core` + collection Python module
    source for `DOCUMENTATION` YAML, normalizing each module's option spec
    (type, choices, required, default, `mutually_exclusive`,
-   `required_together`, `required_if`, `required_one_of`, list `elements`).
+   `required_together`, `required_if`, `required_one_of`, list `elements`,
+   dict `suboptions`).
 2. **generator** — given a module schema, an RNG seed, and a
    chaos-percentage, builds random-but-schema-aware argument sets:
    - happy-path: a runnable, valid baseline. Path-typed options point at
@@ -17,7 +18,9 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
      `/tmp/kpg-work/...` writable dests — nothing outside those roots),
      `mode` is a valid octal string, `owner`/`group` are `root`,
      `validate` contains the `%s` placeholder, `choices` are respected,
-     ints stay in sane ranges, and the baseline satisfies
+     ints stay in sane ranges, dict and list-of-dict options carry their
+     required suboptions (nested paths stay distinct per element), and the
+     baseline satisfies
      `mutually_exclusive`/`required_together`/`required_one_of`/
      `required_if`. Practical traps come from an extensible per-module
      override table (`src/krikri_playbook_generator/data/

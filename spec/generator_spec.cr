@@ -455,6 +455,51 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "builds a dict of the required suboptions for dict and list-of-dict options" do
+      schema = ModuleSchema.new("alternatives", "community.general")
+      schema.options["subcommands"] = OptionSchema.new(
+        "subcommands", "list", elements: "dict",
+        suboptions: {
+          "link"     => OptionSchema.new("link", "path", required: true),
+          "name"     => OptionSchema.new("name", "str", required: true),
+          "path"     => OptionSchema.new("path", "path", required: true),
+          "priority" => OptionSchema.new("priority", "int"),
+        }
+      )
+      schema.options["headers"] = OptionSchema.new(
+        "headers", "dict",
+        suboptions: {"Content-Type" => OptionSchema.new("Content-Type", "str", required: true)}
+      )
+
+      tasks = Generator.new(5, 0.0).generate(schema, 20)
+      with_subcommands = tasks.select(&.args.has_key?("subcommands"))
+      with_headers = tasks.select(&.args.has_key?("headers"))
+      refute(with_subcommands.empty?, "expected some happy paths to include subcommands")
+      refute(with_headers.empty?, "expected some happy paths to include headers")
+
+      with_subcommands.each do |task|
+        elements = task.args["subcommands"].as_a
+        refute_empty(elements)
+
+        links = elements.map do |element|
+          dict = element.raw.as(Hash(YAML::Any, YAML::Any))
+          assert_equal(%w[link name path], dict.keys.map(&.as_s).sort!)
+          assert(dict[YAML::Any.new("name")].raw.is_a?(String))
+          assert_equal(Fixtures::WORK_ROOT, File.dirname(dict[YAML::Any.new("link")].as_s))
+          dict[YAML::Any.new("link")].as_s
+        end
+
+        assert_equal(links.size, links.uniq.size, "subcommand links must differ: #{links}")
+        refute_nil(task.choice_sources["subcommands"]?)
+        assert_nil(task.choice_sources["link"]?)
+      end
+
+      with_headers.each do |task|
+        dict = task.args["headers"].raw.as(Hash(YAML::Any, YAML::Any))
+        assert_equal(["Content-Type"], dict.keys.map(&.as_s))
+      end
+    end
+
     it "jinja-wraps an option value into an equivalent template expression" do
       baseline = Generator.new(23, 0.0, [ChaosKind::Jinja]).generate(apt_schema, 1).first
       mutated = Generator.new(23, 100.0, [ChaosKind::Jinja]).generate(apt_schema, 1).first

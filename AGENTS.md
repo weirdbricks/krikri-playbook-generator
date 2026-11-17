@@ -31,8 +31,8 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
 - `src/krikri_playbook_generator/schema.cr` — `OptionSchema`/`ModuleSchema`
   plus `SchemaScanner`. **Implemented**: shells out to the real, installed
   `ansible-doc -j` for each module's option schema (type/choices/required/
-  default/elements — exactly what real ansible-playbook validates
-  arguments against, no YAML re-parsing of our own) and to
+  default/elements/suboptions — exactly what real ansible-playbook
+  validates arguments against, no YAML re-parsing of our own) and to
   `scripts/extract_constraints.py` (an embedded Python AST scanner, run via
   `python3 -` over stdin, `{{ read_file(...) }}`'d into the binary at
   compile time) for `mutually_exclusive`/`required_together`/`required_if`/
@@ -57,9 +57,17 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   embedded at compile time, easy to extend — kinds: `mode`, `owner`,
   `group`, `validate`, `source_path`, `work_path`, `work_dir`, `username`,
   `literal_pool`, `empty_dict`, `exclude`, plus module-level `always`,
-  `free_form`, `require_one_of`, `expect_failure` and `not_applicable`),
-  `choices` are respected, ints stay in sane
-  ranges (0–100). An enum option never samples its destructive members
+  `free_form`, `require_one_of`, `expect_failure` and `not_applicable`;
+  a dict option's suboption is keyed by its qualified name, e.g.
+  `subcommands.path`, and nested options never fall back to the bare-name
+  table), `choices` are respected, ints stay in sane
+  ranges (0–100). `SchemaScanner` also keeps a dict option's `suboptions`
+  (from `ansible-doc -j`), so a `type: dict` option and every
+  `type: list`/`elements: dict` element are built as a dict of their
+  required suboptions instead of a bare word (which real ansible rejected
+  with "dictionary requested, could not parse JSON or key=value"); nested
+  path suboptions get an element-indexed `/tmp/kpg-work` path so
+  list elements stay distinct. An enum option never samples its destructive members
   while a working one exists: the documented default wins when it is a
   choice, then a constructive member (`present`, `started`, `mounted`,
   `enabled`, `running`, `latest`, `installed`, `directory`, `touch`), then
@@ -649,7 +657,10 @@ signature stability and the snapshot script's roots/exclusions.
 `masks_spec.cr` unit-tests the mask list, the
 LCS diff and signature stability. `generator_spec.cr` also covers the
 Jinja kind (the templated value must be equivalent to the baseline
-value), the `empty_dict` override, the mutually-exclusive-safe fills, and
+value), the `empty_dict` override, the dict/list-of-dict suboption builds
+(required keys present, per-element nested paths distinct),
+`schema_spec.cr` the real `suboptions` parse (skipped when
+community.general is absent), the mutually-exclusive-safe fills, and
 the enum choice preference (documented default, then constructive, never
 destructive while something else exists, plus the recorded
 `choice_sources`).

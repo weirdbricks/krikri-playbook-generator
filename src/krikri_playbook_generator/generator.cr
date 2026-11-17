@@ -714,15 +714,66 @@ module KrikriPlaybookGenerator
         YAML::Any.new(@rng.rand(1.0..100.0))
       when "list"
         element_type = option.elements || "str"
-        size = @rng.rand(1..3)
-        YAML::Any.new(Array.new(size) { happy_scalar(module_name, option.name, element_type) })
+        if element_type == "dict" && !option.suboptions.empty?
+          size = @rng.rand(1..2)
+          YAML::Any.new(Array.new(size) { |element| happy_dict(module_name, option, element) })
+        else
+          size = @rng.rand(1..3)
+          YAML::Any.new(Array.new(size) { happy_scalar(module_name, option.name, element_type) })
+        end
       when "dict"
-        YAML::Any.new({} of YAML::Any => YAML::Any)
+        option.suboptions.empty? ? YAML::Any.new({} of YAML::Any => YAML::Any) : happy_dict(module_name, option)
       when "path"
         path_value(option.name)
       else
         YAML::Any.new(random_word)
       end
+    end
+
+    # A dict value built from the option's own declared suboptions. Every
+    # required key gets a value of its declared type, so a
+    # `type: list, elements: dict` option (alternatives' `subcommands`)
+    # produces a dict real ansible accepts instead of a bare word it
+    # rejects with "dictionary requested, could not parse JSON or
+    # key=value"; optional keys stay absent because a minimal valid dict
+    # is the runnable baseline. Nested dicts recurse, everything else
+    # reuses the option-level heuristics (overrides, choices, path roots).
+    # Path-typed suboptions get an element-indexed work path: modules often
+    # require the elements to be distinct (alternatives rejects a link used
+    # twice, or one equal to the primary link) and the schema cannot say so.
+    # The nested values are deliberately not recorded in choice_sources:
+    # that sidecar maps top-level option slots, and a suboption name can
+    # collide with an unrelated top-level one.
+    private def happy_dict(module_name : String, option : OptionSchema, element : Int32 = 0) : YAML::Any
+      dict = {} of YAML::Any => YAML::Any
+      option.suboptions.each do |name, suboption|
+        next unless suboption.required?
+
+        dict[YAML::Any.new(name)] = nested_value(module_name, option.name, suboption, element)
+      end
+      YAML::Any.new(dict)
+    end
+
+    private def nested_value(module_name : String, parent_name : String,
+                             option : OptionSchema, element : Int32) : YAML::Any
+      if override = @overrides.for_option(module_name, "#{parent_name}.#{option.name}")
+        if value = override_value(override)
+          return value
+        end
+        if (choices = override.choices) && !choices.empty?
+          return YAML::Any.new(preferred_choice(choices)[0])
+        end
+      end
+
+      unless option.choices.empty?
+        return YAML::Any.new(preferred_choice(option.choices, option.default)[0])
+      end
+
+      if option.type == "path"
+        return YAML::Any.new("#{Fixtures::WORK_ROOT}/#{option.name}-#{element}")
+      end
+
+      happy_scalar(module_name, option)
     end
 
     # List elements have no OptionSchema of their own; they share the

@@ -11,9 +11,16 @@ module KrikriPlaybookGenerator
     property? required : Bool
     property default : JSON::Any?
     property elements : String?
+    # Populated for `type: dict` and for `type: list`/`elements: dict`: the
+    # keys each dict element accepts, so a generated value can satisfy their
+    # required entries instead of being a bare word (which real ansible
+    # rejects with "dictionary requested, could not parse JSON or
+    # key=value").
+    property suboptions : Hash(String, OptionSchema)
 
     def initialize(@name, @type = "str", @choices = [] of String,
-                   @required = false, @default = nil, @elements = nil)
+                   @required = false, @default = nil, @elements = nil,
+                   @suboptions = {} of String => OptionSchema)
     end
   end
 
@@ -214,13 +221,21 @@ module KrikriPlaybookGenerator
     end
 
     private def build_option(name : String, option : Hash(String, JSON::Any)) : OptionSchema
+      suboptions = {} of String => OptionSchema
+      option["suboptions"]?.try(&.as_h?).try do |nested|
+        nested.each do |sub_name, sub_option|
+          sub_option.as_h?.try { |sub_hash| suboptions[sub_name] = build_option(sub_name, sub_hash) }
+        end
+      end
+
       OptionSchema.new(
         name,
         option["type"]?.try(&.as_s?) || "str",
         option["choices"]?.try(&.as_a?).try(&.map(&.to_s)) || [] of String,
         option["required"]?.try(&.as_bool?) || false,
         option["default"]?,
-        option["elements"]?.try(&.as_s?)
+        option["elements"]?.try(&.as_s?),
+        suboptions
       )
     end
 

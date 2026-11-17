@@ -29,6 +29,18 @@ module KrikriPlaybookGenerator
       assert_equal("list", name_option.as(OptionSchema).type)
     end
 
+    it "parses a dict option's suboptions from ansible-doc's own schema" do
+      schemas = SchemaScanner.new(["community.general.alternatives"]).scan
+      skip("community.general is not installed on this machine") if schemas.empty?
+
+      subcommands = schemas.first.options["subcommands"].as(OptionSchema)
+      assert_equal("list", subcommands.type)
+      assert_equal("dict", subcommands.elements)
+      assert_equal(%w[link name path], subcommands.suboptions.keys.sort!)
+      assert(subcommands.suboptions["link"].required?)
+      assert_equal("path", subcommands.suboptions["link"].type)
+    end
+
     it "statically extracts literal cross-option constraints from module source" do
       schema = SchemaScanner.new(["apt"]).scan.first
       assert_includes(schema.mutually_exclusive, %w[deb package upgrade])

@@ -43,6 +43,10 @@
 #
 # `names:` entries apply by option name to ANY module that doesn't
 # override that option itself; `modules:` entries win over `names:`.
+# A dict option's suboption is keyed by its qualified name
+# (`parent.child`, e.g. `subcommands.path`) inside a module entry; nested
+# options do not fall back to the bare-name table, since a suboption
+# name can collide with an unrelated top-level one.
 # A module's `require_one_of` lists runtime requirement groups the
 # DOCUMENTATION doesn't encode (e.g. copy needs src or content) that the
 # generator must satisfy in the happy path. Extend freely - the file is
@@ -1048,3 +1052,21 @@ modules:
     exclude: [reposdir, mirrorlist, metalink, gpgkey, gpgcakey, username,
               password, proxy, proxy_username, proxy_password, sslclientcert,
               sslclientkey, sslcacert]
+
+  # alternatives installs a real alternative: the link/path pair must name
+  # an existing executable and both are runtime-required even though the
+  # DOCUMENTATION marks them optional, and a random work path does not
+  # exist. `subcommands` is a `type: list, elements: dict` option, which
+  # the generator now builds from its required suboptions (name/link/path)
+  # instead of the bare words real ansible rejected with "dictionary
+  # requested, could not parse JSON or key=value"; its slave links must be
+  # unique and differ from the primary link, so only the slave `path` is
+  # pinned and the links use the element-indexed default. `family` is the
+  # other half of required_one_of [path, family] and a random family name
+  # is rejected, so the path form is the one exercised.
+  alternatives:
+    path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh"]}
+    link: {kind: literal_pool, pool: ["/tmp/kpg-work/kpgalt-link"]}
+    subcommands.path: {kind: literal_pool, pool: ["/opt/kpg-fixtures/script.sh"]}
+    family: {exclude: true}
+    always: [name, link, path]
