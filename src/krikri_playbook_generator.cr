@@ -24,7 +24,8 @@ module KrikriPlaybookGenerator
         podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
         microvm_parallel: opts.microvm_parallel,
         user_profiles: Options.effective_user_profiles(opts),
-        umasks: Options.effective_umasks(opts)).run
+        umasks: Options.effective_umasks(opts),
+        hosts: Options.effective_hosts(opts)).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
     in Command::Report
@@ -102,7 +103,9 @@ module KrikriPlaybookGenerator
         tasks.concat(generator.generate(schema, opts.count))
       end
       Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
-      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed).build(tasks)
+      sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
+      settings = tasks.map { |task| sampler.sample(task.chaos?) }
+      playbooks = PlaybookBuilder.new(opts.out_dir, opts.seed, settings).build(tasks)
     end
     run_generated(opts, playbooks)
   end
@@ -123,7 +126,9 @@ module KrikriPlaybookGenerator
       tasks = [] of GeneratedTask
       schemas.each { |schema| tasks.concat(generator.generate(schema, opts.count)) }
       Log.info("generate", "building #{tasks.size} playbook(s) into #{opts.out_dir}")
-      return PlaybookBuilder.new(opts.out_dir, opts.seed).build(tasks)
+      sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
+      settings = tasks.map { |task| sampler.sample(task.chaos?) }
+      return PlaybookBuilder.new(opts.out_dir, opts.seed, settings).build(tasks)
     end
 
     Log.info("generate", "generating #{opts.count} multi-task playbook(s) " \
@@ -131,7 +136,9 @@ module KrikriPlaybookGenerator
                          "chaos=#{opts.chaos_percentage}%, seed=#{opts.seed})")
     scenarios = generator.generate_scenarios(schemas, per_playbook, opts.count)
     Log.info("generate", "building #{scenarios.size} playbook(s) into #{opts.out_dir}")
-    PlaybookBuilder.new(opts.out_dir, opts.seed).build_scenarios(scenarios)
+    sampler = PlaySettingSampler.new(opts.seed, opts.play_keywords)
+    settings = scenarios.map { |tasks| sampler.sample(tasks.any?(&.chaos?)) }
+    PlaybookBuilder.new(opts.out_dir, opts.seed, settings).build_scenarios(scenarios)
   end
 
   private def self.print_version : Int32
@@ -156,7 +163,8 @@ module KrikriPlaybookGenerator
       podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
       microvm_parallel: opts.microvm_parallel,
       user_profiles: Options.effective_user_profiles(opts),
-      umasks: Options.effective_umasks(opts)).run
+      umasks: Options.effective_umasks(opts),
+      hosts: Options.effective_hosts(opts)).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
     print_full_report(triage)
@@ -249,9 +257,12 @@ module KrikriPlaybookGenerator
     puts "modes: #{modes} | idempotency pass: #{info[:second_run] ? "on" : "off"} | wall time: #{duration}"
   end
 
-  # (mode, run, identity, umask, signature label) for one finding's example.
+  # (mode, run, identity, umask, host count, signature label) for one
+  # finding's example; the host count only shows when it is not the default.
   private def self.finding_context(example : Triage::ResultLine, label : String) : String
-    "(#{example.mode}, run #{example.run}, #{example.user}, umask #{example.umask}, #{label})"
+    context = "#{example.mode}, run #{example.run}, #{example.user}, umask #{example.umask}"
+    context += ", hosts #{example.hosts}" unless example.hosts == 1
+    "(#{context}, #{label})"
   end
 
   private def self.print_divergences(findings : Array(Triage::Finding), diff : Bool = true) : Nil
@@ -269,7 +280,7 @@ module KrikriPlaybookGenerator
         puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
       puts "  example: #{finding.playbooks.first}"
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask)}"
+      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env)}"
     end
   end
 
@@ -282,7 +293,7 @@ module KrikriPlaybookGenerator
       example = finding.example
       puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
         puts "  leftover staging files:"
@@ -308,7 +319,7 @@ module KrikriPlaybookGenerator
       puts "#{finding.module_name} #{finding_context(example, label)}: " \
            "#{finding.count} playbook(s) mutated the host in check mode"
       puts "  example: #{example.playbook}"
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env)}"
       lines = example.check_mode_diff.lines
       lines.first(10).each { |line| puts "  #{line}" }
       puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10

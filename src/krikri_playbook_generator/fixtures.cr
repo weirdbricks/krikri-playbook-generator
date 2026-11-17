@@ -39,11 +39,17 @@ module KrikriPlaybookGenerator
     # the writable half has to be re-owned for whichever identity the row
     # runs as. Doing it per run (before the first snapshot) keeps both
     # engines' hosts identical without baking a profile-specific image.
+    #
+    # It also re-creates the read-only and unusual-mode destinations
+    # (RESTORE_UNUSUAL_SCRIPT), so every row and both engines start from
+    # the same destination state even when an earlier run replaced or
+    # rewrote one of them: the modes are part of the input under test, not
+    # residue from the previous comparison.
     def self.ownership_command(user : UserProfile) : String
       owner = user.nonroot? ? "#{UNPRIVILEGED_USER}:#{UNPRIVILEGED_USER}" : "root:root"
       "chown -R #{owner} #{WORK_ROOT} && chmod 0755 #{WORK_ROOT} && " \
-      "chown -R root:root #{READONLY_DIR} && chmod 0555 #{READONLY_DIR} && " \
-      "chmod 0444 #{READONLY_DEST} && chmod -R a+rX #{FIXTURE_ROOT}"
+      "chown -R root:root #{READONLY_DIR} && chmod -R a+rX #{FIXTURE_ROOT} && " \
+      "#{RESTORE_UNUSUAL_SCRIPT}"
     end
 
     SOURCE_FILES = [
@@ -98,13 +104,58 @@ module KrikriPlaybookGenerator
     READONLY_DIR  = "#{WORK_ROOT}/readonly"
     READONLY_DEST = "#{READONLY_DIR}/dest.txt"
 
+    # Existing destinations whose mode production playbooks really meet.
+    # They live in the WRITABLE work root on purpose: both engines can
+    # still replace a locked file through an atomic rename, so the compared
+    # behavior is replace-vs-write-in-place and the resulting mode, not a
+    # flat permission error (that is what READONLY_DIR above is for).
+    # Restored by ownership_command before every row.
+    UNUSUAL_FILES = {
+      "#{WORK_ROOT}/dest-0444.txt" => "0444",
+      "#{WORK_ROOT}/dest-0400.txt" => "0400",
+      "#{WORK_ROOT}/dest-0440.txt" => "0440",
+    }
+
+    # Directories with unusual modes: owner-only (0600), setgid (2755) and
+    # sticky (1777), so a module creating children there has to agree on
+    # the inherited mode and on who may write.
+    UNUSUAL_DIRS = {
+      "#{WORK_ROOT}/dir-0600"   => "0600",
+      "#{WORK_ROOT}/dir-setgid" => "2755",
+      "#{WORK_ROOT}/dir-sticky" => "1777",
+    }
+
     DEST_PATHS = [
       "#{WORK_ROOT}/out1.txt",
       "#{WORK_ROOT}/out2.txt",
       "#{WORK_ROOT}/out3.cfg",
       "#{WORK_ROOT}/sub",
       READONLY_DEST,
-    ]
+    ] + UNUSUAL_FILES.keys
+
+    # Existing directories with an unusual mode, for chdir-style options.
+    # They are deliberately NOT in DEST_PATHS: most consumers of a generic
+    # destination expect a file path, and an existing directory there fails
+    # the module before it exercises anything.
+    WORK_DIRS = [WORK_ROOT, "#{FIXTURE_ROOT}/dir"] + UNUSUAL_DIRS.keys
+
+    # Idempotent: recreates the locked destinations with their content and
+    # modes. Shared by the one-time image seed and the per-row ownership
+    # fix, so the two can never disagree about what the starting state is.
+    RESTORE_UNUSUAL_SCRIPT = String.build do |io|
+      UNUSUAL_FILES.each do |path, mode|
+        io << "printf 'kpg locked dest\\nsecond line\\n' > #{path}\n"
+        io << "chmod #{mode} #{path}\n"
+      end
+      UNUSUAL_DIRS.each do |path, mode|
+        io << "mkdir -p #{path}\n"
+        io << "chmod #{mode} #{path}\n"
+      end
+      io << "mkdir -p #{READONLY_DIR}\n"
+      io << "printf 'kpg read-only dest\\n' > #{READONLY_DEST}\n"
+      io << "chmod 0444 #{READONLY_DEST}\n"
+      io << "chmod 0555 #{READONLY_DIR}\n"
+    end
 
     # get_url/uri need a URL that actually serves something: a random URL
     # fails DNS/connection before the module logic runs, which the quality
@@ -138,9 +189,7 @@ module KrikriPlaybookGenerator
       printf 'kpg existing alpha\nsecond line\nkpg existing omega\n' > #{WORK_ROOT}/existing.txt
       printf 'key = value\nkpg setting = on\n' > #{WORK_ROOT}/existing2.txt
       mkdir -p #{READONLY_DIR}
-      printf 'kpg read-only dest\n' > #{READONLY_DEST}
-      chmod 0444 #{READONLY_DEST}
-      chmod 0555 #{READONLY_DIR}
+      #{RESTORE_UNUSUAL_SCRIPT}
       printf 'tree a\n' > #{WORK_ROOT}/tree/a.txt
       printf 'tree b\n' > #{WORK_ROOT}/tree/b.conf
       printf 'hidden\n' > #{WORK_ROOT}/tree/.hidden

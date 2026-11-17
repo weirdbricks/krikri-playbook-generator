@@ -464,6 +464,21 @@ module KrikriPlaybookGenerator
       end
     end
 
+    it "honours a module's explicit destination pool, locked modes included" do
+      schema = ModuleSchema.new("copy", "ansible.builtin")
+      schema.options["dest"] = OptionSchema.new("dest", "path", required: true)
+      overrides = Overrides.new(<<-YAML)
+          modules:
+            copy:
+              dest: {kind: work_path, pool: ["/tmp/kpg-work/dest-0444.txt", "/tmp/kpg-work/readonly/dest.txt"]}
+        YAML
+      pool = ["/tmp/kpg-work/dest-0444.txt", "/tmp/kpg-work/readonly/dest.txt"]
+
+      Generator.new(3, 0.0, ChaosKind.values, overrides).generate(schema, 20).each do |task|
+        assert(pool.includes?(task.args["dest"].as_s), "dest #{task.args["dest"]} came from outside the pool")
+      end
+    end
+
     it "builds a dict of the required suboptions for dict and list-of-dict options" do
       schema = ModuleSchema.new("alternatives", "community.general")
       schema.options["subcommands"] = OptionSchema.new(

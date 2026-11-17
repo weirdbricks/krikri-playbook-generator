@@ -57,6 +57,23 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "records the host-count matrix next to the identity and umask axes" do
+      dir = File.tempname("kpg-spec-versions")
+      Dir.mkdir_p(dir)
+      binary = make_binary(dir)
+
+      text = Versions.render(VERSION, Time.utc(2026, 2, 3, 4, 5, 6), binary,
+        "#{dir}/bin/ansible-playbook", false, [RunMode::Check], false, true, 1.5.seconds,
+        fake_runner({} of String => Cmd::Result), user_profiles: ["root"], umasks: ["022"],
+        hosts: [1, 2])
+
+      assert(text.lines.includes?("user-profiles: root"))
+      assert(text.lines.includes?("umasks: 022"))
+      assert(text.lines.includes?("hosts: 1,2"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "writes versions.txt identical to the rendered text" do
       dir = File.tempname("kpg-spec-versions")
       Dir.mkdir_p(dir)

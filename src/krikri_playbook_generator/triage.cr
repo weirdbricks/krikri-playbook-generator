@@ -30,7 +30,8 @@ module KrikriPlaybookGenerator
   class Triage
     record MutationEntry, option : String, kind : String
     record ResultLine, playbook : String, module_name : String, mode : String, run : Int32,
-      user : String, umask : String, chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
+      user : String, umask : String, hosts : Int32, env : Hash(String, String),
+      chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
       ansible_error : String?, mutations : Array(MutationEntry), error : String?,
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
       state_signature : String?, state_diff : String, check_mode_mutated : Bool,
@@ -101,23 +102,23 @@ module KrikriPlaybookGenerator
     end
 
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def state_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.state_divergent
@@ -126,28 +127,28 @@ module KrikriPlaybookGenerator
         # the "one root cause never appears twice" rule.
         next if line.check_mode_mutated
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.state_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.state_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
     end
 
     def check_mode_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.check_mode_divergent?
         next if line.errored? || line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.check_mode_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.check_mode_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first)
       end.sort_by! { |finding| -finding.count }
@@ -240,6 +241,8 @@ module KrikriPlaybookGenerator
             json.field "run", example.run
             json.field "user", example.user
             json.field "umask", example.umask
+            json.field "hosts", example.hosts
+            json.field "env", example.env.empty? ? nil : example.env
             json.field "chaos", example.chaos
             json.field "mutations" do
               json.array do
@@ -399,7 +402,9 @@ module KrikriPlaybookGenerator
     # podman would "reproduce" nowhere.
     def self.repro_command(playbook_path : String, module_names : Array(String) = [] of String,
                            mode : String? = nil, run : Int32 = 1, diff : Bool = true,
-                           user : String = "root", umask : String = DEFAULT_UMASK) : String
+                           user : String = "root", umask : String = DEFAULT_UMASK,
+                           hosts : Int32 = 1,
+                           env : Hash(String, String) = {} of String => String) : String
       backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
       command = "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
       command += " --modes #{mode}" if mode && mode.in?(%w[check real])
@@ -408,9 +413,15 @@ module KrikriPlaybookGenerator
       # meaningful to pin.
       command += " --user-profile nonroot" if user == "nonroot"
       command += " --umask #{umask}"
+      # A multi-host row only reproduces on an inventory with that many
+      # hosts; a one-host row is the default and stays unpinned.
+      command += " --hosts #{hosts}" if hosts > 1
       command += " --no-second-run" if run <= 1
       command += " --no-diff" unless diff
-      command
+      # An env-var play keyword lives only in the sidecar, so the repro has
+      # to export it itself or it would rerun a different playbook.
+      prefix = env.map { |name, value| "#{name}=#{Process.quote(value)}" }.join(" ")
+      prefix.empty? ? command : "#{prefix} #{command}"
     end
 
     private def result_lines : Array(ResultLine)
@@ -466,6 +477,8 @@ module KrikriPlaybookGenerator
         parsed["run"]?.try(&.as_i?) || 1,
         parsed["user"]?.try(&.as_s?) || UserProfile::Root.label,
         parsed["umask"]?.try(&.as_s?) || DEFAULT_UMASK,
+        parse_hosts(parsed),
+        parse_env(parsed),
         parsed["chaos"]?.try(&.as_bool?) || false,
         divergent,
         result_signature(masked_diff, parsed),
@@ -483,6 +496,23 @@ module KrikriPlaybookGenerator
         HostState.check_mode_signature(check_mode_diff),
         leftover_temps
       )
+    end
+
+    # A legacy line predates the host-count axis and is one host.
+    private def parse_hosts(parsed : Hash(String, JSON::Any)) : Int32
+      parsed["hosts"]?.try(&.as_i?) || 1
+    end
+
+    # The play-level keyword a row ran with through the environment
+    # (ANSIBLE_STRATEGY / ANSIBLE_FORKS); a play-key variant has none.
+    private def parse_env(parsed : Hash(String, JSON::Any)) : Hash(String, String)
+      result = {} of String => String
+      parsed["env"]?.try(&.as_h?).try do |entries|
+        entries.each do |name, value|
+          result[name] = value.as_s if value.as_s?
+        end
+      end
+      result
     end
 
     private def parse_state_fields(parsed : Hash(String, JSON::Any),

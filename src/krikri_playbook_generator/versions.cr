@@ -29,17 +29,18 @@ module KrikriPlaybookGenerator
                    ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
                    second_run : Bool, diff : Bool, duration : Time::Span, started : Time,
                    runner : CommandRunner = DEFAULT_RUNNER,
-                   user_profiles : Array(String)? = nil, umasks : Array(String)? = nil) : Nil
+                   user_profiles : Array(String)? = nil, umasks : Array(String)? = nil,
+                   hosts : Array(Int32)? = nil) : Nil
       File.write(File.join(results_dir, "versions.txt"),
         render(version, started, krikri_bin, ansible_playbook_bin, control, modes, second_run, diff,
-          duration, runner, user_profiles: user_profiles, umasks: umasks))
+          duration, runner, user_profiles: user_profiles, umasks: umasks, hosts: hosts))
     end
 
     def self.render(version : String, started : Time, krikri_bin : String,
                     ansible_playbook_bin : String, control : Bool, modes : Array(RunMode),
                     second_run : Bool, diff : Bool, duration : Time::Span,
                     runner : CommandRunner, user_profiles : Array(String)? = nil,
-                    umasks : Array(String)? = nil) : String
+                    umasks : Array(String)? = nil, hosts : Array(Int32)? = nil) : String
       binary = Path[krikri_bin].expand(home: true).to_s
       checkout = File.dirname(File.dirname(binary))
       subject_args = ["-C", checkout, "log", "-1", "--format=%s"]
@@ -64,6 +65,7 @@ module KrikriPlaybookGenerator
       # legacy call that predates the axes.
       lines.insert(10, "user-profiles: #{user_profiles.join(",")}") if user_profiles
       lines.insert(11, "umasks: #{umasks.join(",")}") if umasks
+      lines.insert(12, "hosts: #{hosts.join(",")}") if hosts
 
       # krikri-role-triager uses "check: true" to tell a check-mode repro
       # from a real one; a mixed-mode batch is not a check run.

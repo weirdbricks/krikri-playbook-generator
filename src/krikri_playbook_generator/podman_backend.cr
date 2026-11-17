@@ -186,8 +186,9 @@ module KrikriPlaybookGenerator
     # `--user-profile nonroot` (a non-root task cannot chown to root).
     def self.engine_script(engine_cmd : String, playbook_basename : String, engine_timeout : Int32,
                            check : Bool, diff : Bool = true, umask : String = DEFAULT_UMASK,
-                           owner : String = "root", group : String = "root") : String
-      "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} timeout #{engine_timeout} " \
+                           owner : String = "root", group : String = "root",
+                           env : Hash(String, String) = {} of String => String) : String
+      "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} #{KrikriPlaybookGenerator.env_prefix(env)}timeout #{engine_timeout} " \
       "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""} " \
       "-e kpg_owner=#{owner} -e kpg_group=#{group} " \
       "-i inventory.ini /work/#{playbook_basename} </dev/null"
@@ -351,7 +352,8 @@ module KrikriPlaybookGenerator
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
                      check : Bool? = nil, second_run : Bool = false,
                      diff : Bool? = nil, user : UserProfile = UserProfile::Root,
-                     umask : String = DEFAULT_UMASK) : Array(HostState::Comparison)
+                     umask : String = DEFAULT_UMASK, hosts : Int32 = 1,
+                     env : Hash(String, String) = {} of String => String) : Array(HostState::Comparison)
       raise PodmanProvisionError.new("provision was never called for profile #{profile}") unless @provisioned_profiles.includes?(profile)
 
       # Per-profile images: a mixed batch provisions both templates, and a
@@ -382,14 +384,20 @@ module KrikriPlaybookGenerator
         ownership = Fixtures.ownership_command(user)
         exec!(real, ownership)
         exec!(krikri, ownership)
+        # The host-count axis rebuilds the inventory per pair: both engines
+        # must see the same N local aliases, and the committed template's
+        # one-host inventory cannot express a per-row count.
+        inventory = HostInventory.render(hosts)
+        write_inventory(real, inventory)
+        write_inventory(krikri, inventory)
 
         runs = [] of HostState::Comparison
         runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-          user, umask)
+          user, umask, env)
         if second_run && HostState.succeeded?(runs.first[:ansible]) &&
            HostState.succeeded?(runs.first[:krikri])
           runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-            user, umask)
+            user, umask, env)
         end
         runs
       ensure
@@ -402,16 +410,18 @@ module KrikriPlaybookGenerator
 
     private def comparison(real : String, krikri : String, playbook_path : String,
                            krikri_engine : String, check : Bool, diff : Bool,
-                           user : UserProfile, umask : String) : HostState::Comparison
-      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask),
-       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask)}
+                           user : UserProfile, umask : String,
+                           env : Hash(String, String) = {} of String => String) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env)}
     end
 
     private def observe(name : String, engine_cmd : String, playbook_path : String,
                         check : Bool, diff : Bool, user : UserProfile,
-                        umask : String) : HostState::Observation
+                        umask : String,
+                        env : Hash(String, String) = {} of String => String) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask)
+      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -524,8 +534,8 @@ module KrikriPlaybookGenerator
       end
     end
 
-    private def write_inventory(name : String) : Nil
-      result = Cmd.run("podman", ["exec", "-i", name, "bash", "-c", "cat > /work/inventory.ini"], input: INVENTORY, timeout: 60.0)
+    private def write_inventory(name : String, content : String = INVENTORY) : Nil
+      result = Cmd.run("podman", ["exec", "-i", name, "bash", "-c", "cat > /work/inventory.ini"], input: content, timeout: 60.0)
       raise PodmanProvisionError.new("writing inventory.ini failed in #{name}: #{result.stderr}") unless Cmd.success?(result)
     end
 
@@ -727,10 +737,11 @@ module KrikriPlaybookGenerator
     private def exec_engine(name : String, engine_cmd : String, playbook_path : String,
                             check : Bool = @check_mode, diff : Bool = @diff,
                             user : UserProfile = UserProfile::Root,
-                            umask : String = DEFAULT_UMASK) : Cmd::Result
+                            umask : String = DEFAULT_UMASK,
+                            env : Hash(String, String) = {} of String => String) : Cmd::Result
       owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
       script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout,
-        check, diff, umask, owner, owner)
+        check, diff, umask, owner, owner, env)
       args = ["exec", "-w", "/work"]
       if user.nonroot?
         args += ["--user", "#{Fixtures::UNPRIVILEGED_USER}:#{Fixtures::UNPRIVILEGED_USER}",

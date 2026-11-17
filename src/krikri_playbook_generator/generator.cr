@@ -130,7 +130,8 @@ module KrikriPlaybookGenerator
     # Includes read-only modes: a destination's final mode is written after
     # the content, so they stay runnable for both engines and expose a
     # module that instead writes through the (now read-only) existing file.
-    MODES = ["0644", "0755", "0600", "0750", "0440", "0400", "0444"]
+    # The setgid/sticky entries exercise directory modes and inheritance.
+    MODES = ["0644", "0755", "0600", "0750", "0440", "0400", "0444", "2755", "1777"]
 
     # Enum members that put a module into its working mode, in preference
     # order. Half a batch sampling `absent`/`stopped` turns a happy path
@@ -700,9 +701,9 @@ module KrikriPlaybookGenerator
       when "source_path"
         (override.pool || Fixtures::SOURCE_FILES).sample(@rng)
       when "work_path"
-        Fixtures::DEST_PATHS.sample(@rng)
+        (override.pool || Fixtures::DEST_PATHS).sample(@rng)
       when "work_dir"
-        [Fixtures::WORK_ROOT, "#{Fixtures::FIXTURE_ROOT}/dir"].sample(@rng)
+        (override.pool || Fixtures::WORK_DIRS).sample(@rng)
       when "username"
         "kpg#{random_word(4)}#{@rng.rand(10..99)}"
       when "literal_pool"

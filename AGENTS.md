@@ -148,6 +148,32 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `ownership_command(user)` re-owns the writable work root for the row's
   identity before the first snapshot, so root and nonroot rows start from
   identical fixture state without a profile-specific image.
+  It also seeds the destination STATE production playbooks meet:
+  `UNUSUAL_FILES` (0444/0400/0440 locked files in the writable work root,
+  where both engines can still replace them by atomic rename, so the
+  compared behavior is replace-vs-write and the mode left behind),
+  `UNUSUAL_DIRS` (0600/setgid/sticky directories reachable through
+  `WORK_DIRS` for chdir-style options) and the read-only PARENT
+  `READONLY_DIR` that makes a nonroot row fail with the permission error
+  and its staging-file report. `RESTORE_UNUSUAL_SCRIPT` recreates all of
+  them and is part of `ownership_command`, so every row and both engines
+  start from the same unusual modes even after an earlier run rewrote one.
+- `src/krikri_playbook_generator/play_keywords.cr` — `PlayKeywords`,
+  `PlaySetting` and `PlaySettingSampler`. **Implemented**: the play-level
+  keyword axis. One keyword is drawn PER PLAYBOOK from
+  `strategy`/`serial`/`throttle`/`any_errors_fatal`/`run_once`/
+  `max_fail_percentage`/`gather_facts`/`connection`/`forks`, and exactly
+  one is set: ansible warns that the free strategy ignores
+  run_once/any_errors_fatal/max_fail_percentage, so mixing them would
+  mostly test the warning. Happy paths draw a value ansible accepts; a
+  chaos playbook draws a value it must reject (or a strategy/connection
+  name with no plugin), so the delta under test is play-level validation.
+  `forks` has no play-level spelling, so it is env-only, and `strategy`
+  can arrive either as a play key or as `ANSIBLE_STRATEGY=...`; the
+  sampler draws that door 50/50 so the two code paths are separate
+  playbooks (a fix verified on one form must not hide the other). The
+  draw is deterministic per seed but uses its own RNG, so it never shifts
+  the task-argument draws (and vice versa).
 - `src/krikri_playbook_generator/playbook_builder.cr` — `PlaybookBuilder`.
   **Implemented**: two shapes. v1 (the default, `build`) is
   single-task-per-module playbooks (one play, one task, `hosts: all`,
@@ -163,7 +189,11 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `<n>-<module>-happy|chaos.yml` (v2
   names `<n>-multi-<first module>-happy|chaos.yml`) gets a sibling
   `<n>-...meta.json` (module/collection/chaos?/mutations/choice_sources) since the
-  playbook YAML alone doesn't say which slots were mutated or how; for v2
+  playbook YAML alone doesn't say which slots were mutated or how; a
+  play-level keyword additionally appears as a typed play key (bools and
+  numbers stay scalars) and, in the sidecar, as a `play` object
+  (`keyword`/`value`/`source`/`env`) — an env-var variant writes NO play
+  key, so the `env` map is the only place it can live. For v2
   the sidecar keeps the FIRST task's module as top-level `module` (runner
   profile selection and Triage keep working unchanged), aggregates all
   tasks' mutations with `t<i>:` prefixes, and adds a `modules` array with
@@ -254,11 +284,18 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   Every playbook is compared once per MODE (`RunMode::Check` and
   `RunMode::Real`): both by default on an isolated backend, check-only
   locally unless `--allow-mutation`, always real on Atlantic. It is also
-  compared once per identity and umask (`--user-profile`, `--umask`):
-  each (identity, umask) row gets its own fresh host/pair, records `user`
-  and `umask` in results.jsonl, and is part of the progress/summary
-  labels; local rows are always the invoking account and Atlantic rows
-  are always root. Each
+  compared once per identity, umask and host count (`--user-profile`,
+  `--umask`, `--hosts`): each row gets its own fresh host/pair and records
+  `user`, `umask` and `hosts` in results.jsonl, and the context is part of
+  the progress/summary labels; local rows are always the invoking account
+  and Atlantic rows are always root. The host-count axis
+  (`HostInventory`, 1/2/3) writes an inventory of that many LOCAL aliases
+  (`target`, `target2`, `target3`) into the fresh pair — podman and
+  microVM rebuild it per row, Atlantic once per VM (so it takes a single
+  count), and local passes a temp inventory file (a one-host row keeps the
+  historical implicit `localhost,` invocation). All aliases are the same
+  machine, so the axis compares per-host task execution, recap host lists
+  and `included:` grouping, not a second host's state. Each
   (playbook, mode) gets its own fresh host/pair, so real-mode state can
   never leak into the check row; each row records its `mode` in
   results.jsonl, and Triage groups by module + mode + run + signature so a
@@ -279,9 +316,15 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   `--no-diff`, identically on both engines) and Atlantic.net
   (`--run-on-atlantic`, one disposable VM per module profile, always
   real - it refuses `--check` - and `--diff` like the other backends).
+  A playbook's env-var play keyword (ANSIBLE_STRATEGY/ANSIBLE_FORKS) is
+  read from its sidecar `play.env` and exported identically for both
+  engines by every backend (podman/microVM/Atlantic command construction,
+  local's inner bash); results.jsonl and the repro command carry it too,
+  since the playbook file cannot.
   `MetaInfo` carries `module_names` (every task's module for a v2
   multi-task playbook, falling back to just the primary one for v1
-  sidecars): podman picks the Rpm profile when ANY task needs it, the
+  sidecars) and `env` (the sidecar's play-level env mapping): podman picks
+  the Rpm profile when ANY task needs it, the
   Atlantic grouping requires a profile for EVERY task's module, the local
   supported-community check covers every task, and the podman
   dependency-union list includes every task's fqcn. results.jsonl gains a
@@ -421,7 +464,7 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   (v0.0.8, rewritten)**: reads `results.jsonl` only (module/chaos/
   mutations are now embedded in each line by `Runner`, so sidecars aren't
   needed) and produces three sections. `report` groups divergent
-  playbooks by `{module, mode, run, signature}` — the stable root-cause hash
+  playbooks by `{module, mode, run, hosts, signature}` — the stable root-cause hash
   `ByteDiff#signature` computes from the masked diff, keyed on the
   ansible side's first `-` line (krikri's first `+` line only when there
   is no `-` line at all, prefixed `ansible:`/`krikri:` so the two kinds
@@ -473,8 +516,12 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   duration, second-run flag read back from versions.txt), errors,
   not_applicable, happy_coverage, rates. The human report starts with the
   same `== Batch ==` line, and `Triage.repro_command` pins the finding's
-  `--modes` (plus `--no-second-run` for a run-1 row, and `--no-diff`
-  when the batch never compared diff output) so a repro reruns exactly
+  `--modes`, the identity/umask (`--user-profile nonroot`, `--umask N`)
+  and the host count (`--hosts N` when above 1), plus `--no-second-run`
+  for a run-1 row and `--no-diff` when the batch never compared diff
+  output, and prefixes a row's env-var play keyword
+  (`ANSIBLE_STRATEGY=... `) so an env variant reruns the same playbook;
+  that way a repro reruns exactly
   that comparison.
 - `src/krikri_playbook_generator/options.cr` — CLI parsing for the four
   subcommands (`generate`, `run`, `report`, `modules`), plus `--check`
@@ -513,7 +560,9 @@ but no `.ameba.yml` exists). Crystal >= 1.20.0 required.
   playbook path (the repro form Triage prints), matching the CLI sketch
   in `KRIKRI_PLAYBOOK_GENERATOR.md`. `--chaos-kinds` accepts
   `typo`, `hallucinate`, `wrong-type`, `bad-choice`, `violate-constraint`
-  and `jinja`.
+  and `jinja`. `--hosts LIST` (1/2/3, default 1) is the host-count
+  matrix; `--play-keywords LIST` selects the play-level keyword axis
+  (`none` disables it) and is generate-only.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: divergences grouped by module + mode + run + identity + umask +
@@ -693,6 +742,16 @@ Documented deliberately, not silently:
   Modules that genuinely need root (`user`, package installs) fail on the
   reference engine under the nonroot profile and show up as wasted
   coverage, not as divergences.
+- The host-count axis uses LOCAL aliases of one container/VM. It compares
+  per-host task execution, recap host lists and `included:` grouping, but
+  it cannot see transport, per-host state or real concurrency: all aliases
+  are the same machine, serialized inside one engine process. The SSH
+  transport profile is the issue that makes those real.
+- Play-level keyword coverage stops at what the reference engine accepts:
+  a custom `strategy_plugins/` plugin is not seeded (that is the strategy
+  plugin issue), and the env variants are `ANSIBLE_STRATEGY`/`ANSIBLE_FORKS`
+  only, since ansible exposes no env var for serial/throttle/
+  any_errors_fatal/run_once/max_fail_percentage/gather_facts/connection.
 - Multi-task interaction fuzzing (register/when chains, loops, handlers)
   is now BUILT (`--tasks-per-playbook N`) — but still one play per
   playbook (no multi-PLAY playbooks, no role plays), and the batch-level
@@ -713,7 +772,8 @@ blocks with `assert_equal`/`assert_raises`/`assert`/`refute` (no
 `x || default` or `x.as(T)` after a `refute_nil` check. One spec file per
 source module, following `krikri-role-tester`'s pattern:
 `options_spec.cr`, `preflight_spec.cr`, `schema_spec.cr`, `generator_spec.cr`,
-`playbook_builder_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
+`play_keywords_spec.cr`, `run_context_spec.cr`, `playbook_builder_spec.cr`,
+`fixtures_spec.cr`, `host_state_spec.cr`, `runner_spec.cr`,
 `podman_backend_spec.cr`,
 `triage_spec.cr`, `versions_spec.cr` (fakes the command runner as a Proc). `schema_spec.cr` shells out to
 the real, locally-installed `ansible-doc`/`python3` — no fakes, since
@@ -767,12 +827,23 @@ the check-mode policy (per-engine delta, control-state keeper filtering,
 signature stability) and the snapshot script's roots/exclusions,
 `#temps` section and staging prefixes. `runner_spec.cr` covers the
 leftover policy (the surviving file, the task the log blames, the
-matched-delta fallback), `last_failed_task` itself and the umask matrix
-rows + their `user`/`umask` results fields. `fixtures_spec.cr` covers the
-role/HTTP fixtures plus `IDENTITY_SCRIPT` and `ownership_command`.
-`options_spec.cr` covers the identity/umask defaults, parsing,
-normalization and target restrictions; `triage_spec.cr` groups by
-identity and umask and pins them in the repro. `podman_backend_spec.cr`
+matched-delta fallback), `last_failed_task` itself, the umask matrix
+rows + their `user`/`umask` results fields, a real two-host row (both
+engine outputs name `target2`, the recap has the host, the row records
+`hosts: 2`) and an env-var play keyword reaching the engine (bogus
+`ANSIBLE_STRATEGY` fails on real ansible, proving the export happened)
+and landing in results.jsonl. `fixtures_spec.cr` covers the
+role/HTTP fixtures plus `IDENTITY_SCRIPT`, `ownership_command`, the
+unusual-mode destinations/directories and `RESTORE_UNUSUAL_SCRIPT`'s
+idempotency. `play_keywords_spec.cr` covers the kind list, valid vs
+chaos value pools, determinism, env-only `forks` and the 50/50 env door;
+`run_context_spec.cr` covers `HostInventory`'s aliases and rendered
+inventory. `options_spec.cr` covers the identity/umask defaults, parsing,
+normalization and target restrictions, the `--hosts` matrix/validation
+(and Atlantic's single value) and `--play-keywords` (`none`, unknown
+values, generate-only); `triage_spec.cr` groups by
+identity, umask and host count and pins them in the repro, and prefixes
+an env-var keyword there. `podman_backend_spec.cr`
 runs a real playbook as the provisioned nonroot account under umask 077
 and asserts the observed file mode.
 `masks_spec.cr` unit-tests the mask list, the

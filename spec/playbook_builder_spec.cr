@@ -133,6 +133,77 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "writes a play-level keyword into the play and records it in the sidecar" do
+      dir = File.tempname("kpg-spec")
+      settings = [PlaySetting.new("strategy", "free")] of PlaySetting?
+      path = PlaybookBuilder.new(dir, nil, settings).build([sample_task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_equal("free", play["strategy"].as_s)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("strategy", meta["play"]["keyword"].as_s)
+      assert_equal("free", meta["play"]["value"].as_s)
+      assert_equal("play", meta["play"]["source"].as_s)
+      assert_equal({} of String => JSON::Any, meta["play"]["env"].as_h)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "types a play key the way ansible expects it" do
+      dir = File.tempname("kpg-spec")
+      settings = [PlaySetting.new("gather_facts", "true"), PlaySetting.new("serial", "2")] of PlaySetting?
+      first, second = PlaybookBuilder.new(dir, nil, settings).build([sample_task, sample_task])
+
+      facts_play = YAML.parse(File.read(first)).as_a.first
+      assert_equal(true, facts_play["gather_facts"].as_bool)
+      serial_play = YAML.parse(File.read(second)).as_a.first
+      assert_equal(2, serial_play["serial"].as_i)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "keeps an env-var keyword out of the play and in the sidecar" do
+      dir = File.tempname("kpg-spec")
+      settings = [PlaySetting.new("strategy", "free", "ANSIBLE_STRATEGY")] of PlaySetting?
+      path = PlaybookBuilder.new(dir, nil, settings).build([sample_task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_nil(play["strategy"]?)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("env", meta["play"]["source"].as_s)
+      assert_equal("free", meta["play"]["env"]["ANSIBLE_STRATEGY"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "omits the play object and writes no keyword when the axis is off" do
+      dir = File.tempname("kpg-spec")
+      settings = [nil] of PlaySetting?
+      path = PlaybookBuilder.new(dir, nil, settings).build([sample_task]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      refute(play.as_h.keys.any? { |key| key.as_s == "strategy" })
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert(meta["play"].raw.nil?)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "records an env-var keyword on a v2 multi-task playbook's sidecar" do
+      dir = File.tempname("kpg-spec")
+      settings = [PlaySetting.new("forks", "1", "ANSIBLE_FORKS")] of PlaySetting?
+      tasks = [GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("hi")}),
+               GeneratedTask.new("stat", "ansible.builtin", {"path" => YAML::Any.new("/tmp/kpg-work/out1.txt")})]
+      path = PlaybookBuilder.new(dir, nil, settings).build_scenarios([tasks]).first
+
+      play = YAML.parse(File.read(path)).as_a.first
+      assert_nil(play["forks"]?)
+      meta = JSON.parse(File.read(path.sub(/\.yml$/, ".meta.json")))
+      assert_equal("1", meta["play"]["env"]["ANSIBLE_FORKS"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "emits a free-form module as a bare string, not an argument map" do
       dir = File.tempname("kpg-spec")
       task = GeneratedTask.new("meta", "ansible.builtin", {} of String => YAML::Any, [] of {String, ChaosKind}, "noop")

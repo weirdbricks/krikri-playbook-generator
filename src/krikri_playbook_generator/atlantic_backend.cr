@@ -181,7 +181,8 @@ module KrikriPlaybookGenerator
 
     def initialize(@krikri_bin : String, @engine_timeout : Int32, @max_hosts : Int32,
                    @work_dir : String = "", @on_playbook_done : (String -> Nil)? = nil,
-                   @diff : Bool = true, @umask : String = DEFAULT_UMASK)
+                   @diff : Bool = true, @umask : String = DEFAULT_UMASK, @hosts : Int32 = 1,
+                   @env_for : Proc(String, Hash(String, String))? = nil)
       @work_dir = Path.home.join(".kpg-atlantic").to_s if @work_dir.empty?
       @suffix = "#{Time.utc.to_unix}-#{Process.pid}"
       @created_instances = [] of Instance
@@ -565,7 +566,8 @@ module KrikriPlaybookGenerator
     end
 
     private def write_inventory(vm : Vm) : Nil
-      result = Cmd.run("ssh", vm.ssh_base + ["root@#{vm.ip}", "cat > /work/inventory.ini"], input: INVENTORY, timeout: 60.0)
+      result = Cmd.run("ssh", vm.ssh_base + ["root@#{vm.ip}", "cat > /work/inventory.ini"],
+        input: HostInventory.render(@hosts), timeout: 60.0)
       raise AtlanticProvisionError.new("writing inventory.ini failed: #{result.stderr}") unless result.rc == 0
     end
 
@@ -595,13 +597,15 @@ module KrikriPlaybookGenerator
                              playbook_path, "root@#{vm.ip}:/work/#{basename}"], timeout: 120.0)
       raise AtlanticProvisionError.new("playbook upload failed: #{copy.stderr}") unless copy.rc == 0
 
-      ansible = exec_engine(vm, "ansible-playbook", basename)
-      krikri = exec_engine(vm, "/opt/krikri/bin/krikri-playbook", basename)
+      env = @env_for.try(&.call(playbook_path)) || {} of String => String
+      ansible = exec_engine(vm, "ansible-playbook", basename, env)
+      krikri = exec_engine(vm, "/opt/krikri/bin/krikri-playbook", basename, env)
       {ansible: ansible, krikri: krikri}
     end
 
-    private def exec_engine(vm : Vm, engine_cmd : String, basename : String) : Cmd::Result
-      script = "umask #{@umask} && cd /work && #{ENGINE_ENV_STRIP} timeout #{@engine_timeout} " \
+    private def exec_engine(vm : Vm, engine_cmd : String, basename : String,
+                            env : Hash(String, String) = {} of String => String) : Cmd::Result
+      script = "umask #{@umask} && cd /work && #{ENGINE_ENV_STRIP} #{KrikriPlaybookGenerator.env_prefix(env)}timeout #{@engine_timeout} " \
                "#{engine_cmd}#{@diff ? " --diff" : ""} -i inventory.ini /work/#{basename} </dev/null"
       result = exec_remote(vm, script, @engine_timeout + 60.0)
       # ssh reports its own failures as 255; those are provisioning errors,

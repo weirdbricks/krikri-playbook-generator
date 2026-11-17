@@ -1,6 +1,7 @@
 require "option_parser"
 require "./run_mode"
 require "./run_context"
+require "./play_keywords"
 
 module KrikriPlaybookGenerator
   class InvalidOptionsError < Exception
@@ -53,6 +54,8 @@ module KrikriPlaybookGenerator
     property engine_timeout : Int32
     property min_happy_success : Float64?
     property tasks_per_playbook : Int32
+    property play_keywords : Array(String)
+    property? play_keywords_given : Bool
     property? seed_given : Bool
     property modes : Array(RunMode)
     property? modes_given : Bool
@@ -60,6 +63,8 @@ module KrikriPlaybookGenerator
     property? user_profiles_given : Bool
     property umasks : Array(String)
     property? umasks_given : Bool
+    property hosts : Array(Int32)
+    property? hosts_given : Bool
     property? second_run : Bool
     # On by default: diff output is user-visible behavior and is compared
     # byte-for-byte like the rest of stdout (never masked).
@@ -76,10 +81,12 @@ module KrikriPlaybookGenerator
                    @keep_going = false, @engine_timeout = 120, @control = false,
                    @json = false, @min_happy_success = nil, @refresh_podman_templates = false,
                    @tasks_per_playbook = 1, @seed_given = false, @podman_parallel = 1,
+                   @play_keywords = PlayKeywords::KINDS, @play_keywords_given = false,
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
                    @umasks = [DEFAULT_UMASK], @umasks_given = false,
+                   @hosts = [1], @hosts_given = false,
                    @microvm_dir = "/home/labros/.local/share/krikri-playbook-generator/microvm")
     end
 
@@ -151,9 +158,25 @@ module KrikriPlaybookGenerator
           opts.umasks = umasks.uniq
           opts.umasks_given = true
         end
+        dsl.on("--hosts LIST", "hosts per playbook: 1, 2 or 3 (comma-separated for a matrix; default: 1, the local aliases of one isolated host)") do |v|
+          hosts = v.split(',').map(&.strip).map do |value|
+            host_count = value.to_i?
+            unless host_count && host_count.in?(1..HostInventory::MAX_HOSTS)
+              raise InvalidOptionsError.new(
+                "unknown --hosts value #{value.inspect} (expected 1, 2 or 3)")
+            end
+            host_count
+          end
+          opts.hosts = hosts.uniq
+          opts.hosts_given = true
+        end
         dsl.on("--diff", "pass --diff to both engines (the default; diff output is part of the compared bytes)") { opts.diff = true }
         dsl.on("--no-diff", "do not pass --diff to either engine (diff output is then never compared)") { opts.diff = false }
         dsl.on("--tasks-per-playbook N", "v2: build N-task playbooks from distinct modules with register/when chains, loops and handlers (default: 1, the single-task v1 shape)") { |v| opts.tasks_per_playbook = parse_int(v, "--tasks-per-playbook") }
+        dsl.on("--play-keywords LIST", "play-level keyword axis: one keyword per playbook, drawn from strategy, serial, throttle, any_errors_fatal, run_once, max_fail_percentage, gather_facts, connection and forks (env-only); `none` turns it off") do |v|
+          opts.play_keywords = parse_play_keywords(v)
+          opts.play_keywords_given = true
+        end
       end
       parser.parse(rest)
 
@@ -206,6 +229,13 @@ module KrikriPlaybookGenerator
       opts.umasks
     end
 
+    # The host-count axis. Atlantic reuses one VM per profile and builds
+    # its inventory once, so only one count can apply there; every other
+    # backend rebuilds the inventory per row.
+    def self.effective_hosts(opts : Options) : Array(Int32)
+      opts.hosts
+    end
+
     private def self.default_modes(opts : Options) : Array(RunMode)
       return [RunMode::Real] if opts.run_on_atlantic?
       return [RunMode::Check] if local_run?(opts) && !opts.allow_mutation?
@@ -252,11 +282,13 @@ module KrikriPlaybookGenerator
     # shared local host cannot switch accounts, and Atlantic's VMs are only
     # provisioned as root (their umask axis is still available).
     private def self.check_context_conflicts!(opts : Options) : Nil
-      return unless opts.user_profiles_given? || opts.umasks_given?
+      return unless opts.user_profiles_given? || opts.umasks_given? || opts.hosts_given?
 
       unless opts.command.run? || opts.command.generate?
-        raise InvalidOptionsError.new("--user-profile/--umask are only valid with run or generate")
+        raise InvalidOptionsError.new("--user-profile/--umask/--hosts are only valid with run or generate")
       end
+
+      check_atlantic_host_axis!(opts)
 
       # Atlantic applies one umask per batch (one VM per profile), so an
       # axis list there would silently drop values.
@@ -273,15 +305,41 @@ module KrikriPlaybookGenerator
         "--user-profile needs an isolated backend (--run-on-podman, --run-on-microvm or --run-on-mixed)")
     end
 
+    # Atlantic builds one VM (and one inventory) per profile for the whole
+    # batch, so a multi-value host axis would silently collapse.
+    private def self.check_atlantic_host_axis!(opts : Options) : Nil
+      return unless opts.run_on_atlantic? && opts.hosts.size > 1
+
+      raise InvalidOptionsError.new("--hosts takes one value on --run-on-atlantic")
+    end
+
     private def self.check_scope_conflicts!(opts : Options) : Nil
       if opts.scope_from_krikri? && !opts.command.modules?
         raise InvalidOptionsError.new("--scope-from-krikri is only valid with the modules command")
       end
+      check_play_keyword_target!(opts)
       return unless opts.supported_community?
 
       raise InvalidOptionsError.new("--supported-community needs generate") unless opts.command.generate?
       raise InvalidOptionsError.new("--all-modules conflicts with --supported-community") if opts.all_modules?
       raise InvalidOptionsError.new("--supported-community conflicts with --modules") if opts.modules
+    end
+
+    # The keyword is written into the playbook file (or its sidecar), so it
+    # only means anything where playbooks are built.
+    private def self.check_play_keyword_target!(opts : Options) : Nil
+      return unless opts.play_keywords_given?
+      return if opts.command.generate?
+
+      raise InvalidOptionsError.new("--play-keywords is only valid with generate (the playbook carries the keyword)")
+    end
+
+    private def self.parse_play_keywords(value : String) : Array(String)
+      kinds = PlayKeywords.parse_list(value)
+      return kinds if kinds
+
+      raise InvalidOptionsError.new(
+        "unknown --play-keywords value #{value.inspect} (expected: #{PlayKeywords::KINDS.join(", ")}, none)")
     end
 
     private def self.check_happy_gate_target!(opts : Options) : Nil

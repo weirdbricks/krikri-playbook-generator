@@ -1,5 +1,6 @@
 require "json"
 require "./generator"
+require "./play_keywords"
 
 module KrikriPlaybookGenerator
   # Assembles generated tasks into playbook YAML. Two shapes:
@@ -24,7 +25,8 @@ module KrikriPlaybookGenerator
 
     HANDLER_MESSAGE = "kpg multi-task handler ran"
 
-    def initialize(@out_dir : String, @seed : Int32? = nil)
+    def initialize(@out_dir : String, @seed : Int32? = nil,
+                   @play_settings : Array(PlaySetting?) = [] of PlaySetting?)
     end
 
     # First-line provenance comment: since the default seed is random,
@@ -173,7 +175,7 @@ module KrikriPlaybookGenerator
       meta_path = File.join(@out_dir, "#{basename}.meta.json")
 
       File.write(playbook_path, "#{seed_comment}#{playbook_yaml(task, index)}")
-      File.write(meta_path, metadata_json(task, playbook_path))
+      File.write(meta_path, metadata_json(task, playbook_path, index))
 
       playbook_path
     end
@@ -192,12 +194,13 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: #{task.module_name} ##{index}"))
       play[YAML::Any.new("hosts")] = YAML::Any.new("all")
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
+      apply_play_setting(play, @play_settings[index]?)
       play[YAML::Any.new("tasks")] = YAML::Any.new([YAML::Any.new(task_body)])
 
       yaml_document(YAML::Any.new([YAML::Any.new(play)]))
     end
 
-    private def metadata_json(task : GeneratedTask, playbook_path : String) : String
+    private def metadata_json(task : GeneratedTask, playbook_path : String, index : Int32) : String
       JSON.build do |json|
         json.object do
           json.field "playbook", playbook_path
@@ -217,6 +220,7 @@ module KrikriPlaybookGenerator
           json.field "choice_sources" do
             json.object { choice_sources_json(json, task) }
           end
+          play_setting_json(json, @play_settings[index]?)
         end
       end
     end
@@ -232,7 +236,7 @@ module KrikriPlaybookGenerator
       meta_path = File.join(@out_dir, "#{basename}.meta.json")
 
       File.write(playbook_path, "#{seed_comment}#{scenario_yaml(tasks, index)}")
-      File.write(meta_path, scenario_metadata_json(tasks, playbook_path))
+      File.write(meta_path, scenario_metadata_json(tasks, playbook_path, index))
 
       playbook_path
     end
@@ -258,6 +262,7 @@ module KrikriPlaybookGenerator
       play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: multi-task ##{index}"))
       play[YAML::Any.new("hosts")] = YAML::Any.new("all")
       play[YAML::Any.new("gather_facts")] = YAML::Any.new(false)
+      apply_play_setting(play, @play_settings[index]?)
       play[YAML::Any.new("tasks")] = YAML::Any.new(task_bodies)
       if tasks.any? { |task| task.notify && task.notify_allowed? }
         handler = {} of YAML::Any => YAML::Any
@@ -277,13 +282,15 @@ module KrikriPlaybookGenerator
       YAML::Any.new(args)
     end
 
-    private def scenario_metadata_json(tasks : Array(GeneratedTask), playbook_path : String) : String
+    private def scenario_metadata_json(tasks : Array(GeneratedTask), playbook_path : String,
+                                       index : Int32) : String
       JSON.build do |json|
         json.object do
           json.field "playbook", playbook_path
           json.field "module", tasks.first.module_name
           json.field "collection", tasks.first.collection
           json.field "chaos", tasks.any?(&.chaos?)
+          play_setting_json(json, @play_settings[index]?)
           json.field "mutations" do
             json.array do
               tasks.each_with_index do |task, task_index|
@@ -320,6 +327,49 @@ module KrikriPlaybookGenerator
                 end
               end
             end
+          end
+        end
+      end
+    end
+
+    # A play-level keyword goes into the play as a typed scalar (ansible
+    # coerces most of them, but a real bool/int also keeps the generated
+    # playbook lint-clean and readable). An environment variant writes no
+    # play key at all: the runner exports it for both engines, and the
+    # sidecar records which door the value used.
+    private def apply_play_setting(play : Hash(YAML::Any, YAML::Any), setting : PlaySetting?) : Nil
+      return unless setting
+      return if setting.env?
+
+      play[YAML::Any.new(setting.keyword)] = play_value(setting)
+    end
+
+    private def play_value(setting : PlaySetting) : YAML::Any
+      case setting.keyword
+      when "any_errors_fatal", "run_once", "gather_facts"
+        case setting.value
+        when "true"  then YAML::Any.new(true)
+        when "false" then YAML::Any.new(false)
+        else              YAML::Any.new(setting.value)
+        end
+      when "serial", "throttle", "max_fail_percentage", "forks"
+        setting.value.matches?(/\A\d+\z/) ? YAML::Any.new(setting.value.to_i64) : YAML::Any.new(setting.value)
+      else
+        YAML::Any.new(setting.value)
+      end
+    end
+
+    private def play_setting_json(json : JSON::Builder, setting : PlaySetting?) : Nil
+      json.field "play", nil unless setting
+      return unless setting
+
+      json.field "play" do
+        json.object do
+          json.field "keyword", setting.keyword
+          json.field "value", setting.value
+          json.field "source", setting.source
+          json.field "env" do
+            json.object { setting.env.each { |name, value| json.field name, value } }
           end
         end
       end

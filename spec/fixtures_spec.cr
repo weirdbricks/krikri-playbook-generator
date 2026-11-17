@@ -24,6 +24,15 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(base) if base
     end
 
+    # File::Permissions only carries the nine permission bits, so the
+    # setgid/sticky entries need the full mode stat prints. Compared as an
+    # octal number because stat drops the leading zero of a 3-digit mode.
+    def mode_of(path : String) : Int32
+      result = Cmd.run("stat", ["-c", "%a", path], timeout: 30.0)
+      assert Cmd.success?(result), "stat #{path} failed: #{result.stderr}"
+      result.stdout.strip.to_i(8)
+    end
+
     it "points the role at the fixture root" do
       assert_equal("kpgrole", Fixtures::ROLE_NAME)
       assert_equal("#{Fixtures::FIXTURE_ROOT}/roles/kpgrole", Fixtures::ROLE_PATH)
@@ -78,6 +87,68 @@ module KrikriPlaybookGenerator
       with_seeded_fixtures do |fixture_root|
         work = File.join(fixture_root, "..", "work")
         assert(File.info(File.join(work, "readonly", "dest.txt")))
+        assert_equal(0o555, mode_of(File.join(work, "readonly")))
+      end
+    end
+
+    # Real playbooks meet locked files in a writable directory (replace via
+    # rename) and directories with setgid/sticky/owner-only modes. Both
+    # engines must start from exactly these modes, so the seed has to set
+    # them and the per-row ownership fix has to restore them.
+    it "seeds read-only and unusual destination modes in the writable work root" do
+      with_seeded_fixtures do |fixture_root|
+        work = File.join(fixture_root, "..", "work")
+        Fixtures::UNUSUAL_FILES.each do |path, mode|
+          local = path.sub(Fixtures::WORK_ROOT, work)
+          assert File.file?(local), "#{local} was not seeded"
+          assert_equal(mode.to_i(8), mode_of(local), "#{local} mode")
+        end
+        Fixtures::UNUSUAL_DIRS.each do |path, mode|
+          local = path.sub(Fixtures::WORK_ROOT, work)
+          assert File.directory?(local), "#{local} was not seeded"
+          assert_equal(mode.to_i(8), mode_of(local), "#{local} mode")
+        end
+        Fixtures::UNUSUAL_FILES.each_key do |path|
+          assert Fixtures::DEST_PATHS.includes?(path), "#{path} is not a generator destination"
+        end
+      end
+    end
+
+    it "restores the unusual destination state idempotently before every row" do
+      with_seeded_fixtures do |fixture_root|
+        work = File.join(fixture_root, "..", "work")
+        restore = Fixtures::RESTORE_UNUSUAL_SCRIPT
+          .gsub(Fixtures::WORK_ROOT, work)
+        # Simulate an earlier row that rewrote content and modes.
+        Fixtures::UNUSUAL_FILES.each_key do |path|
+          local = path.sub(Fixtures::WORK_ROOT, work)
+          File.chmod(local, 0o600)
+          File.write(local, "rewritten by an earlier row")
+        end
+        File.chmod(File.join(work, "dir-setgid"), 0o755)
+
+        2.times do
+          result = Cmd.run("bash", ["-c", restore], timeout: 60.0)
+          assert Cmd.success?(result), "restore script failed: #{result.stderr}"
+          Fixtures::UNUSUAL_FILES.each do |path, mode|
+            local = path.sub(Fixtures::WORK_ROOT, work)
+            assert_equal(mode.to_i(8), mode_of(local), "#{local} mode after restore")
+            refute_includes File.read(local), "rewritten by an earlier row"
+          end
+          Fixtures::UNUSUAL_DIRS.each do |path, mode|
+            assert_equal(mode.to_i(8), mode_of(path.sub(Fixtures::WORK_ROOT, work)), "#{path} mode after restore")
+          end
+          assert_equal(0o444, mode_of(File.join(work, "readonly", "dest.txt")))
+          assert_equal(0o555, mode_of(File.join(work, "readonly")))
+        end
+      end
+    end
+
+    it "restores the unusual destinations as part of the ownership fix" do
+      [UserProfile::Root, UserProfile::Nonroot].each do |profile|
+        command = Fixtures.ownership_command(profile)
+        assert_includes(command, Fixtures::RESTORE_UNUSUAL_SCRIPT)
+        assert_includes(command, "chmod 0555 #{Fixtures::READONLY_DIR}")
       end
     end
 

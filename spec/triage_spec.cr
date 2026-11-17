@@ -9,7 +9,7 @@ module KrikriPlaybookGenerator
     def write_result(dir : String, name : String, module_name : String, divergent : Bool,
                      signature : String? = nil, chaos : Bool = false,
                      mode : String = "real", run : Int32 = 1,
-                     user : String = "root", umask : String = "022",
+                     user : String = "root", umask : String = "022", hosts : Int32 = 1,
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
                      error : String? = nil, masked_diff : String = "",
@@ -26,6 +26,7 @@ module KrikriPlaybookGenerator
         "run"                => run,
         "user"               => user,
         "umask"              => umask,
+        "hosts"              => hosts,
         "chaos"              => chaos,
         "divergent"          => divergent,
         "masked_identical"   => masked_identical.nil? ? !divergent : masked_identical,
@@ -98,6 +99,34 @@ module KrikriPlaybookGenerator
       assert_equal([1, 1, 2], findings.map(&.count).sort!)
     ensure
       FileUtils.rm_rf(dir) if dir
+    end
+
+    it "groups the same signature separately per host count and pins it in the repro" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      diff = "stdout:\n--- a\n+++ b\n"
+      write_result(dir, "one-host", "file", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff)
+      write_result(dir, "two-hosts", "file", divergent: true, masked_identical: false,
+        signature: "same", masked_diff: diff, hosts: 2)
+
+      findings = Triage.new(dir).report
+      assert_equal(2, findings.size)
+      assert_equal([1, 1], findings.map(&.count))
+
+      command = Triage.repro_command("/tmp/p.yml", ["copy"], "real", 2, true, "root", "022", 2)
+      assert(command.includes?("--hosts 2"))
+      refute(Triage.repro_command("/tmp/p.yml", ["copy"], "real", 2, true, "root", "022", 1)
+        .includes?("--hosts"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "exports a row's env-var play keyword in its repro command" do
+      command = Triage.repro_command("/tmp/p.yml", ["copy"], "real", 1, true, "root", "022", 1,
+        {"ANSIBLE_STRATEGY" => "free"})
+      assert(command.starts_with?("ANSIBLE_STRATEGY=free krikri-playbook-generator run"))
+      refute(Triage.repro_command("/tmp/p.yml", ["copy"]).starts_with?("ANSIBLE_"))
     end
 
     it "pins the identity and umask in a nonroot finding's repro" do

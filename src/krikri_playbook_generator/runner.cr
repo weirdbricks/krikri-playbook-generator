@@ -84,8 +84,12 @@ module KrikriPlaybookGenerator
     # for a v2 multi-task playbook, `module_names` carries every task's
     # module so profile selection and the supported-community check cover
     # the whole playbook, not just its first task).
+    # `env` is the playbook's play-level keyword when it arrived through
+    # an environment variable (ANSIBLE_STRATEGY / ANSIBLE_FORKS): the
+    # sidecar carries it because the playbook file cannot, and every
+    # backend must export it identically for both engines.
     record MetaInfo, module_name : String, chaos : Bool, mutations : Array({String, String}),
-      module_names : Array(String) do
+      module_names : Array(String), env : Hash(String, String) = {} of String => String do
       def self.primary(module_name : String, chaos : Bool, mutations : Array({String, String})) : MetaInfo
         MetaInfo.new(module_name, chaos, mutations, [module_name])
       end
@@ -101,13 +105,19 @@ module KrikriPlaybookGenerator
       # the first run or the second-run idempotency pass.
       getter mode : RunMode
       getter run : Int32
-      # Which identity and umask this row ran under (the context matrix).
+      # Which identity, umask and host count this row ran under (the
+      # context matrix).
       getter user : UserProfile
       getter umask : String
+      getter hosts : Int32
 
-      # "(check, run 1, nonroot, umask 022)" - one row's matrix point.
+      # "(check, run 1, nonroot, umask 022)" - one row's matrix point; the
+      # host count is appended only when it is not the default, so a
+      # one-host batch's log lines stay as they were.
       def context_label : String
-        "(#{mode.label}, run #{run}, #{user.label}, umask #{umask})"
+        label = "(#{mode.label}, run #{run}, #{user.label}, umask #{umask}"
+        label += ", hosts #{hosts}" unless hosts == 1
+        "#{label})"
       end
 
       @state_diff : String?
@@ -123,7 +133,7 @@ module KrikriPlaybookGenerator
 
       def initialize(@playbook, @ansible, @krikri, @meta, @error = nil,
                      @mode = RunMode::Real, @run = 1,
-                     @user = UserProfile::Root, @umask = DEFAULT_UMASK)
+                     @user = UserProfile::Root, @umask = DEFAULT_UMASK, @hosts = 1)
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
         @leftover_temps_ansible = PlaybookResult.annotate_leftovers(@ansible)
         @leftover_temps_krikri = PlaybookResult.annotate_leftovers(@krikri)
@@ -163,9 +173,16 @@ module KrikriPlaybookGenerator
 
       def self.errored(playbook : String, meta : MetaInfo?, message : String,
                        mode : RunMode = RunMode::Real, run : Int32 = 1,
-                       user : UserProfile = UserProfile::Root, umask : String = DEFAULT_UMASK) : PlaybookResult
+                       user : UserProfile = UserProfile::Root, umask : String = DEFAULT_UMASK,
+                       hosts : Int32 = 1) : PlaybookResult
         failed = EngineRun.new("ansible", -1, nil, "", "", false)
-        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask)
+        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts)
+      end
+
+      # The environment variables the playbook's sidecar asks the engines
+      # to run under (empty when the keyword is a play key).
+      def env : Hash(String, String)
+        meta.try(&.env) || {} of String => String
       end
 
       def raw_identical? : Bool
@@ -400,14 +417,19 @@ module KrikriPlaybookGenerator
                    @podman_parallel : Int32 = 1, @microvm_dir : String = MicrovmBackend::DEFAULT_DIR,
                    @microvm_parallel : Int32 = 1, @diff : Bool = true,
                    @user_profiles : Array(UserProfile) = [UserProfile::Root],
-                   @umasks : Array(String) = [DEFAULT_UMASK])
+                   @umasks : Array(String) = [DEFAULT_UMASK],
+                   @hosts : Array(Int32) = [1])
     end
 
-    # Every (identity, umask) pair the batch runs. Each pair gets its own
-    # fresh host/pair, so a non-root row can never share state with a root
-    # one.
-    private def contexts : Array({UserProfile, String})
-      @user_profiles.flat_map { |user| @umasks.map { |umask| {user, umask} } }
+    # Every (identity, umask, host-count) point the batch runs. Each gets
+    # its own fresh host/pair, so a non-root row can never share state with
+    # a root one, and each host-count row gets the inventory it asks for.
+    private def contexts : Array({UserProfile, String, Int32})
+      @user_profiles.flat_map do |user|
+        @umasks.flat_map do |umask|
+          @hosts.map { |hosts| {user, umask, hosts} }
+        end
+      end
     end
 
     # "runner" is blue so the per-playbook verdict colors stay the
@@ -462,6 +484,7 @@ module KrikriPlaybookGenerator
       @planned = @playbook_paths.size * @modes.size * contexts.size
       log("starting #{@playbook_paths.size} playbook(s) x #{@modes.map(&.label).join("+")} " \
           "mode(s) x #{@user_profiles.map(&.label).join("+")} x umask #{@umasks.join("+")} " \
+          "x hosts #{@hosts.join("+")} " \
           "(backend=#{backend_label}, results=#{@results_dir})")
       Dir.mkdir_p(@results_dir)
       results = Log.phase("runner", "executing #{@playbook_paths.size} playbook(s) (#{backend_label})") do
@@ -548,12 +571,12 @@ module KrikriPlaybookGenerator
             "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
         profiles.flat_map do |os, batch|
           Runner.in_parallel(batch, @microvm_parallel) do |path|
-            contexts.flat_map do |(user, umask)|
+            contexts.flat_map do |(user, umask, hosts)|
               @modes.flat_map do |mode|
-                guarded_results(path, mode, user, umask) do
+                guarded_results(path, mode, user, umask, hosts) do
                   runs = backend.run_playbook(path, os, check: mode.check?, second_run: @second_run,
-                    user: user, umask: umask)
-                  comparison_results(path, mode, runs, user, umask)
+                    user: user, umask: umask, hosts: hosts, env: play_env(path))
+                  comparison_results(path, mode, runs, user, umask, hosts)
                 end
               end
             end
@@ -585,8 +608,10 @@ module KrikriPlaybookGenerator
       end
 
       umask = @umasks.first? || DEFAULT_UMASK
+      hosts = @hosts.first? || 1
       backend = AtlanticBackend.new(@krikri_bin, @engine_timeout, @atlantic_hosts,
-        diff: @diff, umask: umask,
+        diff: @diff, umask: umask, hosts: hosts,
+        env_for: ->(path : String) { play_env(path) },
         on_playbook_done: ->(path : String) {
           done = @completed.add(1) + 1
           log("comparison #{done}/#{@planned} complete: #{File.basename(path)} " \
@@ -599,12 +624,12 @@ module KrikriPlaybookGenerator
         if entry[:ansible].rc == -1 && entry[:krikri].rc == -1 &&
            entry[:ansible].stderr.includes?("profile provisioning failed")
           PlaybookResult.errored(entry[:playbook], meta, entry[:ansible].stderr, RunMode::Real, 1,
-            UserProfile::Root, umask)
+            UserProfile::Root, umask, hosts)
         else
           PlaybookResult.new(entry[:playbook],
             to_engine_run("ansible", entry[:ansible]),
             to_engine_run("krikri", entry[:krikri]), meta, mode: RunMode::Real, run: 1,
-            user: UserProfile::Root, umask: umask)
+            user: UserProfile::Root, umask: umask, hosts: hosts)
         end
       end
     end
@@ -637,12 +662,12 @@ module KrikriPlaybookGenerator
             "across #{profiles.size} profile(s) (#{profile_counts.map(&.join(": ")).join(", ")})")
         profiles.flat_map do |profile, batch|
           Runner.in_parallel(batch, @podman_parallel) do |path|
-            contexts.flat_map do |(user, umask)|
+            contexts.flat_map do |(user, umask, hosts)|
               @modes.flat_map do |mode|
-                guarded_results(path, mode, user, umask) do
+                guarded_results(path, mode, user, umask, hosts) do
                   runs = backend.run_playbook(path, profile, check: mode.check?, second_run: @second_run,
-                    user: user, umask: umask)
-                  comparison_results(path, mode, runs, user, umask)
+                    user: user, umask: umask, hosts: hosts, env: play_env(path))
+                  comparison_results(path, mode, runs, user, umask, hosts)
                 end
               end
             end
@@ -683,38 +708,64 @@ module KrikriPlaybookGenerator
       end
       Fixtures.seed_local
       @playbook_paths.flat_map do |path|
-        contexts.flat_map do |(user, umask)|
+        contexts.flat_map do |(user, umask, hosts)|
           @modes.flat_map do |mode|
-            guarded_results(path, mode, user, umask) do
-              comparison_results(path, mode, run_playbook_locally(path, mode, umask), user, umask)
+            guarded_results(path, mode, user, umask, hosts) do
+              comparison_results(path, mode, run_playbook_locally(path, mode, umask, hosts, play_env(path)),
+                user, umask, hosts)
             end
           end
         end
       end
     end
 
-    private def run_playbook_locally(path : String, mode : RunMode, umask : String) : Array(HostState::Comparison)
-      runs = [local_comparison(path, mode, umask)]
+    private def run_playbook_locally(path : String, mode : RunMode, umask : String,
+                                     hosts : Int32 = 1,
+                                     env : Hash(String, String) = {} of String => String) : Array(HostState::Comparison)
+      inventory = local_inventory(hosts)
+      runs = [local_comparison(path, mode, umask, inventory, env)]
       if @second_run && HostState.succeeded?(runs.first[:ansible]) && HostState.succeeded?(runs.first[:krikri])
-        runs << local_comparison(path, mode, umask)
+        runs << local_comparison(path, mode, umask, inventory, env)
       end
       runs
+    ensure
+      if inventory_path = inventory
+        File.delete(inventory_path) if File.exists?(inventory_path)
+      end
     end
 
-    private def local_comparison(path : String, mode : RunMode, umask : String) : HostState::Comparison
-      {ansible: HostState::Observation.new(run_engine_locally(path, "ansible", @ansible_playbook_bin, mode, umask)),
-       krikri:  HostState::Observation.new(run_engine_locally(path, "krikri", @krikri_bin, mode, umask))}
+    # A one-host local row keeps the historical implicit inventory (the
+    # exact invocation every earlier run compared); a multi-host row needs
+    # a real inventory file both engines can read.
+    private def local_inventory(hosts : Int32) : String?
+      return if hosts <= 1
+
+      path = File.tempname("kpg-inventory")
+      File.write(path, HostInventory.render(hosts))
+      path
+    end
+
+    private def local_comparison(path : String, mode : RunMode, umask : String,
+                                 inventory : String?,
+                                 env : Hash(String, String) = {} of String => String) : HostState::Comparison
+      {ansible: HostState::Observation.new(run_engine_locally(path, "ansible", @ansible_playbook_bin, mode, umask, inventory, env)),
+       krikri:  HostState::Observation.new(run_engine_locally(path, "krikri", @krikri_bin, mode, umask, inventory, env))}
     end
 
     private def run_engine_locally(path : String, engine : String, bin : String, mode : RunMode,
-                                   umask : String) : Cmd::Result
-      args = [@engine_timeout.to_s, bin, "-i", "localhost,", "-c", "local"]
+                                   umask : String, inventory : String? = nil,
+                                   env : Hash(String, String) = {} of String => String) : Cmd::Result
+      args = if file = inventory
+               [@engine_timeout.to_s, bin, "-i", file]
+             else
+               [@engine_timeout.to_s, bin, "-i", "localhost,", "-c", "local"]
+             end
       args << "--check" if mode.check?
       args << "--diff" if @diff
       args << "-e" << "kpg_owner=root" << "-e" << "kpg_group=root"
       args << path
 
-      Cmd.run("bash", ["-c", "umask #{umask}; exec timeout \"$@\"", "kpg"] + args,
+      Cmd.run("bash", ["-c", "umask #{umask}; #{KrikriPlaybookGenerator.env_prefix(env)}exec timeout \"$@\"", "kpg"] + args,
         timeout: @engine_timeout + 30.0)
     end
 
@@ -734,14 +785,15 @@ module KrikriPlaybookGenerator
     # a first-run finding stays attributable to the first run.
     private def comparison_results(path : String, mode : RunMode,
                                    runs : Array(HostState::Comparison),
-                                   user : UserProfile, umask : String) : Array(PlaybookResult)
+                                   user : UserProfile, umask : String,
+                                   hosts : Int32 = 1) : Array(PlaybookResult)
       results = [] of PlaybookResult
       runs.each_with_index do |comparison, index|
         run_number = index + 1
         result = PlaybookResult.new(path,
           to_engine_run("ansible", comparison[:ansible]),
           to_engine_run("krikri", comparison[:krikri]), load_meta(path),
-          mode: mode, run: run_number, user: user, umask: umask)
+          mode: mode, run: run_number, user: user, umask: umask, hosts: hosts)
         results << (run_number == 1 ? progress(result) : log_second_run(result))
       end
       results
@@ -782,18 +834,25 @@ module KrikriPlaybookGenerator
     end
 
     private def guarded_results(path : String, mode : RunMode, user : UserProfile, umask : String,
-                                &block : -> Array(PlaybookResult)) : Array(PlaybookResult)
+                                hosts : Int32 = 1, &block : -> Array(PlaybookResult)) : Array(PlaybookResult)
       block.call
     rescue e : Exception
       raise e unless @keep_going
 
       STDERR.puts "warning: #{File.basename(path)}: #{e.message} - continuing (--keep-going)"
-      [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1, user, umask)]
+      [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1, user, umask, hosts)]
     end
 
     private def report_leaks : Nil
       leaks = PodmanBackend.leak_check
       STDERR.puts "ERROR: leaked containers after teardown: #{leaks.join(", ")}" unless leaks.empty?
+    end
+
+    # The play-level keyword a playbook carries through the environment
+    # instead of a play key; the playbook file cannot express it, so every
+    # backend exports the sidecar's mapping.
+    private def play_env(path : String) : Hash(String, String)
+      load_meta(path).try(&.env) || {} of String => String
     end
 
     private def load_meta(path : String) : MetaInfo?
@@ -903,9 +962,21 @@ module KrikriPlaybookGenerator
       module_names = [module_name] if !module_names || module_names.empty?
       module_names.unshift(module_name) unless module_names.includes?(module_name)
 
-      MetaInfo.new(module_name, chaos, mutations, module_names)
+      MetaInfo.new(module_name, chaos, mutations, module_names, parse_play_env(parsed))
     rescue JSON::ParseException
       nil
+    end
+
+    # The sidecar's `play.env` mapping (ANSIBLE_STRATEGY/ANSIBLE_FORKS);
+    # empty for a play-key variant or a legacy sidecar without a `play`.
+    private def parse_play_env(parsed : Hash(String, JSON::Any)) : Hash(String, String)
+      env = {} of String => String
+      parsed["play"]?.try(&.as_h?).try(&.["env"]?).try(&.as_h?).try do |entries|
+        entries.each do |name, value|
+          env[name] = value.as_s if value.as_s?
+        end
+      end
+      env
     end
 
     private def write_results(results : Array(PlaybookResult)) : Nil
@@ -920,7 +991,7 @@ module KrikriPlaybookGenerator
     private def write_versions(started : Time) : Nil
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
         @control, @modes, @second_run, @diff, Time.utc - started, started,
-        user_profiles: @user_profiles.map(&.label), umasks: @umasks)
+        user_profiles: @user_profiles.map(&.label), umasks: @umasks, hosts: @hosts)
     rescue e
       STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end
@@ -933,6 +1004,8 @@ module KrikriPlaybookGenerator
           json.field "run", result.run
           json.field "user", result.user.label
           json.field "umask", result.umask
+          json.field "hosts", result.hosts
+          json.field "env", result.env.empty? ? nil : result.env
           write_meta_fields(json, result)
           json.field "error", result.error
           json.field "divergent", result.divergent?

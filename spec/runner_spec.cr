@@ -415,6 +415,57 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(results_dir) if results_dir
     end
 
+    it "runs a two-host playbook as its own matrix row and records the host count" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      task = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("host matrix")})
+      playbook_path = PlaybookBuilder.new(playbook_dir).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin,
+        modes: [RunMode::Check], second_run: false, hosts: [2]).run
+
+      assert_equal(1, results.size)
+      assert_equal(2, results.first.hosts)
+      assert_equal(0, results.first.ansible.rc)
+      assert_equal(0, results.first.krikri.rc)
+      # both local aliases must show up in the output, not just be accepted
+      assert(results.first.ansible.stdout.includes?("[target]"))
+      assert(results.first.ansible.stdout.includes?("[target2]"))
+      assert(results.first.krikri.stdout.includes?("[target2]"))
+      parsed = JSON.parse(File.read_lines(File.join(results_dir, "results.jsonl")).first)
+      assert_equal(2, parsed["hosts"].as_i)
+      assert(File.read_lines(File.join(results_dir, "versions.txt")).includes?("hosts: 2"))
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
+    it "exports an env-var play keyword to both engines and records it" do
+      playbook_dir = File.tempname("kpg-spec-playbooks")
+      results_dir = File.tempname("kpg-spec-results")
+
+      task = GeneratedTask.new("debug", "ansible.builtin", {"msg" => YAML::Any.new("env keyword")})
+      settings = [PlaySetting.new("strategy", "kpg-bogus-strategy", "ANSIBLE_STRATEGY")] of PlaySetting?
+      playbook_path = PlaybookBuilder.new(playbook_dir, nil, settings).build([task]).first
+
+      krikri_bin = Process.find_executable("krikri-playbook") || "/home/labros/git_work/krikri/bin/krikri-playbook"
+      results = Runner.new([playbook_path], results_dir, krikri_bin: krikri_bin,
+        modes: [RunMode::Check], second_run: false).run
+
+      result = results.first
+      assert_equal({"ANSIBLE_STRATEGY" => "kpg-bogus-strategy"}, result.env)
+      # real ansible rejects the unknown strategy, which proves the env var
+      # actually reached the engine instead of being dropped on the way
+      refute(result.ansible.rc == 0)
+      parsed = JSON.parse(File.read_lines(File.join(results_dir, "results.jsonl")).first)
+      assert_equal("kpg-bogus-strategy", parsed["env"]["ANSIBLE_STRATEGY"].as_s)
+    ensure
+      FileUtils.rm_rf(playbook_dir) if playbook_dir
+      FileUtils.rm_rf(results_dir) if results_dir
+    end
+
     it "skips the second-run idempotency pass when the first run failed on an engine" do
       playbook_dir = File.tempname("kpg-spec-playbooks")
       results_dir = File.tempname("kpg-spec-results")

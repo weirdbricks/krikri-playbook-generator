@@ -43,6 +43,34 @@ module KrikriPlaybookGenerator
     end
   end
 
+  # The inventory a host-count row uses. Every isolated backend runs the
+  # engines inside ONE container/VM, so N "hosts" are N local aliases of the
+  # same machine: enough for per-host task execution, the recap's host list
+  # and `included:` grouping to be compared without a second machine (that
+  # is what the SSH profile would add). The first alias keeps the
+  # historical `target` name, so a one-host row's output is unchanged.
+  module HostInventory
+    MAX_HOSTS = 3
+
+    def self.aliases(count : Int32) : Array(String)
+      (1..count).map { |index| index == 1 ? "target" : "target#{index}" }
+    end
+
+    def self.render(count : Int32) : String
+      aliases(count).map { |name| "#{name} ansible_connection=local" }.join("\n") + "\n"
+    end
+  end
+
+  # Shell assignments for a row's engine environment, empty when the
+  # playbook's keyword is a play key instead of an env variant. Values come
+  # from the overrides/play-keyword data, never from user input, but they
+  # are quoted anyway so one bad entry cannot change the command shape.
+  def self.env_prefix(env : Hash(String, String)) : String
+    return "" if env.empty?
+
+    env.map { |name, value| "#{name}=#{Process.quote(value)}" }.join(" ") + " "
+  end
+
   # 022 is the common production default (and what the images happened to
   # have); 002 and 077 are the other axis points `--umask` documents.
   DEFAULT_UMASK = "022"

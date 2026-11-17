@@ -428,6 +428,48 @@ module KrikriPlaybookGenerator
     it "refuses the context flags outside run/generate" do
       err = assert_raises(InvalidOptionsError) { Options.parse(["report", "--umask", "077"]) }
       assert((err.message || "").includes?("--umask"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["report", "--hosts", "2"]) }
+      assert((err.message || "").includes?("--hosts"))
+    end
+
+    it "defaults to one host and parses a host-count matrix" do
+      opts = Options.parse(["run", "--run-on-podman"])
+      assert_equal([1], Options.effective_hosts(opts))
+      refute(opts.hosts_given?)
+
+      matrix = Options.parse(["run", "--run-on-podman", "--hosts", "1,2,3"])
+      assert_equal([1, 2, 3], Options.effective_hosts(matrix))
+      assert(matrix.hosts_given?)
+    end
+
+    it "refuses a host count outside 1..3, naming the value" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--hosts", "4"]) }
+      assert((err.message || "").includes?("4"))
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--hosts", "many"]) }
+      assert((err.message || "").includes?("--hosts"))
+    end
+
+    it "parses the --play-keywords axis and turns `none` off" do
+      opts = Options.parse(["generate", "--play-keywords", "strategy,serial"])
+      assert_equal(%w[strategy serial], opts.play_keywords)
+      assert(Options.parse(["generate", "--play-keywords", "none"]).play_keywords.empty?)
+      assert_equal(PlayKeywords::KINDS, Options.parse(["generate"]).play_keywords)
+    end
+
+    it "refuses an unknown --play-keywords value or a non-generate command" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["generate", "--play-keywords", "bogus"]) }
+      assert((err.message || "").includes?("bogus"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--play-keywords", "strategy"]) }
+      assert((err.message || "").includes?("generate"))
+    end
+
+    it "allows only one host count on Atlantic (one VM per profile)" do
+      opts = Options.parse(["run", "--run-on-atlantic", "--hosts", "2"])
+      assert_equal([2], opts.hosts)
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-atlantic", "--hosts", "1,2"]) }
+      assert((err.message || "").includes?("--hosts"))
     end
   end
 end
