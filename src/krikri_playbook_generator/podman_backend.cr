@@ -122,9 +122,12 @@ module KrikriPlaybookGenerator
     # engine sides. The template containers start it before python3 is
     # installed - the background job just fails there, and every container
     # started FROM the committed images (python3 installed) gets a live
-    # server.
+    # server. sshd is started the same way: it is a no-op in a template
+    # container built before openssh-server existed, and every container
+    # from the committed images gets a listener for the SSH connection
+    # profile.
     def self.run_args(image : String, name : String) : Array(String)
-      bootstrap = "python3 -m http.server #{Fixtures::HTTP_PORT} --bind 127.0.0.1 --directory #{Fixtures::FIXTURE_ROOT} >/dev/null 2>&1 & exec sleep infinity"
+      bootstrap = "#{Fixtures::SSH_BOOTSTRAP}python3 -m http.server #{Fixtures::HTTP_PORT} --bind 127.0.0.1 --directory #{Fixtures::FIXTURE_ROOT} >/dev/null 2>&1 & exec sleep infinity"
       ["run", "-d", "--privileged", "--label", "#{OWNER_LABEL}=#{Process.pid}", "--name", name, image, "sh", "-c", bootstrap]
     end
 
@@ -192,10 +195,12 @@ module KrikriPlaybookGenerator
                            check : Bool, diff : Bool = true, umask : String = DEFAULT_UMASK,
                            owner : String = "root", group : String = "root",
                            env : Hash(String, String) = {} of String => String,
-                           limit : String? = nil) : String
+                           limit : String? = nil, flags : Array(String) = [] of String) : String
       limit_flag = limit.try { |pattern| " --limit #{Process.quote(pattern)}" } || ""
+      flag_string = flags.map { |flag| Process.quote(flag) }.join(" ")
+      flag_string = flag_string.empty? ? "" : " #{flag_string}"
       "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} #{KrikriPlaybookGenerator.env_prefix(env)}timeout #{engine_timeout} " \
-      "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""}#{limit_flag} " \
+      "#{engine_cmd}#{check ? " --check" : ""}#{diff ? " --diff" : ""}#{limit_flag}#{flag_string} " \
       "-e kpg_owner=#{owner} -e kpg_group=#{group} " \
       "-i inventory.ini /work/#{playbook_basename} </dev/null"
     end
@@ -328,6 +333,8 @@ module KrikriPlaybookGenerator
 
       Log.info("podman", "#{label} template: provisioning the #{Fixtures::UNPRIVILEGED_USER} account")
       [@name_real, @name_krikri].each { |name| exec!(name, Fixtures::IDENTITY_SCRIPT) }
+      Log.info("podman", "#{label} template: provisioning the SSH target (key + sshd)")
+      [@name_real, @name_krikri].each { |name| exec!(name, Fixtures::SSH_SCRIPT) }
       Log.info("podman", "#{label} template: seeding fixtures (identical on both sides)")
       seed_fixtures
       Log.info("podman", "#{label} template: preparing /work + inventory")
@@ -363,7 +370,8 @@ module KrikriPlaybookGenerator
                      umask : String = DEFAULT_UMASK, hosts : Int32 = 1,
                      env : Hash(String, String) = {} of String => String,
                      limit : String? = nil,
-                     include_unreachable : Bool = false) : Array(HostState::Comparison)
+                     include_unreachable : Bool = false,
+                     connection : ConnectionProfile = ConnectionProfile.local) : Array(HostState::Comparison)
       unless @provisioned.includes?({profile, version})
         raise PodmanProvisionError.new("provision was never called for profile #{profile} (core #{version})")
       end
@@ -389,6 +397,10 @@ module KrikriPlaybookGenerator
         start_from_image(@control ? real_image : krikri_image, krikri)
         created << krikri
 
+        if connection.ssh?
+          wait_for_sshd(real)
+          wait_for_sshd(krikri)
+        end
         copy_playbook(playbook_path, real)
         copy_playbook(playbook_path, krikri)
         # The writable fixture root is re-owned for this row's identity
@@ -397,20 +409,24 @@ module KrikriPlaybookGenerator
         ownership = Fixtures.ownership_command(user)
         exec!(real, ownership)
         exec!(krikri, ownership)
+        if connection.ssh?
+          exec!(real, Fixtures::SSH_PREPARE_COMMAND)
+          exec!(krikri, Fixtures::SSH_PREPARE_COMMAND)
+        end
         # The host-count axis rebuilds the inventory per pair: both engines
         # must see the same N local aliases, and the committed template's
         # one-host inventory cannot express a per-row count.
-        inventory = HostInventory.render(hosts, include_unreachable)
+        inventory = HostInventory.render(hosts, include_unreachable, connection, user)
         write_inventory(real, inventory)
         write_inventory(krikri, inventory)
 
         runs = [] of HostState::Comparison
         runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-          user, umask, env, limit)
+          user, umask, env, limit, connection)
         if second_run && HostState.succeeded?(runs.first[:ansible]) &&
            HostState.succeeded?(runs.first[:krikri])
           runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-            user, umask, env, limit)
+            user, umask, env, limit, connection)
         end
         runs
       ensure
@@ -425,18 +441,20 @@ module KrikriPlaybookGenerator
                            krikri_engine : String, check : Bool, diff : Bool,
                            user : UserProfile, umask : String,
                            env : Hash(String, String) = {} of String => String,
-                           limit : String? = nil) : HostState::Comparison
-      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env, limit),
-       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env, limit)}
+                           limit : String? = nil,
+                           connection : ConnectionProfile = ConnectionProfile.local) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env, limit, connection),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env, limit, connection)}
     end
 
     private def observe(name : String, engine_cmd : String, playbook_path : String,
                         check : Bool, diff : Bool, user : UserProfile,
                         umask : String,
                         env : Hash(String, String) = {} of String => String,
-                        limit : String? = nil) : HostState::Observation
+                        limit : String? = nil,
+                        connection : ConnectionProfile = ConnectionProfile.local) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env, limit)
+      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env, limit, connection)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -717,6 +735,7 @@ module KrikriPlaybookGenerator
         INVENTORY,
         Digest::SHA256.hexdigest(Fixtures::SEED_SCRIPT),
         Digest::SHA256.hexdigest(Fixtures::IDENTITY_SCRIPT),
+        Digest::SHA256.hexdigest(Fixtures::SSH_SCRIPT),
       ]
     end
 
@@ -780,10 +799,12 @@ module KrikriPlaybookGenerator
                             user : UserProfile = UserProfile::Root,
                             umask : String = DEFAULT_UMASK,
                             env : Hash(String, String) = {} of String => String,
-                            limit : String? = nil) : Cmd::Result
+                            limit : String? = nil,
+                            connection : ConnectionProfile = ConnectionProfile.local) : Cmd::Result
       owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
+      env = env.merge(connection.env(user))
       script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout,
-        check, diff, umask, owner, owner, env, limit)
+        check, diff, umask, owner, owner, env, limit, connection.cli_flags(user))
       args = ["exec", "-w", "/work"]
       if user.nonroot?
         args += ["--user", "#{Fixtures::UNPRIVILEGED_USER}:#{Fixtures::UNPRIVILEGED_USER}",
@@ -791,6 +812,17 @@ module KrikriPlaybookGenerator
       end
       args += [name, "bash", "-c", script]
       Cmd.run("podman", args, timeout: @engine_timeout + 60.0)
+    end
+
+    # The SSH profile's target is this same container, so the readiness
+    # check is a plain TCP connect to the loopback port. A container built
+    # before openssh-server was in the package union fails loudly here
+    # instead of every SSH row reporting "unreachable" on both engines.
+    private def wait_for_sshd(name : String) : Nil
+      script = "for i in $(seq 1 150); do (exec 3<>/dev/tcp/127.0.0.1/#{Fixtures::SSH_PORT}) 2>/dev/null && exit 0; sleep 0.1; done; " \
+               "echo 'sshd never came up on port #{Fixtures::SSH_PORT}' >&2; exit 1"
+      result = Cmd.run("podman", ["exec", name, "bash", "-c", script], timeout: 60.0)
+      raise PodmanProvisionError.new("sshd readiness check failed in #{name} - refresh the podman templates: #{result.stderr.strip}") unless Cmd.success?(result)
     end
 
     private def exec!(name : String, script : String, timeout : Float64 = 120.0) : Nil

@@ -21,6 +21,7 @@ module KrikriPlaybookGenerator
     @require_one_of : Hash(String, Array(Array(String)))
     @always : Hash(String, Array(String))
     @free_form : Hash(String, Array(String))
+    @environment : Hash(String, Hash(String, String))
     @expect_failure : Hash(String, Bool)
     @not_applicable : Hash(String, Bool)
     @profiles : Hash(String, Array(String))
@@ -31,7 +32,7 @@ module KrikriPlaybookGenerator
     # is deliberately absent: it is BOTH a module-level key (a pool of bare
     # task bodies) and a real option of shell/script (the raw command), so it
     # is disambiguated by its value - see `module_key?`.
-    MODULE_KEYS = %w[always exclude expect_failure not_applicable require_one_of profiles]
+    MODULE_KEYS = %w[always exclude expect_failure not_applicable require_one_of profiles environment]
 
     def initialize(yaml : String)
       parsed = YAML.parse(yaml)
@@ -40,6 +41,7 @@ module KrikriPlaybookGenerator
       @require_one_of = parse_require_one_of(parsed["modules"]?)
       @always = parse_always(parsed["modules"]?)
       @free_form = parse_pool_by_module(parsed["modules"]?, "free_form")
+      @environment = parse_environment(parsed["modules"]?)
       @expect_failure = parse_flag_by_module(parsed["modules"]?, "expect_failure")
       @not_applicable = parse_flag_by_module(parsed["modules"]?, "not_applicable")
       @profiles = parse_list_by_module(parsed["modules"]?, "profiles")
@@ -53,6 +55,14 @@ module KrikriPlaybookGenerator
     # arg spec.
     def require_one_of(module_name : String) : Array(Array(String))
       @require_one_of[module_name]? || [] of Array(String)
+    end
+
+    # Module-level `environment:` map: variables every happy-path task of
+    # this module exports (`get_url`/`uri` need a proxy-shaped environment
+    # to exercise the module's use of it, for example). A task body key,
+    # never an option override.
+    def environment(module_name : String) : Hash(String, String)
+      @environment[module_name]? || {} of String => String
     end
 
     def for_option(module_name : String, option_name : String) : OptionOverride?
@@ -191,6 +201,22 @@ module KrikriPlaybookGenerator
 
     # A module-level bare list (`profiles: [debian, rocky]`), unlike the
     # option overrides' `{pool: [...]}` shape.
+    private def parse_environment(section : YAML::Any?) : Hash(String, Hash(String, String))
+      result = {} of String => Hash(String, String)
+      section.try(&.as_h?).try do |section_hash|
+        section_hash.each do |module_name, options|
+          env = options.as_h?.try(&.["environment"]?).try(&.as_h?).try do |entries|
+            entries.each_with_object({} of String => String) do |(name, value), hash|
+              text = value.as_s?
+              hash[name.to_s] = text if text
+            end
+          end
+          result[module_name.to_s] = env if env && !env.empty?
+        end
+      end
+      result
+    end
+
     private def parse_list_by_module(section : YAML::Any?, key : String) : Hash(String, Array(String))
       result = {} of String => Array(String)
       section.try(&.as_h?).try do |section_hash|

@@ -27,9 +27,12 @@ module KrikriPlaybookGenerator
   end
 
   # The play-level keyword axis: strategy, serial, throttle,
-  # any_errors_fatal, run_once, max_fail_percentage, gather_facts and
-  # play-level connection, plus ANSIBLE_FORKS (which has no play-level
-  # spelling at all).
+  # any_errors_fatal, run_once, max_fail_percentage, gather_facts,
+  # play-level connection and become, plus ANSIBLE_FORKS (which has no
+  # play-level spelling at all). `become: true` is the "escalate with no
+  # play-level user set" form: over the SSH connection profile the wire
+  # session is the unprivileged account and sudo lifts it, a different code
+  # path from logging in as root.
   #
   # Exactly ONE keyword is set per playbook. Mixing them would be a
   # different experiment: ansible warns that the free strategy ignores
@@ -44,7 +47,7 @@ module KrikriPlaybookGenerator
   module PlayKeywords
     # The keyword names `--play-keywords` accepts.
     KINDS = %w[strategy serial throttle any_errors_fatal run_once
-      max_fail_percentage gather_facts connection forks]
+      max_fail_percentage gather_facts connection become forks]
 
     # Values a happy path may draw: ansible accepts each one and the
     # playbook stays runnable, so it is still a valid baseline.
@@ -57,6 +60,7 @@ module KrikriPlaybookGenerator
       "max_fail_percentage" => %w[0 50 100],
       "gather_facts"        => %w[true],
       "connection"          => %w[local],
+      "become"              => %w[true],
       "forks"               => %w[1 3],
     }
 
@@ -72,6 +76,7 @@ module KrikriPlaybookGenerator
       "max_fail_percentage" => %w[kpg-many],
       "gather_facts"        => %w[kpg-maybe],
       "connection"          => %w[kpg-bogus-connection],
+      "become"              => %w[kpg-maybe],
       "forks"               => %w[kpg-many],
     }
 

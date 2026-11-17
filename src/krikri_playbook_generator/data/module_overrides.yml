@@ -46,6 +46,15 @@
 # cannot exercise at all (`reboot` would reboot the control node;
 # `apt_key`'s tooling no longer exists in the reference image), so its
 # happy-path failure is neither a generator bug nor wasted coverage.
+# `environment` (map) is a task-level `environment:` every happy path of
+# the module runs with (e.g. a proxy pair plus no_proxy for get_url/uri),
+# so environment-sensitive engine behavior is compared too.
+#
+# Pools mirror what real playbooks actually pass, not just what the schema
+# accepts: URL keys next to local files, RPM capability names next to
+# package names, absolute repo file paths, tilde-prefixed virtualenv paths,
+# empty-but-valid option values. Every entry has to run green on the
+# reference engine - the happy-path success gate measures that.
 #
 # `names:` entries apply by option name to ANY module that doesn't
 # override that option itself; `modules:` entries win over `names:`.
@@ -96,7 +105,11 @@ modules:
                                       "/tmp/kpg-work/dest-0440.txt", "/tmp/kpg-work/readonly/dest.txt",
                                       "/tmp/kpg-work/dir-setgid/out.txt"]}
     mode: {kind: mode, pool: ["0644", "0444", "0400", "0600"]}
-    content: {exclude: true}
+    # Content shapes production playbooks carry: empty, a line without a
+    # trailing newline, and multi-line text. require_one_of then samples
+    # src or content, so the inline form is exercised as often as the
+    # file form.
+    content: {kind: literal_pool, pool: ["", "kpg line without newline", "kpg line one\nkpg line two"]}
     checksum: {exclude: true}
     decrypt: {exclude: true}
     directory_mode: {kind: mode, pool: ["0755", "0700"]}
@@ -150,9 +163,14 @@ modules:
     shell: {kind: literal_pool, pool: ["/bin/sh", "/bin/bash"]}
     home: {kind: work_path}
     umask: {kind: literal_pool, pool: ["022"]}
+    # A degenerate-but-valid membership update: an empty group list with
+    # append, which real playbooks pass when a role's group list is empty.
+    groups: {kind: literal_pool, pool: [""]}
+    append: {kind: literal_pool, pool: ["true"]}
+    always: [groups, append]
     exclude: [uid, uid_min, uid_max, password, password_expire_account_disable,
               password_expire_max, password_expire_min, password_expire_warn,
-              password_lock, group, groups, local, move_home, remove,
+              password_lock, group, local, move_home, remove,
               seuser, skeleton, ssh_key_bits, ssh_key_file,
               ssh_key_passphrase, ssh_key_type, system]
 
@@ -245,6 +263,14 @@ modules:
     # TLS 1.3 cipher list: random strings die at ssl setup with "No cipher
     # can be selected" before the request starts.
     ciphers: {exclude: true}
+    # Production playbooks run behind a proxy. The proxy address is a
+    # closed loopback port and no_proxy points at the fixture host, so a
+    # conforming engine bypasses it and the happy path stays green; an
+    # engine that ignores no_proxy (or drops the task environment) fails.
+    environment:
+      http_proxy: "http://127.0.0.1:9/"
+      https_proxy: "http://127.0.0.1:9/"
+      no_proxy: "127.0.0.1,localhost"
 
   # follow_redirects' choices also live only in argument_spec; the random
   # strings the generator produced were rejected at validation time, so
@@ -252,11 +278,18 @@ modules:
   # The default (safe) is the runnable baseline. url points at the fixture
   # http.server for the same reason as get_url.
   uri:
+    # A random method is a different HTTP verb (the fixture server answers
+    # 501), not a runnable request; GET is the baseline the URL pool means.
+    method: {kind: literal_pool, pool: ["GET"]}
     follow_redirects: {exclude: true}
     url: {kind: literal_pool, pool: ["http://127.0.0.1:18888/src.txt", "http://127.0.0.1:18888/src2.txt", "http://127.0.0.1:18888/template.j2", "http://127.0.0.1:18888/dir/inner.txt"]}
     client_cert: {exclude: true}
     client_key: {exclude: true}
     ca_path: {exclude: true}
+    environment:
+      http_proxy: "http://127.0.0.1:9/"
+      https_proxy: "http://127.0.0.1:9/"
+      no_proxy: "127.0.0.1,localhost"
     # same cipher story as get_url; body as a raw string only works with
     # body_format raw (schema picks any body_format, form-multipart wants a
     # mapping); unix_socket pointed at a plain file; a random status_code
@@ -268,6 +301,12 @@ modules:
     status_code: {exclude: true}
     removes: {exclude: true}
     creates: {kind: literal_pool, pool: ["/tmp/kpg-work/never-created"]}
+    # dest/src switch uri from a request check to a conditional download;
+    # a dest that already exists gets an If-Modified-Since and a 304,
+    # which real ansible treats as a failure. The URL/proxy behavior is
+    # what this row compares, so keep the plain request form.
+    dest: {exclude: true}
+    src: {exclude: true}
 
   getent:
     database: {kind: literal_pool, pool: ["passwd", "group"]}
@@ -459,9 +498,26 @@ modules:
 
   pip:
     executable: {exclude: true}
-    virtualenv_command: {exclude: true}
+    # A tilde-prefixed virtualenv path (the path type expands it before the
+    # module sees it) built with the interpreter itself, so both engines run
+    # the same creation command.
+    virtualenv: {kind: literal_pool, pool: ["~/kpg-venv"]}
+    virtualenv_command: {kind: literal_pool, pool: ["/usr/bin/python3 -m venv"]}
+    # Only meaningful when a venv is created, and then it must be octal; a
+    # random word fails inside the module. The other raw-string options
+    # (a requirements path, a pip --extra-args flag string, a version pin)
+    # are the same class of unconstrained input.
+    umask: {kind: literal_pool, pool: ["022"]}
+    extra_args: {exclude: true}
+    virtualenv_python: {exclude: true}
+    requirements: {exclude: true}
+    version: {exclude: true}
     chdir: {kind: work_dir}
-    name: {kind: literal_pool, pool: ["pip", "setuptools"]}
+    always: [virtualenv, virtualenv_command]
+    # ensurepip seeds pip inside the new venv, so this stays a no-op and
+    # needs no network; setuptools is not seeded on Python 3.12 and would
+    # have to be fetched.
+    name: {kind: literal_pool, pool: ["pip"]}
 
   ini_file:
     path: {kind: literal_pool, pool: ["/tmp/kpg-work/existing2.txt"]}
@@ -680,7 +736,11 @@ modules:
     always: [login_db, query]
 
   dnf:
-    name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
+    # RPM capability names, not just package names: production playbooks
+    # ask for `perl(Foo::Bar)`-shaped provides, and dnf resolves them to
+    # the package that supplies them. libc.so.6()(64bit) is provided by the
+    # installed glibc, so the install stays a no-op.
+    name: {kind: literal_pool, pool: ["bash", "gzip", "sed", "libc.so.6()(64bit)"]}
     state: {kind: literal_pool, pool: ["present", "latest"]}
     # nobest is best's deprecated alias, likewise mutually exclusive, and
     # autoremove is only valid with state=absent - the schema pairs them
@@ -705,7 +765,7 @@ modules:
   # dnf5 shares dnf's shape; the same repo/backend knobs are excluded for
   # the same reasons, and the package pool works on the Rocky rpm profile.
   dnf5:
-    name: {kind: literal_pool, pool: ["bash", "gzip", "sed"]}
+    name: {kind: literal_pool, pool: ["bash", "gzip", "sed", "libc.so.6()(64bit)"]}
     state: {kind: literal_pool, pool: ["present", "latest"]}
     # same argument_spec-only exclusivities as dnf: name|list, and
     # best|nobest (nobest is the deprecated alias). autoremove, like dnf,
@@ -1018,9 +1078,11 @@ modules:
     profiles: [debian, rocky]
 
   # rpm_key imports a key with gpg2 (the rpm template pair provides it);
-  # a random key path is not a key.
+  # a random key path is not a key. Production playbooks fetch the key by
+  # URL as often as they ship a local file, and both forms are compared.
   rpm_key:
-    key: {kind: literal_pool, pool: ["/opt/kpg-fixtures/pgpkey.asc"]}
+    key: {kind: literal_pool, pool: ["/opt/kpg-fixtures/pgpkey.asc",
+                                    "http://127.0.0.1:18888/pgpkey.asc"]}
     state: {kind: literal_pool, pool: ["present"]}
     fingerprint: {exclude: true}
     validate_certs: {exclude: true}
@@ -1079,7 +1141,9 @@ modules:
     name: {kind: literal_pool, pool: ["kpg-fixture"]}
     description: {kind: literal_pool, pool: ["kpg fixture repo"]}
     baseurl: {kind: literal_pool, pool: ["http://127.0.0.1:18888/"]}
-    file: {kind: literal_pool, pool: ["kpg-fixture"]}
+    # An absolute file name (ansible joins it with reposdir, which keeps
+    # an absolute second component) is what role-generated repo files use.
+    file: {kind: literal_pool, pool: ["/etc/yum.repos.d/kpg-fixture"]}
     state: {kind: literal_pool, pool: ["present"]}
     mode: {kind: mode, pool: ["0644"]}
     always: [name, description, baseurl, file, state]

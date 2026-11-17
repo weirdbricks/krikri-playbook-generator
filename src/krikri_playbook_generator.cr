@@ -27,6 +27,7 @@ module KrikriPlaybookGenerator
         umasks: Options.effective_umasks(opts),
         hosts: Options.effective_hosts(opts),
         limits: Options.effective_limits(opts),
+        connections: Options.effective_connections(opts),
         reference_versions: opts.reference_core_versions).run
       print_run_summary(results)
       divergences?(results) ? DIVERGENT_EXIT : 0
@@ -248,6 +249,7 @@ module KrikriPlaybookGenerator
       umasks: Options.effective_umasks(opts),
       hosts: Options.effective_hosts(opts),
       limits: Options.effective_limits(opts),
+      connections: Options.effective_connections(opts),
       reference_versions: opts.reference_core_versions).run
     triage = Triage.new(opts.results_dir)
     print_run_summary(results)
@@ -373,7 +375,7 @@ module KrikriPlaybookGenerator
       end
       puts "  example: #{finding.playbooks.first}"
       puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version)}"
+      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version, connection: example.connection)}"
     end
   end
 
@@ -387,7 +389,7 @@ module KrikriPlaybookGenerator
       puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
       puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version, connection: example.connection)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
         puts "  leftover staging files:"
@@ -414,7 +416,7 @@ module KrikriPlaybookGenerator
            "#{finding.count} playbook(s) mutated the host in check mode"
       puts "  example: #{example.playbook}"
       puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version)}"
+      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version, connection: example.connection)}"
       lines = example.check_mode_diff.lines
       lines.first(10).each { |line| puts "  #{line}" }
       puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10

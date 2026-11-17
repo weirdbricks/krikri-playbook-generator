@@ -149,6 +149,26 @@ module KrikriPlaybookGenerator
         "file\tchanged\tf\t0\t0\t644\t100\t/etc/passwd\tf\t0\t0\t600\t100\t/etc/passwd")
     end
 
+    it "does not treat the SSH transport's socket dir as a leftover temp" do
+      before_snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
+      after = HostState::Snapshot.parse(baseline
+        .sub("#temps\n", "#temps\nd\t/tmp/.krikri-playbook-ssh\n")).as(HostState::Snapshot)
+
+      assert_equal([] of String, HostState.leftover_temps(before_snapshot, after))
+    end
+
+    it "ignores SSH controller bookkeeping in check mode" do
+      before_snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
+      after = HostState::Snapshot.parse(baseline
+        .sub("cron.service", "cron.service\nsshd.service")
+        .sub("#files\n", "#files\nf\t0\t0\t644\t42\t/root/.ssh/known_hosts\n")).as(HostState::Snapshot)
+
+      changes = HostState.check_mode_changes(before_snapshot, after)
+      refute_nil(changes)
+      assert_equal(["unit\tadded\tsshd.service"], changes)
+      assert(HostState.check_mode_ignored?("file\tadded\tf\t0\t0\t644\t42\t/root/.ssh/known_hosts"))
+    end
+
     it "ignores the engines' documented control-side keepers in check mode" do
       before_snapshot = HostState::Snapshot.parse(baseline).as(HostState::Snapshot)
       after = HostState::Snapshot.parse(baseline

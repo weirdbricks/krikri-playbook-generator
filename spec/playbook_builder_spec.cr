@@ -64,6 +64,24 @@ module KrikriPlaybookGenerator
       FileUtils.rm_rf(dir) if dir
     end
 
+    it "writes a task-level environment, in both playbook shapes" do
+      dir = File.tempname("kpg-spec")
+      env = {"no_proxy" => "127.0.0.1,localhost", "http_proxy" => "http://127.0.0.1:9/"}
+      single = GeneratedTask.new("get_url", "ansible.builtin",
+        {"url" => YAML::Any.new("http://127.0.0.1:18888/src.txt")}, environment: env)
+      single_path = PlaybookBuilder.new(dir).build([single]).first
+      task = YAML.parse(File.read(single_path)).as_a.first["tasks"].as_a.first
+      assert_equal("127.0.0.1,localhost", task["environment"]["no_proxy"].as_s)
+      assert_equal("http://127.0.0.1:9/", task["environment"]["http_proxy"].as_s)
+
+      scenario_path = PlaybookBuilder.new(dir).build_scenarios([[single]]).first
+      scenario_task = YAML.parse(File.read(scenario_path)).as_a.first["tasks"].as_a.first
+      assert_equal("127.0.0.1,localhost", scenario_task["environment"]["no_proxy"].as_s)
+      assert_equal("http://127.0.0.1:9/", scenario_task["environment"]["http_proxy"].as_s)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "starts every play and task name with an uppercase letter (ansible-lint name[casing])" do
       dir = File.tempname("kpg-spec")
       text = File.read(PlaybookBuilder.new(dir).build_scenarios([[sample_task]]).first)

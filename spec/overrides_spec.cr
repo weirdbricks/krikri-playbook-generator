@@ -28,7 +28,7 @@ module KrikriPlaybookGenerator
       overrides = Overrides.load
       assert(overrides.excluded?("user", "uid"))
       assert(overrides.excluded?("user", "password_expire_min"))
-      assert(overrides.excluded?("copy", "content"))
+      refute(overrides.excluded?("copy", "content"))
       assert(overrides.excluded?("some_unknown_module", "seuser"))
       refute(overrides.excluded?("copy", "src"))
     end
@@ -45,6 +45,19 @@ module KrikriPlaybookGenerator
       assert_equal([["src", "content"]], overrides.require_one_of("copy"))
       assert_equal([["line", "regexp"]], overrides.require_one_of("lineinfile"))
       assert_empty(overrides.require_one_of("debug"))
+    end
+
+    it "exposes a module-level task environment" do
+      overrides = Overrides.load
+      env = overrides.environment("get_url")
+      assert_equal("127.0.0.1,localhost", env["no_proxy"]?)
+      assert_equal("http://127.0.0.1:9/", env["http_proxy"]?)
+      assert_empty(overrides.environment("file"))
+    end
+
+    it "keeps an environment map out of the option overrides" do
+      overrides = Overrides.load
+      assert_nil(overrides.for_option("get_url", "environment"))
     end
 
     it "exposes the always-include list" do

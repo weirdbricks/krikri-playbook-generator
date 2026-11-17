@@ -36,6 +36,66 @@ module KrikriPlaybookGenerator
       chmod 0440 /etc/sudoers.d/#{UNPRIVILEGED_USER}
       BASH
 
+    # The SSH transport profile's target: one generated keypair, installed
+    # for both accounts an engine row may run as, sshd listening on
+    # SSH_PORT. The key lives under the (unsnapshotted) fixture root and
+    # each account gets its own 0600 copy, because ssh refuses a world
+    # readable private key. Host keys are generated once into the committed
+    # template, and every per-playbook container starts with the same
+    # server identity; ANSIBLE_HOST_KEY_CHECKING=False keeps the engines
+    # from needing a known_hosts entry for it.
+    SSH_PORT   = 2222
+    SSH_KEY    = "#{FIXTURE_ROOT}/ssh/kpg_id"
+    SSH_SCRIPT = <<-BASH
+      set -e
+      mkdir -p #{FIXTURE_ROOT}/ssh /run/sshd
+      chmod 0755 #{FIXTURE_ROOT}/ssh
+      if [ ! -f #{SSH_KEY} ]; then
+        ssh-keygen -q -t ed25519 -N '' -C kpg -f #{SSH_KEY}
+      fi
+      chmod 0600 #{SSH_KEY}
+      chmod 0644 #{SSH_KEY}.pub
+      install_key() {
+        home="$1"
+        owner="$2"
+        install -d -m 0700 -o "$owner" -g "$owner" "$home/.ssh"
+        cp #{SSH_KEY} "$home/.ssh/kpg_id"
+        cp #{SSH_KEY}.pub "$home/.ssh/kpg_id.pub"
+        chown "$owner:$owner" "$home/.ssh/kpg_id" "$home/.ssh/kpg_id.pub"
+        chmod 0600 "$home/.ssh/kpg_id"
+        chmod 0644 "$home/.ssh/kpg_id.pub"
+        touch "$home/.ssh/authorized_keys"
+        chown "$owner:$owner" "$home/.ssh/authorized_keys"
+        chmod 0600 "$home/.ssh/authorized_keys"
+        grep -qxF "$(cat #{SSH_KEY}.pub)" "$home/.ssh/authorized_keys" 2>/dev/null || \
+          cat #{SSH_KEY}.pub >> "$home/.ssh/authorized_keys"
+      }
+      install_key /root root
+      install_key #{UNPRIVILEGED_HOME} #{UNPRIVILEGED_USER}
+      ssh-keygen -A >/dev/null
+      /usr/sbin/sshd -p #{SSH_PORT} -o PermitRootLogin=yes -o PasswordAuthentication=no \
+        -o UsePAM=no -o PidFile=/run/sshd-kpg.pid || true
+      BASH
+
+    # OpenSSH refuses a locked account (`!` in /etc/shadow) even for public
+    # key auth, and useradd leaves the provisioned account locked. `*` is
+    # "no usable password" without being locked, which is exactly the
+    # key-only account the SSH rows need. Run before the first snapshot,
+    # so it is baseline state rather than a mutation either engine made.
+    SSH_PREPARE_COMMAND = "usermod -p '*' #{UNPRIVILEGED_USER}"
+
+    # The key path an engine row running as `user` can read.
+    def self.ssh_key_path(user : UserProfile) : String
+      user.nonroot? ? "#{UNPRIVILEGED_HOME}/.ssh/kpg_id" : "/root/.ssh/kpg_id"
+    end
+
+    # Starts sshd in a container that may have been built before the
+    # package layer got openssh-server; silently a no-op there. Used by
+    # the per-playbook bootstrap in both backend scripts.
+    SSH_BOOTSTRAP = <<-BASH
+      mkdir -p /run/sshd; /usr/sbin/sshd -p #{SSH_PORT} -o PermitRootLogin=yes -o PasswordAuthentication=no -o UsePAM=no -o PidFile=/run/sshd-kpg.pid >/dev/null 2>&1 || true;
+      BASH
+
     # The fixture roots are seeded once into the shared image as root, so
     # the writable half has to be re-owned for whichever identity the row
     # runs as. Doing it per run (before the first snapshot) keeps both

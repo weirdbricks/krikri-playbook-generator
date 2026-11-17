@@ -32,7 +32,10 @@ module KrikriPlaybookGenerator
   # data/module_dependencies.yml therefore changes the fingerprint and
   # triggers exactly one rebake.
   class MicrovmBackend
-    SSH_PORT             = 2422
+    SSH_PORT = 2422
+    # sshd's port INSIDE the guest (the host-facing one above is qemu's
+    # hostfwd); an SSH connection row runs inside the VM and dials this one.
+    GUEST_SSH_PORT       =   22
     VM_MEM_MB            = 1024
     VM_CPUS              =    2
     BOOT_SECS            =  240
@@ -395,11 +398,13 @@ module KrikriPlaybookGenerator
                             umask : String = DEFAULT_UMASK,
                             owner : String = "root", group : String = "root",
                             env : Hash(String, String) = {} of String => String,
-                            limit : String? = nil) : String
+                            limit : String? = nil, connection_flags : Array(String) = [] of String) : String
       flags = "#{check_mode ? " --check" : ""}#{diff ? " --diff" : ""}"
       limit_flag = limit.try { |pattern| " --limit #{Process.quote(pattern)}" } || ""
+      connection = connection_flags.map { |flag| Process.quote(flag) }.join(" ")
+      connection = connection.empty? ? "" : " #{connection}"
       "umask #{umask} && cd /work && #{ENGINE_ENV_STRIP} #{KrikriPlaybookGenerator.env_prefix(env)}timeout #{timeout} " \
-      "#{binary}#{flags}#{limit_flag} -e kpg_owner=#{owner} -e kpg_group=#{group} " \
+      "#{binary}#{flags}#{limit_flag}#{connection} -e kpg_owner=#{owner} -e kpg_group=#{group} " \
       "-i inventory.ini /work/#{basename} </dev/null"
     end
 
@@ -442,7 +447,8 @@ module KrikriPlaybookGenerator
                      umask : String = DEFAULT_UMASK, hosts : Int32 = 1,
                      env : Hash(String, String) = {} of String => String,
                      limit : String? = nil,
-                     include_unreachable : Bool = false) : Array(HostState::Comparison)
+                     include_unreachable : Bool = false,
+                     connection : ConnectionProfile = ConnectionProfile.local) : Array(HostState::Comparison)
       gold = @goldens[os]? || raise MicrovmProvisionError.new("profile #{os} was never provisioned")
       effective_check = check.nil? ? @check_mode : check
       effective_diff = diff.nil? ? @diff : diff
@@ -451,14 +457,14 @@ module KrikriPlaybookGenerator
       begin
         pair = boot_pair(gold, os, lease)
         begin
-          pair.vms.each { |host| prep_vm(host, playbook_path, user, hosts, include_unreachable) }
+          pair.vms.each { |host| prep_vm(host, playbook_path, user, hosts, include_unreachable, connection) }
           basename = File.basename(playbook_path)
           krikri_engine = @control ? "ansible-playbook" : "/opt/krikri/bin/krikri-playbook"
           runs = [] of HostState::Comparison
-          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env, limit)
+          runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env, limit, connection)
           if second_run && HostState.succeeded?(runs.first[:ansible]) &&
              HostState.succeeded?(runs.first[:krikri])
-            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env, limit)
+            runs << comparison(pair, basename, krikri_engine, effective_check, effective_diff, user, umask, env, limit, connection)
           end
           runs
         ensure
@@ -473,18 +479,20 @@ module KrikriPlaybookGenerator
                            check : Bool, diff : Bool, user : UserProfile,
                            umask : String,
                            env : Hash(String, String) = {} of String => String,
-                           limit : String? = nil) : HostState::Comparison
-      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff, user, umask, env, limit),
-       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff, user, umask, env, limit)}
+                           limit : String? = nil,
+                           connection : ConnectionProfile = ConnectionProfile.local) : HostState::Comparison
+      {ansible: observe(pair.ansible, "ansible-playbook", basename, check, diff, user, umask, env, limit, connection),
+       krikri:  observe(pair.krikri, krikri_engine, basename, check, diff, user, umask, env, limit, connection)}
     end
 
     private def observe(vm : Vm, binary : String, basename : String,
                         check : Bool, diff : Bool, user : UserProfile,
                         umask : String,
                         env : Hash(String, String) = {} of String => String,
-                        limit : String? = nil) : HostState::Observation
+                        limit : String? = nil,
+                        connection : ConnectionProfile = ConnectionProfile.local) : HostState::Observation
       before = snapshot_state(vm)
-      result = exec_engine(vm, binary, basename, check, diff, user, umask, env, limit)
+      result = exec_engine(vm, binary, basename, check, diff, user, umask, env, limit, connection)
       HostState::Observation.new(result, before, snapshot_state(vm))
     end
 
@@ -870,8 +878,10 @@ module KrikriPlaybookGenerator
     end
 
     private def prep_vm(vm : Vm, playbook_path : String, user : UserProfile,
-                        hosts : Int32 = 1, include_unreachable : Bool = false) : Nil
+                        hosts : Int32 = 1, include_unreachable : Bool = false,
+                        connection : ConnectionProfile = ConnectionProfile.local) : Nil
       seed_fixtures(vm)
+      prep_ssh_key(vm) if connection.ssh?
       # Re-own the writable fixture root for this row's identity before the
       # first snapshot, so both engines start from identical state.
       ownership = run_script(vm, Fixtures.ownership_command(user), 120.0)
@@ -906,11 +916,52 @@ module KrikriPlaybookGenerator
         raise MicrovmProvisionError.new("library upload to #{vm.ip} failed: #{copied.stderr}") unless copied.rc == 0
       end
       inventory = run_script(vm, "mkdir -p /work && cat > /work/inventory.ini <<'KPG_INVENTORY_EOF'\n" +
-                                 HostInventory.render(hosts, include_unreachable) + "KPG_INVENTORY_EOF\n", 60.0)
+                                 HostInventory.render(hosts, include_unreachable, connection, user, GUEST_SSH_PORT) +
+                                 "KPG_INVENTORY_EOF\n", 60.0)
       unless inventory.rc == 0
         raise MicrovmProvisionError.new("writing inventory on #{vm.ip} failed: #{inventory.stderr}")
       end
       assert_ansible_version(vm) unless @control
+    end
+
+    # The SSH rows run inside the VM, connecting back to its own sshd. The
+    # per-run bench key is the only private key that exists on the host, so
+    # stage it (and its public half) into both accounts' .ssh dirs and
+    # authorize it for the unprivileged account; root's authorized_keys
+    # already carries it from cloud-init.
+    private def prep_ssh_key(vm : Vm) : Nil
+      scp = Cmd.run("scp", ["-P", SSH_PORT.to_s, "-i", vm.key, "-o", "IdentitiesOnly=yes",
+                            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                            vm.key, "#{vm.key}.pub", "root@#{vm.ip}:/tmp/"], timeout: 120.0)
+      raise MicrovmProvisionError.new("ssh key upload to #{vm.ip} failed: #{scp.stderr}") unless scp.rc == 0
+
+      key = File.basename(vm.key)
+      script = <<-BASH
+        set -e
+        #{Fixtures::SSH_PREPARE_COMMAND}
+        install_key() {
+          home="$1"
+          owner="$2"
+          install -d -m 0700 -o "$owner" -g "$owner" "$home/.ssh"
+          cp /tmp/#{key} "$home/.ssh/kpg_id"
+          cp /tmp/#{key}.pub "$home/.ssh/kpg_id.pub"
+          chown "$owner:$owner" "$home/.ssh/kpg_id" "$home/.ssh/kpg_id.pub"
+          chmod 0600 "$home/.ssh/kpg_id"
+          chmod 0644 "$home/.ssh/kpg_id.pub"
+          touch "$home/.ssh/authorized_keys"
+          chown "$owner:$owner" "$home/.ssh/authorized_keys"
+          chmod 0600 "$home/.ssh/authorized_keys"
+          grep -qxF "$(cat /tmp/#{key}.pub)" "$home/.ssh/authorized_keys" 2>/dev/null || \
+            cat /tmp/#{key}.pub >> "$home/.ssh/authorized_keys"
+        }
+        install_key /root root
+        install_key #{Fixtures::UNPRIVILEGED_HOME} #{Fixtures::UNPRIVILEGED_USER}
+        rm -f /tmp/#{key} /tmp/#{key}.pub
+        BASH
+      result = run_script(vm, script, 120.0)
+      unless result.rc == 0
+        raise MicrovmProvisionError.new("ssh key install on #{vm.ip} failed: #{result.stderr}")
+      end
     end
 
     private def stage_krikri(vm : Vm) : Nil
@@ -952,9 +1003,11 @@ module KrikriPlaybookGenerator
                             user : UserProfile = UserProfile::Root,
                             umask : String = DEFAULT_UMASK,
                             env : Hash(String, String) = {} of String => String,
-                            limit : String? = nil) : Cmd::Result
+                            limit : String? = nil,
+                            connection : ConnectionProfile = ConnectionProfile.local) : Cmd::Result
       owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
-      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff, umask, owner, owner, env, limit)
+      env = env.merge(connection.env(user))
+      command = MicrovmBackend.engine_command(binary, basename, @engine_timeout, check, diff, umask, owner, owner, env, limit, connection.cli_flags(user))
       command = MicrovmBackend.as_unprivileged(command) if user.nonroot?
       result = Cmd.run("timeout", [(@engine_timeout + 120).to_i.to_s, "ssh"] + ssh_args(vm) + ["root@#{vm.ip}", command],
         timeout: @engine_timeout + 150.0)

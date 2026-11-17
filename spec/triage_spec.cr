@@ -11,6 +11,7 @@ module KrikriPlaybookGenerator
                      mode : String = "real", run : Int32 = 1,
                      user : String = "root", umask : String = "022", hosts : Int32 = 1,
                      limit : String = "off", profile : String = "debian",
+                     connection : String = "local",
                      mutations : Array({String, String}) = [] of {String, String},
                      ansible_failed : Bool = false, ansible_error : String? = nil,
                      error : String? = nil, masked_diff : String = "",
@@ -31,6 +32,7 @@ module KrikriPlaybookGenerator
         "hosts"              => hosts,
         "limit"              => limit,
         "profile"            => profile,
+        "connection"         => connection,
         "core_version"       => core_version,
         "chaos"              => chaos,
         "divergent"          => divergent,
@@ -101,6 +103,22 @@ module KrikriPlaybookGenerator
       assert(command.includes?("--reference-core-version 2.20.1"))
       # The default version is the backend default and stays unpinned.
       refute(Triage.repro_command("x.yml", ["copy"], core_version: "2.21.6").includes?("--reference-core-version"))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "groups the same signature separately per connection and pins it in a repro" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: true, signature: "same", connection: "ssh")
+      write_result(dir, "b", "copy", divergent: true, signature: "same", connection: "ssh-cli")
+
+      findings = Triage.new(dir).report
+      assert_equal(2, findings.size)
+
+      command = Triage.repro_command("/tmp/p.yml", ["copy"], connection: "ssh-cli")
+      assert(command.includes?("--connection ssh-cli"))
+      refute(Triage.repro_command("/tmp/p.yml", ["copy"]).includes?("--connection"))
     ensure
       FileUtils.rm_rf(dir) if dir
     end

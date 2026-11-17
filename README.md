@@ -27,7 +27,14 @@ Galaxy roles and hand-written test playbooks don't happen to exercise.
      `mutually_exclusive`/`required_together`/`required_one_of`/
      `required_if`. Practical traps come from an extensible per-module
      override table (`src/krikri_playbook_generator/data/
-     module_overrides.yml`, embedded at compile time).
+     module_overrides.yml`, embedded at compile time), whose pools mirror
+     real playbook inputs as well as schema validity: URL keys next to
+     local files, RPM capability names (`libc.so.6()(64bit)`) for dnf,
+     absolute `yum_repository.file` paths, tilde-prefixed pip virtualenvs,
+     empty/no-trailing-newline copy content, `groups: ""` with `append:
+     true`, and a task-level proxy `environment:` for get_url/uri. The
+     runtime-only `require_one_of` groups keep exactly one member (src or
+     content, line or regexp) and sample which, so both forms are covered.
    - chaos: per-option-slot, at probability `--chaos-percentage`, mutates
      the *valid baseline* into a typo'd/hallucinated option name, a
      wrong-type value, an off-schema choice, a violated cross-option
@@ -158,7 +165,7 @@ engine can run the task at all.
 Both axes cost runtime, so the cost is visible: the report's `Batch`
 section prints the modes, the idempotency flag and wall time, and
 `versions.txt` records `modes:`, `user-profiles:`, `umasks:`,
-`idempotency:` and `batch duration:`.
+`connections:`, `idempotency:` and `batch duration:`.
 
 ## Host state
 
@@ -186,8 +193,10 @@ failed task never cleaned up is reported with the engine and the task the
 run log blames (`leftover_temps` in results.jsonl), instead of being
 guessed at as ordinary module output. Neither engine keeps a staging file
 on any path it controls, so there is no legitimate residue to ignore
-beyond `~/.ansible`; a destination file that both engines create and keep
-identically is treated as module output.
+beyond `~/.ansible` and the SSH transport's own bookkeeping (krikri's
+controller-side plugin cache, its `known_hosts` entry and its
+ControlMaster socket directory); a destination file that both engines
+create and keep identically is treated as module output.
 
 ## Check mode is read-only
 
@@ -197,8 +206,11 @@ engines agreeing on the same mutation still both break check mode, which
 the delta-vs-delta comparison cannot see. Anything left behind in a check
 run is a `check-mode-mutation` finding (`check_mode_mutated` and
 `check_mode_diff` in results.jsonl) with its own report section; the only
-tolerated residue is engine control-side state (`~/.ansible`, already
-pruned from the snapshot). A playbook that also differs on printed output
+tolerated residue is engine control-side state (`~/.ansible` and the SSH
+transport's cache/socket bookkeeping, already pruned from the snapshot,
+plus the pip happy path's tilde virtualenv, whose compiled bytecode is
+not byte-deterministic between two separately created venvs). A playbook
+that also differs on printed output
 is counted once, as an output finding.
 
 ## Identity and umask
@@ -221,8 +233,30 @@ unprivileged account, because a non-root task cannot chown to root and
 would otherwise fail on the reference engine. Local runs stay the
 invoking account and Atlantic runs stay root; both still honor `--umask`.
 
-See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for the full proposal,
-open questions, and rationale for a separate repo.
+## Transport
+
+Every row above uses `ansible_connection=local` unless asked otherwise.
+`--connection local|ssh|both` adds a real transport axis on an isolated
+backend: the template image gets an sshd plus a generated keypair for
+root and for the provisioned `kpg` account, so both engines connect over
+SSH to their own host. `both` expands to local plus every SSH variant, and
+the variants differ only in where the connection settings arrive:
+
+| Variant | User / key / port arrive through |
+| ------- | -------------------------------- |
+| `ssh` | the inventory (`ansible_user`, `ansible_private_key_file`, `ansible_port`) |
+| `ssh-cli` | `-u` / `--private-key` flags, port in the inventory |
+| `ssh-hostport` | a `host:port` inventory entry, user/key as flags |
+| `ssh-env-key` | `ANSIBLE_PRIVATE_KEY_FILE` |
+| `ssh-env-user` | `ANSIBLE_REMOTE_USER` |
+
+Each row records `connection` in results.jsonl, Triage groups and
+repro-pins it, and `versions.txt` records the applied list. First-run
+rows on a fresh pair are the cold plugin-cache transport; the default
+second run on the same pair is the warm one. `become: true` (the
+`become` play keyword) is the escalate-with-no-play-level-user form over
+the same transport. See `KRIKRI_PLAYBOOK_GENERATOR.md` in this repo for
+the full proposal, open questions, and rationale for a separate repo.
 
 ## Distro profiles
 
@@ -341,6 +375,7 @@ The axis checklist (all of these, not just the reported one):
 | custom module API | `--library-modules all` (or `check-mode,dict-arg,...`) | argument-spec validation, check-mode support, warning/error/traceback plumbing, `_verbosity`, collection imports |
 | module_utils surface | `--module-utils all` (or one import path) | a custom module importing a module_utils module or public name krikri's shim lacks |
 | reference version | `--reference-core-version 2.20.1 --run-on-podman` (repeatable) | a divergence that only exists on the version the production playbooks actually run |
+| transport | `--connection both` | user/key/port plumbing, plugin upload and daemon reuse over the wire, `become` with no user set |
 
 krikri-loop's fix workflow should gate on this: after a KPG-derived fix,
 run the table above for the touched module (and its sibling module when

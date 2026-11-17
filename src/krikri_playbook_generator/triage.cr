@@ -32,7 +32,7 @@ module KrikriPlaybookGenerator
     record MutationEntry, option : String, kind : String
     record ResultLine, playbook : String, module_name : String, mode : String, run : Int32,
       user : String, umask : String, hosts : Int32, limit : String, profile : String,
-      env : Hash(String, String),
+      connection : String, env : Hash(String, String),
       chaos : Bool, divergent : Bool, signature : String?, ansible_failed : Bool,
       ansible_error : String?, mutations : Array(MutationEntry), error : String?,
       masked_diff : String, masked_identical : Bool, state_divergent : Bool,
@@ -111,16 +111,16 @@ module KrikriPlaybookGenerator
     end
 
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.connection, line.signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, _connection, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first,
           entries.map(&.core_version).uniq!.sort!)
@@ -128,7 +128,7 @@ module KrikriPlaybookGenerator
     end
 
     def state_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.state_divergent
@@ -137,11 +137,11 @@ module KrikriPlaybookGenerator
         # the "one root cause never appears twice" rule.
         next if line.check_mode_mutated
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.state_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.connection, line.state_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, _connection, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first,
           entries.map(&.core_version).uniq!.sort!)
@@ -149,17 +149,17 @@ module KrikriPlaybookGenerator
     end
 
     def check_mode_findings_from(lines : Array(ResultLine)) : Array(Finding)
-      groups = {} of {String, String, Int32, String, String, Int32, String, String, String?} => Array(ResultLine)
+      groups = {} of {String, String, Int32, String, String, Int32, String, String, String, String?} => Array(ResultLine)
 
       lines.each do |line|
         next unless line.check_mode_divergent?
         next if line.errored? || line.output_divergent?
 
-        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.check_mode_signature}
+        key = {line.module_name, line.mode, line.run, line.user, line.umask, line.hosts, line.limit, line.profile, line.connection, line.check_mode_signature}
         (groups[key] ||= [] of ResultLine) << line
       end
 
-      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, signature), entries|
+      groups.map do |(module_name, _mode, _run, _user, _umask, _hosts, _limit, _profile, _connection, signature), entries|
         playbooks = entries.map(&.playbook).uniq!
         Finding.new(module_name, signature, playbooks, entries.first.mutations, entries.first,
           entries.map(&.core_version).uniq!.sort!)
@@ -188,6 +188,7 @@ module KrikriPlaybookGenerator
               json.field "second_run", info[:second_run]
               json.field "diff", info[:diff]
               json.field "reference_cores", info[:cores]
+              json.field "connections", info[:connections]
             end
           end
           json.field "findings" do
@@ -257,6 +258,7 @@ module KrikriPlaybookGenerator
             json.field "umask", example.umask
             json.field "hosts", example.hosts
             json.field "limit", example.limit
+            json.field "connection", example.connection
             json.field "profile", example.profile
             json.field "core_version", example.core_version
             json.field "library_target", example.library_target
@@ -381,13 +383,14 @@ module KrikriPlaybookGenerator
     # `diff` defaults to false for a legacy versions.txt written before the
     # flag was recorded: those batches never passed --diff, so a repro of
     # one has to skip it too or it compares different bytes.
-    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool, diff: Bool, cores: Array(String))
+    def batch_info : NamedTuple(modes: Array(String), duration: String?, second_run: Bool, diff: Bool, cores: Array(String), connections: Array(String))
       path = File.join(@results_dir, "versions.txt")
       modes = [] of String
       duration = nil
       second_run = false
       diff = false
       cores = [] of String
+      connections = [] of String
       if File.exists?(path)
         File.each_line(path) do |line|
           key, value = line.split(": ", 2)
@@ -398,10 +401,11 @@ module KrikriPlaybookGenerator
           when "idempotency"     then second_run = value.strip == "true"
           when "diff"            then diff = value.strip == "true"
           when "reference cores" then cores = value.split(',').map(&.strip)
+          when "connections"     then connections = value.split(',').map(&.strip)
           end
         end
       end
-      {modes: modes, duration: duration, second_run: second_run, diff: diff, cores: cores}
+      {modes: modes, duration: duration, second_run: second_run, diff: diff, cores: cores, connections: connections}
     end
 
     def rates : Array(Rate)
@@ -437,7 +441,8 @@ module KrikriPlaybookGenerator
                            hosts : Int32 = 1,
                            env : Hash(String, String) = {} of String => String,
                            limit : String = "off",
-                           core_version : String? = nil) : String
+                           core_version : String? = nil,
+                           connection : String = "local") : String
       backend = MicrovmBackend.microvm_only?(module_names) ? "--run-on-mixed" : "--run-on-podman"
       command = "krikri-playbook-generator run #{playbook_path} #{backend} --results-dir /tmp/kpg-repro"
       command += " --modes #{mode}" if mode && mode.in?(%w[check real])
@@ -452,6 +457,7 @@ module KrikriPlaybookGenerator
       # A limit row contacts (or deliberately avoids) a different host set;
       # pinning the symbol keeps that shape, including `--limit none`.
       command += " --limit #{limit}" unless limit == "off"
+      command = pin_option(command, "--connection", connection, "local")
       # A reference-core row only reproduces against that engine version.
       if core_version && core_version != KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
         command += " --reference-core-version #{core_version}"
@@ -462,6 +468,12 @@ module KrikriPlaybookGenerator
       # to export it itself or it would rerun a different playbook.
       prefix = env.map { |name, value| "#{name}=#{Process.quote(value)}" }.join(" ")
       prefix.empty? ? command : "#{prefix} #{command}"
+    end
+
+    # Adds a flag/value pair unless it is the default; separate so the
+    # repro builder stays under ameba's complexity limit.
+    private def self.pin_option(command : String, flag : String, value : String, default : String) : String
+      value == default ? command : "#{command} #{flag} #{value}"
     end
 
     private def result_lines : Array(ResultLine)
@@ -520,6 +532,7 @@ module KrikriPlaybookGenerator
         parse_hosts(parsed),
         parsed["limit"]?.try(&.as_s?) || "off",
         parsed["profile"]?.try(&.as_s?) || "debian",
+        parsed["connection"]?.try(&.as_s?) || "local",
         parse_env(parsed),
         parsed["chaos"]?.try(&.as_bool?) || false,
         divergent,

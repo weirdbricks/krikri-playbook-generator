@@ -298,10 +298,22 @@ module KrikriPlaybookGenerator
       end
     end
 
-    it "never includes a happy-path-excluded option (copy.content)" do
-      Generator.new(5, 0.0).generate(copy_schema, 30).each do |task|
-        refute(task.args.has_key?("content"), "copy.content must stay out of happy-path tasks")
+    it "samples src or content for copy, never both" do
+      tasks = Generator.new(5, 0.0).generate(copy_schema, 60)
+      assert(tasks.any?(&.args.has_key?("src")))
+      assert(tasks.any?(&.args.has_key?("content")))
+      tasks.each do |task|
+        present = %w[src content].count { |name| task.args.has_key?(name) }
+        assert_equal(1, present, "copy happy path did not pick exactly one of src/content: #{task.args}")
       end
+    end
+
+    it "carries the module's task-level environment onto the generated task" do
+      schema = ModuleSchema.new("get_url", "ansible.builtin")
+      schema.options["url"] = OptionSchema.new("url", "str")
+      task = Generator.new(3, 0.0).generate(schema, 1).first
+      assert_equal("127.0.0.1,localhost", task.environment["no_proxy"]?)
+      assert_equal("http://127.0.0.1:9/", task.environment["http_proxy"]?)
     end
 
     it "satisfies mutually_exclusive groups in the happy path" do

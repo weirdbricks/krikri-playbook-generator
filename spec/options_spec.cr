@@ -409,6 +409,32 @@ module KrikriPlaybookGenerator
       assert((err.message || "").includes?("--user-profile"))
     end
 
+    it "defaults to the local connection and parses the ssh variants" do
+      opts = Options.parse(["run", "--run-on-podman"])
+      assert_equal([ConnectionProfile.local], Options.effective_connections(opts))
+      refute(opts.connections_given?)
+
+      ssh = Options.parse(["run", "--run-on-podman", "--connection", "ssh"])
+      assert_equal(["ssh"], ssh.connections.map(&.label))
+      assert(ssh.connections_given?)
+
+      both = Options.parse(["run", "--run-on-microvm", "--connection", "both"])
+      assert_equal(["local"] + ConnectionProfile::SSH_KINDS, Options.effective_connections(both).map(&.label))
+    end
+
+    it "refuses --connection without an isolated backend" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--connection", "ssh"]) }
+      assert((err.message || "").includes?("--connection"))
+
+      err = assert_raises(InvalidOptionsError) do
+        Options.parse(["run", "--run-on-atlantic", "--connection", "ssh"])
+      end
+      assert((err.message || "").includes?("--connection"))
+
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--run-on-podman", "--connection", "bogus"]) }
+      assert((err.message || "").includes?("bogus"))
+    end
+
     it "keeps local runs labelled as the invoking account" do
       opts = Options.parse(["run"])
       assert_equal([UserProfile::Local], Options.effective_user_profiles(opts))

@@ -138,6 +138,8 @@ module KrikriPlaybookGenerator
       # Which host image this row ran on ("debian" or "rocky"); a
       # distro-polymorphic module gets one row per image.
       getter profile : String
+      # Which transport this row used ("local" or an ssh variant).
+      getter connection : String
       # Which reference ansible-core version this row compared against
       # (`--reference-core-version`); the krikri side stays at its target.
       getter core_version : String
@@ -150,6 +152,7 @@ module KrikriPlaybookGenerator
         label = "(#{mode.label}, run #{run}, #{user.label}, umask #{umask}"
         label += ", hosts #{hosts}" unless hosts == 1
         label += ", limit #{limit}" unless limit == "off"
+        label += ", #{connection}" unless connection == "local"
         label += ", #{profile}" unless profile == "debian"
         label += ", core #{core_version}" unless core_version == Runner::DEFAULT_CORE_VERSION
         "#{label})"
@@ -170,6 +173,7 @@ module KrikriPlaybookGenerator
                      @mode = RunMode::Real, @run = 1,
                      @user = UserProfile::Root, @umask = DEFAULT_UMASK, @hosts = 1,
                      @limit = "off", @profile = "debian",
+                     @connection = "local",
                      @core_version = Runner::DEFAULT_CORE_VERSION)
         @error ||= PlaybookResult.reference_harness_gap(@ansible)
         @leftover_temps_ansible = PlaybookResult.annotate_leftovers(@ansible)
@@ -212,10 +216,10 @@ module KrikriPlaybookGenerator
                        mode : RunMode = RunMode::Real, run : Int32 = 1,
                        user : UserProfile = UserProfile::Root, umask : String = DEFAULT_UMASK,
                        hosts : Int32 = 1, limit : String = "off",
-                       profile : String = "debian",
+                       profile : String = "debian", connection : String = "local",
                        core_version : String = Runner::DEFAULT_CORE_VERSION) : PlaybookResult
         failed = EngineRun.new("ansible", -1, nil, "", "", false)
-        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts, limit, profile, core_version)
+        PlaybookResult.new(playbook, failed, failed, meta, message, mode, run, user, umask, hosts, limit, profile, connection, core_version)
       end
 
       # The environment variables the playbook's sidecar asks the engines
@@ -461,6 +465,7 @@ module KrikriPlaybookGenerator
                    @user_profiles : Array(UserProfile) = [UserProfile::Root],
                    @umasks : Array(String) = [DEFAULT_UMASK],
                    @hosts : Array(Int32) = [1], @limits : Array(String) = ["off"],
+                   @connections : Array(ConnectionProfile) = [ConnectionProfile.local],
                    @reference_versions : Array(String) = DEFAULT_REFERENCE_VERSIONS)
     end
 
@@ -470,15 +475,17 @@ module KrikriPlaybookGenerator
       @reference_versions.empty? ? DEFAULT_REFERENCE_VERSIONS : @reference_versions.uniq
     end
 
-    # Every (identity, umask, host-count, limit) point the batch runs.
-    # Each gets its own fresh host/pair, so a non-root row can never share
-    # state with a root one, and each row gets the inventory and
+    # Every (identity, umask, host-count, limit, transport) point the batch
+    # runs. Each gets its own fresh host/pair, so a non-root or SSH row can
+    # never share state with another, and each row gets the inventory and
     # invocation it asks for.
-    private def contexts : Array({UserProfile, String, Int32, String})
+    private def contexts : Array({UserProfile, String, Int32, String, ConnectionProfile})
       @user_profiles.flat_map do |user|
         @umasks.flat_map do |umask|
           @hosts.flat_map do |hosts|
-            @limits.map { |limit| {user, umask, hosts, limit} }
+            @limits.flat_map do |limit|
+              @connections.map { |connection| {user, umask, hosts, limit, connection} }
+            end
           end
         end
       end
@@ -527,7 +534,8 @@ module KrikriPlaybookGenerator
       cores = core_versions.size > 1 ? " x core #{core_versions.join("+")}" : ""
       log("starting #{@playbook_paths.size} playbook(s) x #{@modes.map(&.label).join("+")} " \
           "mode(s) x #{@user_profiles.map(&.label).join("+")} x umask #{@umasks.join("+")} " \
-          "x hosts #{@hosts.join("+")} x limit #{@limits.join("+")}#{cores} " \
+          "x hosts #{@hosts.join("+")} x limit #{@limits.join("+")} " \
+          "x connection #{@connections.map(&.label).join("+")}#{cores} " \
           "(backend=#{backend_label}, results=#{@results_dir})")
     end
 
@@ -551,6 +559,7 @@ module KrikriPlaybookGenerator
       # as the invoking account, and Atlantic's VMs are only root.
       @user_profiles = [UserProfile::Local] if local_backend?
       @user_profiles = [UserProfile::Root] if @run_on_atlantic
+      @connections = [ConnectionProfile.local] if local_backend? || @run_on_atlantic
       @planned = planned_rows
       log_start
       Dir.mkdir_p(@results_dir)
@@ -660,15 +669,16 @@ module KrikriPlaybookGenerator
             "across #{profiles.size} profile(s) (#{profiles.map { |os, batch| "#{os}: #{batch.size}" }.join(", ")})")
         profiles.flat_map do |os, batch|
           Runner.in_parallel(batch, @microvm_parallel) do |path|
-            contexts.flat_map do |(user, umask, hosts, limit)|
+            contexts.flat_map do |(user, umask, hosts, limit, connection)|
               @modes.flat_map do |mode|
                 guarded_results(path, mode, user, umask, hosts, limit,
-                  os == "rocky" ? "rocky" : "debian") do
+                  os == "rocky" ? "rocky" : "debian", connection: connection) do
                   runs = backend.run_playbook(path, os, check: mode.check?, second_run: @second_run,
                     user: user, umask: umask, hosts: hosts, env: play_env(path),
-                    limit: Options.limit_pattern(limit), include_unreachable: limit != "off")
+                    limit: Options.limit_pattern(limit), include_unreachable: limit != "off",
+                    connection: connection)
                   comparison_results(path, mode, runs, user, umask, hosts, limit,
-                    os == "rocky" ? "rocky" : "debian")
+                    os == "rocky" ? "rocky" : "debian", connection: connection)
                 end
               end
             end
@@ -767,17 +777,18 @@ module KrikriPlaybookGenerator
             "#{core_versions.size > 1 ? ", core #{core_versions.join("+")}" : ""})")
         profiles.flat_map do |profile, batch|
           Runner.in_parallel(batch, @podman_parallel) do |path|
-            contexts.flat_map do |(user, umask, hosts, limit)|
+            contexts.flat_map do |(user, umask, hosts, limit, connection)|
               @modes.flat_map do |mode|
                 core_versions.flat_map do |version|
                   guarded_results(path, mode, user, umask, hosts, limit,
-                    profile.debian? ? "debian" : "rocky", version) do
+                    profile.debian? ? "debian" : "rocky", version, connection: connection) do
                     runs = backend.run_playbook(path, profile, version: version,
                       check: mode.check?, second_run: @second_run,
                       user: user, umask: umask, hosts: hosts, env: play_env(path),
-                      limit: Options.limit_pattern(limit), include_unreachable: limit != "off")
+                      limit: Options.limit_pattern(limit), include_unreachable: limit != "off",
+                      connection: connection)
                     comparison_results(path, mode, runs, user, umask, hosts, limit,
-                      profile.debian? ? "debian" : "rocky", version)
+                      profile.debian? ? "debian" : "rocky", version, connection: connection)
                   end
                 end
               end
@@ -825,13 +836,13 @@ module KrikriPlaybookGenerator
       end
       Fixtures.seed_local
       @playbook_paths.flat_map do |path|
-        contexts.flat_map do |(user, umask, hosts, limit)|
+        contexts.flat_map do |(user, umask, hosts, limit, connection)|
           @modes.flat_map do |mode|
-            guarded_results(path, mode, user, umask, hosts, limit) do
+            guarded_results(path, mode, user, umask, hosts, limit, connection: connection) do
               comparison_results(path, mode,
                 run_playbook_locally(path, mode, umask, hosts, local_play_env(path),
                   Options.limit_pattern(limit), limit != "off"),
-                user, umask, hosts, limit)
+                user, umask, hosts, limit, connection: connection)
             end
           end
         end
@@ -906,7 +917,8 @@ module KrikriPlaybookGenerator
                                    user : UserProfile, umask : String,
                                    hosts : Int32 = 1, limit : String = "off",
                                    profile : String = "debian",
-                                   core_version : String = DEFAULT_CORE_VERSION) : Array(PlaybookResult)
+                                   core_version : String = DEFAULT_CORE_VERSION,
+                                   connection : ConnectionProfile = ConnectionProfile.local) : Array(PlaybookResult)
       results = [] of PlaybookResult
       runs.each_with_index do |comparison, index|
         run_number = index + 1
@@ -914,7 +926,7 @@ module KrikriPlaybookGenerator
           to_engine_run("ansible", comparison[:ansible]),
           to_engine_run("krikri", comparison[:krikri]), load_meta(path),
           mode: mode, run: run_number, user: user, umask: umask, hosts: hosts, limit: limit,
-          profile: profile, core_version: core_version)
+          profile: profile, connection: connection.label, core_version: core_version)
         results << (run_number == 1 ? progress(result) : log_second_run(result))
       end
       results
@@ -958,6 +970,7 @@ module KrikriPlaybookGenerator
                                 hosts : Int32 = 1, limit : String = "off",
                                 profile : String = "debian",
                                 core_version : String = DEFAULT_CORE_VERSION,
+                                connection : ConnectionProfile = ConnectionProfile.local,
                                 &block : -> Array(PlaybookResult)) : Array(PlaybookResult)
       block.call
     rescue e : Exception
@@ -965,7 +978,7 @@ module KrikriPlaybookGenerator
 
       STDERR.puts "warning: #{File.basename(path)}: #{e.message} - continuing (--keep-going)"
       [PlaybookResult.errored(path, load_meta(path), e.message || e.class.to_s, mode, 1,
-        user, umask, hosts, limit, profile, core_version)]
+        user, umask, hosts, limit, profile, connection.label, core_version)]
     end
 
     private def report_leaks : Nil
@@ -1172,7 +1185,7 @@ module KrikriPlaybookGenerator
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin,
         @control, @modes, @second_run, @diff, Time.utc - started, started,
         user_profiles: @user_profiles.map(&.label), umasks: @umasks, hosts: @hosts,
-        limits: @limits, reference_versions: core_versions)
+        limits: @limits, connections: @connections.map(&.label), reference_versions: core_versions)
     rescue e
       STDERR.puts "warning: could not write versions.txt: #{e.message}"
     end
@@ -1187,6 +1200,7 @@ module KrikriPlaybookGenerator
           json.field "umask", result.umask
           json.field "hosts", result.hosts
           json.field "limit", result.limit
+          json.field "connection", result.connection
           json.field "profile", result.profile
           json.field "core_version", result.core_version
           json.field "env", result.env.empty? ? nil : result.env

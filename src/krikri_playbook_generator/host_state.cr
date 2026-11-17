@@ -51,7 +51,23 @@ module KrikriPlaybookGenerator
     # A module that edits one of these is invisible to this oracle - the
     # deliberate, documented gap (same discipline as ByteDiff::MASKS).
     EXCLUDED_PATHS = %w[/etc/hostname /etc/hosts /etc/resolv.conf /etc/machine-id
-      /root/.ansible]
+      /root/.ansible /root/.cache /root/.ssh/known_hosts /root/kpg-venv]
+
+    # The pip happy path's tilde-prefixed virtualenv (`~/kpg-venv`) is
+    # named by the overrides data, so it lands under the root account's
+    # home. Two separately created venvs differ in compiled-bytecode
+    # metadata, which would make every pip row a state finding without
+    # saying anything about the module; the venv is a work artifact, and
+    # the module's own result is still compared through stdout/recap.
+    # (A non-root row's venv lives under /home/kpg, which is not scanned.)
+
+    # Transport bookkeeping the SSH connection profile makes each engine
+    # write on its own controller: krikri's SSH ControlMaster socket dir
+    # under /tmp (matched by `.krikri-playbook-*` in TEMP_PATTERNS but not
+    # a failed task's leftover) and its per-host plugin cache. They say
+    # nothing about what the module did, and real ansible's ssh path does
+    # not create the same files.
+    TRANSPORT_TEMP_PATHS = %w[/tmp/.krikri-playbook-ssh]
 
     EXCLUDE_PREDICATE = EXCLUDED_PATHS.map { |path| "-path #{path}" }.join(" -o ")
 
@@ -66,7 +82,7 @@ module KrikriPlaybookGenerator
     # keeps it after the run. It is already pruned from the snapshot by
     # EXCLUDED_PATHS; keeping it here too means a change to that list cannot
     # silently turn a legitimate keeper into a check-mode finding.
-    CHECK_MODE_IGNORED_PATHS = %w[/root/.ansible]
+    CHECK_MODE_IGNORED_PATHS = %w[/root/.ansible /root/.cache /root/.ssh/known_hosts /root/kpg-venv]
 
     # Runs on the host after (and before) an engine run. Every line is
     # deterministic so two snapshots of the same untouched host are
@@ -194,7 +210,9 @@ module KrikriPlaybookGenerator
       lines << "boot\trebooted" if before["boot"] != after["boot"]
       compare(before["files"], after["files"], "file", lines, ->(line : String) { file_path(line) })
       compare(before["hashes"], after["hashes"], "hash", lines, ->(line : String) { hash_path(line) })
-      compare(before["temps"], after["temps"], "temp", lines, ->(line : String) { temp_path(line) })
+      before_temps = before["temps"].reject { |line| TRANSPORT_TEMP_PATHS.includes?(temp_path(line)) }
+      after_temps = after["temps"].reject { |line| TRANSPORT_TEMP_PATHS.includes?(temp_path(line)) }
+      compare(before_temps, after_temps, "temp", lines, ->(line : String) { temp_path(line) })
       compare(before["packages"], after["packages"], "package", lines, ->(line : String) { line.split('\t', 2).first })
       compare(before["units"], after["units"], "unit", lines, ->(line : String) { line })
       compare(before["ports"], after["ports"], "port", lines, ->(line : String) { line })
@@ -248,7 +266,10 @@ module KrikriPlaybookGenerator
       return unless before && after
 
       old = before["temps"].map { |line| temp_path(line) }
-      leftovers = after["temps"].reject { |line| old.includes?(temp_path(line)) }
+      leftovers = after["temps"].reject do |line|
+        path = temp_path(line)
+        old.includes?(path) || TRANSPORT_TEMP_PATHS.includes?(path)
+      end
       leftovers.sort!
     end
 

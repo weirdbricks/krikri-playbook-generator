@@ -87,6 +87,9 @@ module KrikriPlaybookGenerator
     # Per-argument provenance for the happy baseline; a chaos-mutated slot
     # is absent from this map because its value no longer came from there.
     property choice_sources : Hash(String, ChoiceSource)
+    # Task-level environment the module's happy path runs under (a
+    # production-shaped proxy, for example); structural, never a mutation.
+    property environment : Hash(String, String)
     # A generated custom `library/` module this task runs (module_utils
     # import probes and custom-module shapes); nil for every scanned-module
     # task.
@@ -96,7 +99,8 @@ module KrikriPlaybookGenerator
                    @mutations = [] of {String, ChaosKind}, @free_form = nil,
                    @when_condition = nil, @loop_option = nil, @loop_items = nil, @notify = nil,
                    @choice_sources = {} of String => ChoiceSource,
-                   @delegate_to = nil, @delegate_facts = false, @library : LibraryProbe? = nil)
+                   @delegate_to = nil, @delegate_facts = false, @library : LibraryProbe? = nil,
+                   @environment = {} of String => String)
     end
 
     def fqcn : String
@@ -281,7 +285,8 @@ module KrikriPlaybookGenerator
       apply_chaos!(schema, args, mutations)
       mutations.each { |(name, _)| @choice_sources.delete(name) }
       task = GeneratedTask.new(schema.module_name, schema.collection, args, mutations,
-        choice_sources: @choice_sources.dup)
+        choice_sources: @choice_sources.dup,
+        environment: @overrides.environment(schema.module_name))
       apply_delegation!(task)
       task
     end
@@ -315,7 +320,8 @@ module KrikriPlaybookGenerator
         mutations << {"free_form", ChaosKind::BadChoice}
       end
 
-      GeneratedTask.new(schema.module_name, schema.collection, {} of String => YAML::Any, mutations, value)
+      GeneratedTask.new(schema.module_name, schema.collection, {} of String => YAML::Any, mutations, value,
+        environment: @overrides.environment(schema.module_name))
     end
 
     # The valid baseline: included options get runnable happy-path values,
@@ -573,6 +579,27 @@ module KrikriPlaybookGenerator
       fill_required_one_of(schema, args)
       fill_required_if(schema, args)
       keep_first_of_mutually_exclusive(schema, args)
+      keep_one_override_group(schema, @overrides.require_one_of(schema.module_name), args)
+    end
+
+    # The overrides file's `require_one_of` groups are RUNTIME requirement
+    # groups (copy needs src or content, lineinfile needs line or regexp),
+    # not ansible's at-least-one groups: passing two members quietly makes
+    # one of them dead input, so the baseline keeps exactly one. Sampling
+    # which one is what lets the inline-content and line forms be
+    # exercised instead of only the first member.
+    private def keep_one_override_group(schema : ModuleSchema, groups : Array(Array(String)),
+                                        args : Hash(String, YAML::Any)) : Nil
+      groups.each do |group|
+        present = group.select { |name| args.has_key?(name) }
+        next unless present.size > 1
+
+        # A required member must survive the cut, or the task would fail
+        # argument validation for a different reason than the one under
+        # test; otherwise sample so every member gets its turn.
+        keeper = present.find { |name| schema.options[name]?.try(&.required?) } || present.sample(@rng)
+        present.each { |name| args.delete(name) unless name == keeper }
+      end
     end
 
     private def keep_first_of_mutually_exclusive(schema : ModuleSchema, args : Hash(String, YAML::Any)) : Nil
@@ -603,9 +630,13 @@ module KrikriPlaybookGenerator
       groups.each do |group|
         next if group.any? { |name| args.has_key?(name) }
 
-        name = group.find { |candidate| addable?(schema, args, candidate) }
-        next unless name
+        # Every runnable member is a valid baseline (copy's src|content,
+        # lineinfile's line|regexp), so sampling one keeps the coverage
+        # spread instead of always exercising the first.
+        candidates = group.select { |candidate| addable?(schema, args, candidate) }
+        next if candidates.empty?
 
+        name = candidates.sample(@rng)
         args[name] = happy_value(schema, schema.options[name])
       end
     end

@@ -95,6 +95,8 @@ module KrikriPlaybookGenerator
     property? umasks_given : Bool
     property hosts : Array(Int32)
     property? hosts_given : Bool
+    property connections : Array(ConnectionProfile)
+    property? connections_given : Bool
     property? second_run : Bool
     # On by default: diff output is user-visible behavior and is compared
     # byte-for-byte like the rest of stdout (never masked).
@@ -134,7 +136,15 @@ module KrikriPlaybookGenerator
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
                    @umasks = [DEFAULT_UMASK], @umasks_given = false,
                    @hosts = [1], @hosts_given = false,
+                   @connections = [ConnectionProfile.local], @connections_given = false,
                    @microvm_dir = "/home/labros/.local/share/krikri-playbook-generator/microvm")
+    end
+
+    # A separate method only to keep `parse` (one big OptionParser block)
+    # under ameba's cyclomatic-complexity limit.
+    private def self.parse_connections(value : String) : Array(ConnectionProfile)
+      ConnectionProfile.parse_list(value) || raise InvalidOptionsError.new(
+        "unknown --connection value #{value.inspect} (expected: local, ssh, both, #{ConnectionProfile::SSH_KINDS.join(", ")})")
     end
 
     def self.parse_chaos_kinds(values : Array(String)) : Array(ChaosKind)
@@ -196,6 +206,10 @@ module KrikriPlaybookGenerator
           raise InvalidOptionsError.new("unknown --user-profile value #{v.inspect} (expected: root, nonroot, both)") unless profiles
           opts.user_profiles = profiles
           opts.user_profiles_given = true
+        end
+        dsl.on("--connection LIST", "transport rows: local, ssh, both (local plus every ssh variant) or ssh-cli/ssh-hostport/ssh-env-key/ssh-env-user (comma-separated; default: local)") do |v|
+          opts.connections = parse_connections(v)
+          opts.connections_given = true
         end
         dsl.on("--umask LIST", "umask the engines run under: 002, 022, 077 (comma-separated; default: #{DEFAULT_UMASK})") do |v|
           umasks = v.split(',').map(&.strip).map do |value|
@@ -270,7 +284,7 @@ module KrikriPlaybookGenerator
           opts.blocks = parse_blocks(v)
           opts.blocks_given = true
         end
-        dsl.on("--play-keywords LIST", "play-level keyword axis: one keyword per playbook, drawn from strategy, serial, throttle, any_errors_fatal, run_once, max_fail_percentage, gather_facts, connection and forks (env-only); `none` turns it off") do |v|
+        dsl.on("--play-keywords LIST", "play-level keyword axis: one keyword per playbook, drawn from strategy, serial, throttle, any_errors_fatal, run_once, max_fail_percentage, gather_facts, connection, become and forks (env-only); `none` turns it off") do |v|
           opts.play_keywords = parse_play_keywords(v)
           opts.play_keywords_given = true
         end
@@ -324,6 +338,16 @@ module KrikriPlaybookGenerator
 
     def self.effective_umasks(opts : Options) : Array(String)
       opts.umasks
+    end
+
+    # Which transports the matrix runs. Local and Atlantic rows share one
+    # live host with their engines, so they can only use the local
+    # connection; the isolated backends own an sshd and support the SSH
+    # variants.
+    def self.effective_connections(opts : Options) : Array(ConnectionProfile)
+      return [ConnectionProfile.local] if local_run?(opts) || opts.run_on_atlantic?
+
+      opts.connections
     end
 
     # The host-count axis. Atlantic reuses one VM per profile and builds
@@ -416,6 +440,7 @@ module KrikriPlaybookGenerator
     # shared local host cannot switch accounts, and Atlantic's VMs are only
     # provisioned as root (their umask axis is still available).
     private def self.check_context_conflicts!(opts : Options) : Nil
+      check_connection_target!(opts)
       return unless opts.user_profiles_given? || opts.umasks_given? || opts.hosts_given?
 
       unless opts.command.run? || opts.command.generate?
@@ -437,6 +462,21 @@ module KrikriPlaybookGenerator
 
       raise InvalidOptionsError.new(
         "--user-profile needs an isolated backend (--run-on-podman, --run-on-microvm or --run-on-mixed)")
+    end
+
+    # An SSH row runs both engines against an sshd inside their own
+    # isolated host; the local backend has no such target, and Atlantic
+    # reuses one VM per profile whose sshd the engines do not own.
+    private def self.check_connection_target!(opts : Options) : Nil
+      return unless opts.connections_given?
+
+      unless opts.command.run? || opts.command.generate?
+        raise InvalidOptionsError.new("--connection is only valid with run or generate")
+      end
+      return if opts.run_on_podman? || opts.run_on_microvm? || opts.run_on_mixed?
+
+      raise InvalidOptionsError.new(
+        "--connection needs an isolated backend (--run-on-podman, --run-on-microvm or --run-on-mixed)")
     end
 
     # Atlantic builds one VM (and one inventory) per profile for the whole

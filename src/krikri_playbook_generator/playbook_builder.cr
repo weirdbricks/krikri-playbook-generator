@@ -292,6 +292,7 @@ module KrikriPlaybookGenerator
       task_body[YAML::Any.new("register")] = YAML::Any.new("krikri_playbook_generator_result")
       task_body[YAML::Any.new("ignore_errors")] = YAML::Any.new(true)
       delegate_fields(task_body, task)
+      apply_environment(task_body, task)
 
       play = {} of YAML::Any => YAML::Any
       play[YAML::Any.new("name")] = YAML::Any.new(named("krikri-playbook-generator: #{task.module_name} ##{index}"))
@@ -338,6 +339,7 @@ module KrikriPlaybookGenerator
           json.field "choice_sources" do
             json.object { choice_sources_json(json, task) }
           end
+          environment_json(json, task)
           play_setting_json(json, @play_settings[index]?)
           json.field "delegate_to", task.delegate_to
           json.field "delegate_facts", task.delegate_facts? if task.delegate_to
@@ -378,6 +380,17 @@ module KrikriPlaybookGenerator
       task.choice_sources.each { |name, source| json.field name, source.label }
     end
 
+    # The task-level environment is part of the task body itself, so it
+    # belongs in the sidecar only when it is set (it is structural, never a
+    # chaos mutation).
+    private def environment_json(json : JSON::Builder, task : GeneratedTask) : Nil
+      return if task.environment.empty?
+
+      json.field "environment" do
+        json.object { task.environment.each { |name, value| json.field name, value } }
+      end
+    end
+
     private def write_scenario(tasks : Array(GeneratedTask), index : Int32) : String
       chaos = tasks.any?(&.chaos?)
       basename = "#{index.to_s.rjust(6, '0')}-multi-#{tasks.first.module_name}-#{chaos ? "chaos" : "happy"}"
@@ -408,6 +421,7 @@ module KrikriPlaybookGenerator
           body[YAML::Any.new("notify")] = YAML::Any.new(target)
         end
         delegate_fields(body, task)
+        apply_environment(body, task)
         YAML::Any.new(body)
       end
 
@@ -477,6 +491,7 @@ module KrikriPlaybookGenerator
                   json.field "choice_sources" do
                     json.object { choice_sources_json(json, task) }
                   end
+                  environment_json(json, task)
                   json.field "wiring", wiring_descriptions(task)
                 end
               end
@@ -491,6 +506,18 @@ module KrikriPlaybookGenerator
     # playbook lint-clean and readable). An environment variant writes no
     # play key at all: the runner exports it for both engines, and the
     # sidecar records which door the value used.
+    # The task-level `environment:` a module's happy path needs (see the
+    # `environment` module key in the overrides data). Wiring, not a
+    # mutation: it is identical on every row and recorded in the sidecar
+    # only as part of the task body itself.
+    private def apply_environment(body : Hash(YAML::Any, YAML::Any), task : GeneratedTask) : Nil
+      return if task.environment.empty?
+
+      env = {} of YAML::Any => YAML::Any
+      task.environment.each { |name, value| env[YAML::Any.new(name)] = YAML::Any.new(value) }
+      body[YAML::Any.new("environment")] = YAML::Any.new(env)
+    end
+
     private def apply_play_setting(play : Hash(YAML::Any, YAML::Any), setting : PlaySetting?) : Nil
       return unless setting
       return if setting.env?
@@ -500,7 +527,7 @@ module KrikriPlaybookGenerator
 
     private def play_value(setting : PlaySetting) : YAML::Any
       case setting.keyword
-      when "any_errors_fatal", "run_once", "gather_facts"
+      when "any_errors_fatal", "run_once", "gather_facts", "become"
         case setting.value
         when "true"  then YAML::Any.new(true)
         when "false" then YAML::Any.new(false)

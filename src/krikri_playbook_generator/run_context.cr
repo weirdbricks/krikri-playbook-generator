@@ -1,3 +1,5 @@
+require "./connection_profile"
+
 module KrikriPlaybookGenerator
   # Which identity the engines run as. Local means "the account invoking
   # this tool" (the shared live host cannot be switched); Root and Nonroot
@@ -70,13 +72,19 @@ module KrikriPlaybookGenerator
       (1..count).map { |index| index == 1 ? "target" : "target#{index}" }
     end
 
-    def self.render(count : Int32, include_unreachable : Bool = false) : String
+    def self.render(count : Int32, include_unreachable : Bool = false,
+                    connection : ConnectionProfile = ConnectionProfile.local,
+                    user : UserProfile = UserProfile::Root,
+                    ssh_port : Int32 = Fixtures::SSH_PORT) : String
       targets = aliases(count)
       leftovers = aliases(MAX_HOSTS) - targets
       String.build do |io|
-        leftovers.each { |name| io << "#{name} ansible_connection=local\n" }
+        leftovers.each { |name| io << connection.inventory_line(name, user, ssh_port) << '\n' }
         io << "\n[#{GROUP}]\n"
-        targets.each { |name| io << "#{name} ansible_connection=local\n" }
+        targets.each { |name| io << connection.inventory_line(name, user, ssh_port) << '\n' }
+        # The unreachable host is always an ssh target (its closed port is
+        # the point); it stays out of the play group unless a --limit row
+        # asks for it.
         io << "#{UNREACHABLE_ENTRY}\n" if include_unreachable
       end
     end

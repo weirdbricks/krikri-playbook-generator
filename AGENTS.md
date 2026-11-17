@@ -148,7 +148,15 @@ checklist before closing the issue.
   (`roles/kpgrole/tasks|defaults|vars|handlers/main.yml`) for
   include_role/import_role, which the overrides name by absolute path
   (`Fixtures::ROLE_PATH`) so both engines resolve the same value instead of
-  each running its own roles/ search. It also seeds the fixtures the
+  each running its own roles/ search. For the SSH transport profile it
+  generates one ed25519 keypair under `/opt/kpg-fixtures/ssh`, installs a
+  private copy for root and for the unprivileged account (sshd refuses a
+  world-readable key), authorizes it for both, unlocks the provisioned
+  account (`usermod -p '*'`, because OpenSSH rejects a locked account even
+  for public-key auth), generates the host keys and starts sshd on
+  `SSH_PORT` (2222) - all during provisioning, before any snapshot, so
+  none of it can be attributed to an engine. `SSH_BOOTSTRAP` starts the
+  same daemon in every per-playbook container. It also seeds the fixtures the
   happy paths need a real object for: an armored OpenPGP key
   (`Fixtures::PGP_KEY_PATH`, for rpm_key), a local Subversion repository
   (`Fixtures::SVN_REPO_URL`, where svnadmin is installed) and a finished
@@ -194,7 +202,7 @@ checklist before closing the issue.
   `PlaySetting` and `PlaySettingSampler`. **Implemented**: the play-level
   keyword axis. One keyword is drawn PER PLAYBOOK from
   `strategy`/`serial`/`throttle`/`any_errors_fatal`/`run_once`/
-  `max_fail_percentage`/`gather_facts`/`connection`/`forks`, and exactly
+  `max_fail_percentage`/`gather_facts`/`connection`/`become`/`forks`, and exactly
   one is set: ansible warns that the free strategy ignores
   run_once/any_errors_fatal/max_fail_percentage, so mixing them would
   mostly test the warning. Happy paths draw a value ansible accepts; a
@@ -401,6 +409,13 @@ checklist before closing the issue.
   `/etc/machine-id`) are per-host files each container/VM regenerates for
   itself; excluding them is the documented blind spot, same discipline as
   `ByteDiff::MASKS` (a module that edits one is invisible to this oracle).
+  `/root/.cache` and `/root/.ssh/known_hosts` are excluded for the same
+  reason: the SSH transport profile makes each engine write its own
+  controller-side plugin cache and host-key entry, and real ansible's ssh
+  path does not create the same files. Krikri's SSH ControlMaster socket
+  directory (`/tmp/.krikri-playbook-ssh`) is also skipped by the temps
+  scan (`TRANSPORT_TEMP_PATHS`), so transport bookkeeping never becomes a
+  check-mode mutation or a leftover-temp finding.
   `check_mode_changes` applies the `--check` contract on top of the same
   snapshots: each ENGINE's own delta must be empty, so two engines that
   agree on a mutation are still both reported, and the only tolerated
@@ -470,7 +485,18 @@ checklist before closing the issue.
   `--umask`, `--hosts`): each row gets its own fresh host/pair and records
   `user`, `umask` and `hosts` in results.jsonl, and the context is part of
   the progress/summary labels; local rows are always the invoking account
-  and Atlantic rows are always root. The `--limit` axis (`off`/`none`/
+  and Atlantic rows are always root. The transport axis (`--connection
+  local|ssh|both|ssh-cli|ssh-hostport|ssh-env-key|ssh-env-user`) runs the
+  same playbook over the local connection and/or an sshd inside the row's
+  own isolated host: the plain `ssh` variant puts connection/user/port/key
+  in the inventory, `ssh-cli` passes `-u`/`--private-key`, `ssh-hostport`
+  uses a `host:port` inventory entry, and the two env variants use
+  `ANSIBLE_PRIVATE_KEY_FILE` / `ANSIBLE_REMOTE_USER`. `both` is local plus
+  every SSH variant. Each row records `connection` in results.jsonl and
+  Triage groups/repro-pins it. Second-run rows on the same pair cover the
+  warm plugin-cache transport; every first run in a fresh pair is the cold
+  one. The `become` play keyword is the escalate-with-no-play-level-user
+  form of the same axis. The `--limit` axis (`off`/`none`/
   `one`/`group`/`unreachable`/`negative`, default off) runs each row with
   its ansible pattern on both engines; for any row of that axis the
   inventory's play group also contains `kpg_unreachable` (loopback with a
@@ -895,7 +921,10 @@ podman. See "Known gaps" below for what's deliberately left unbuilt.
 - **Per-playbook isolation on the podman path is a hard requirement** —
   every playbook runs in a fresh container pair from the committed
   template images; never go back to reusing one container pair across a
-  batch, and never seed fixtures via playbook tasks. The container's
+  batch, and never seed fixtures via playbook tasks. The SSH profile's
+  target is the same container's own sshd (readiness checked before the
+  first snapshot), so a transport row is isolated exactly like a local
+  one. The container's
   ansible-core version is asserted (2.19.11) and a mismatch fails
   provisioning loudly.
 - Atlantic.net is a real backend (one disposable VM per module profile),
@@ -926,6 +955,13 @@ get unit names that exist on both (cron vs crond).
 
 Documented deliberately, not silently:
 
+- The SSH connection profile runs on the podman and microVM backends
+  only. The local and Atlantic paths cannot own the target's sshd (local
+  shares the invoking host, Atlantic reuses one VM per profile), so
+  `--connection` is refused there. Krikri's transport bookkeeping
+  (`/root/.cache`, `/root/.ssh/known_hosts`, its SSH ControlMaster socket
+  directory) is a documented state-oracle blind spot: a finding that only
+  touches those paths is invisible.
 - Atlantic.net batches only cover the modules listed in
   `AtlanticBackend::PROFILE_FOR_MODULE` (rpm/db/containers/misc); an
   unlisted module is refused, not run somewhere that cannot satisfy its
