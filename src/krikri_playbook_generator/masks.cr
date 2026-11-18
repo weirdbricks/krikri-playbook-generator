@@ -74,6 +74,17 @@ module KrikriPlaybookGenerator
         "(library name, interpreter path) must still match",
       },
       {
+        Regex.new("^(-hostname = )[0-9a-f]{12}$", Regex::Options::MULTILINE),
+        "\\1<CONTAINER-HOSTNAME>",
+        "ansible.builtin.hostname prints the strategy's CURRENT hostname on the diff's " \
+        "before side, so each engine reports its own container's hostname - the random " \
+        "12-hex id podman names it after - and the two can never match by construction " \
+        "(the same class as the known_hosts address and missing_required_lib masks " \
+        "above; two runs of real ansible in two containers disagree the same way). Only " \
+        "that 12-hex value on the `-` line is masked: the diff header, the `+` requested " \
+        "name and any other hostname value must still match",
+      },
+      {
         Regex.new("ansible-tmp-\\d+(?:[.\\-]\\d+)*"),
         "ansible-tmp-N",
         "ansible's per-task temp directory embeds an epoch timestamp and a random " \

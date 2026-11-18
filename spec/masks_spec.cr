@@ -125,6 +125,16 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("libselinux-python", "libsemanage-python")))
     end
 
+    it "masks the own-container hostname on the hostname module diff's before line only" do
+      a = "--- before\n+++ after\n@@ -1 +1 @@\n-hostname = 390f31e8df6a\n+hostname = kpg-host\n"
+      b = "--- before\n+++ after\n@@ -1 +1 @@\n-hostname = f8fe8308b659\n+hostname = kpg-host\n"
+      assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      assert(ByteDiff.mask(a).includes?("-hostname = <CONTAINER-HOSTNAME>"))
+
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("+hostname = kpg-host", "+hostname = kpg-other")))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("-hostname = 390f31e8df6a", "-hostname = keep-me")))
+    end
+
     it "masks the OpenSSL thread-id prefix of queued error lines only" do
       a = "40778CA7BB7F0000:error:0280007E:Diffie-Hellman routines:dh_builtin_genparams:modulus too small:../crypto/dh/dh_gen.c:169:\n"
       b = "80D78C48697F0000:error:0280007E:Diffie-Hellman routines:dh_builtin_genparams:modulus too small:../crypto/dh/dh_gen.c:169:\n"
