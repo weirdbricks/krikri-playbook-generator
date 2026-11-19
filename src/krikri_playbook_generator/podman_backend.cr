@@ -363,6 +363,12 @@ module KrikriPlaybookGenerator
     # simply calls this once per mode. `second_run` re-runs the playbook on
     # the SAME pair after the first run succeeded on both engines (the
     # idempotency pass); each pass is returned separately.
+    #
+    # `extra_dirs` copies further playbook-adjacent directories into /work
+    # beside the playbook (a corpus case tree: role layout, files/,
+    # templates/), and `inventory` replaces the generated one-alias
+    # inventory for a caller that owns its own host layout (corpus replay,
+    # where a hand-written repro targets `localhost` or `kpg_targets`).
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
                      version : String = EXPECTED_ANSIBLE_VERSION,
                      check : Bool? = nil, second_run : Bool = false,
@@ -371,7 +377,9 @@ module KrikriPlaybookGenerator
                      env : Hash(String, String) = {} of String => String,
                      limit : String? = nil,
                      include_unreachable : Bool = false,
-                     connection : ConnectionProfile = ConnectionProfile.local) : Array(HostState::Comparison)
+                     connection : ConnectionProfile = ConnectionProfile.local,
+                     extra_dirs : Array(String) = [] of String,
+                     inventory : String? = nil) : Array(HostState::Comparison)
       unless @provisioned.includes?({profile, version})
         raise PodmanProvisionError.new("provision was never called for profile #{profile} (core #{version})")
       end
@@ -401,8 +409,8 @@ module KrikriPlaybookGenerator
           wait_for_sshd(real)
           wait_for_sshd(krikri)
         end
-        copy_playbook(playbook_path, real)
-        copy_playbook(playbook_path, krikri)
+        copy_playbook(playbook_path, real, extra_dirs)
+        copy_playbook(playbook_path, krikri, extra_dirs)
         # The writable fixture root is re-owned for this row's identity
         # before the first snapshot, so both engines start identical and
         # the chown itself never shows up as a mutation.
@@ -416,9 +424,9 @@ module KrikriPlaybookGenerator
         # The host-count axis rebuilds the inventory per pair: both engines
         # must see the same N local aliases, and the committed template's
         # one-host inventory cannot express a per-row count.
-        inventory = HostInventory.render(hosts, include_unreachable, connection, user)
-        write_inventory(real, inventory)
-        write_inventory(krikri, inventory)
+        rendered = row_inventory(inventory, hosts, include_unreachable, connection, user)
+        write_inventory(real, rendered)
+        write_inventory(krikri, rendered)
 
         runs = [] of HostState::Comparison
         runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
@@ -435,6 +443,13 @@ module KrikriPlaybookGenerator
           created.each { |name| @started_names.delete(name) }
         end
       end
+    end
+
+    # The inventory both engines get for a row: the caller's own (corpus
+    # replay, which owns its host layout) or the generated one-alias render.
+    private def row_inventory(inventory : String?, hosts : Int32, include_unreachable : Bool,
+                              connection : ConnectionProfile, user : UserProfile) : String
+      inventory || HostInventory.render(hosts, include_unreachable, connection, user)
     end
 
     private def comparison(real : String, krikri : String, playbook_path : String,
@@ -765,7 +780,8 @@ module KrikriPlaybookGenerator
     # against a missing or stale playbook file and manufacture a
     # misleading "both failed identically" result instead of a clear
     # provisioning error.
-    private def copy_playbook(playbook_path : String, name : String) : Nil
+    private def copy_playbook(playbook_path : String, name : String,
+                              extra_dirs : Array(String) = [] of String) : Nil
       basename = File.basename(playbook_path)
       result = Cmd.run("podman", ["cp", playbook_path, "#{name}:/work/#{basename}"], timeout: 120.0)
       raise PodmanProvisionError.new("podman cp #{basename.inspect} into #{name} failed: #{result.stderr}") unless Cmd.success?(result)
@@ -780,6 +796,16 @@ module KrikriPlaybookGenerator
       # A playbook-adjacent plugin row needs its loader directories in the
       # playbook's working directory, which is where both engines search.
       PlaybookBuilder.plugin_loader_dirs(playbook_path).each do |dir|
+        copied = Cmd.run("podman", ["cp", dir, "#{name}:/work/"], timeout: 120.0)
+        raise PodmanProvisionError.new("podman cp #{File.basename(dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
+      end
+
+      # A caller-owned case tree (corpus replay): its role layout, file and
+      # template sources travel beside the playbook too, so a repro that was
+      # recorded against a whole directory still resolves.
+      extra_dirs.each do |dir|
+        next unless Dir.exists?(dir)
+
         copied = Cmd.run("podman", ["cp", dir, "#{name}:/work/"], timeout: 120.0)
         raise PodmanProvisionError.new("podman cp #{File.basename(dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
       end

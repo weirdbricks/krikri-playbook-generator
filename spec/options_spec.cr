@@ -28,6 +28,46 @@ module KrikriPlaybookGenerator
       assert_equal("/tmp/results", opts.results_dir)
     end
 
+    it "parses --replay-corpus on run" do
+      opts = Options.parse(["run", "--replay-corpus", "/tmp/corpus"])
+      assert_equal("/tmp/corpus", opts.replay_corpus)
+      assert_nil(Options.parse(["run"]).replay_corpus)
+    end
+
+    it "refuses --replay-corpus outside run" do
+      %w[generate report modules].each do |command|
+        err = assert_raises(InvalidOptionsError) { Options.parse([command, "--replay-corpus", "/tmp/corpus"]) }
+        assert((err.message || "").includes?("only valid with run"))
+      end
+    end
+
+    it "refuses a positional target together with --replay-corpus" do
+      err = assert_raises(InvalidOptionsError) { Options.parse(["run", "playbooks/", "--replay-corpus", "/tmp/corpus"]) }
+      assert((err.message || "").includes?("not both"))
+    end
+
+    it "accepts --replay-corpus on podman but refuses the disposable-VM backends" do
+      assert(Options.parse(["run", "--replay-corpus", "/tmp/corpus", "--run-on-podman"]).run_on_podman?)
+      %w[--run-on-atlantic --run-on-microvm --run-on-mixed].each do |backend|
+        err = assert_raises(InvalidOptionsError) { Options.parse(["run", "--replay-corpus", "/tmp/corpus", backend]) }
+        assert((err.message || "").includes?("local and podman"))
+      end
+    end
+
+    it "refuses the run-matrix flags that do not apply to a replay" do
+      assert_raises(InvalidOptionsError) { Options.parse(["run", "--replay-corpus", "/tmp/corpus", "--check"]) }
+      assert_raises(InvalidOptionsError) { Options.parse(["run", "--replay-corpus", "/tmp/corpus", "--modes", "check"]) }
+      assert_raises(InvalidOptionsError) { Options.parse(["run", "--replay-corpus", "/tmp/corpus", "--allow-mutation"]) }
+      assert_raises(InvalidOptionsError) { Options.parse(["run", "--replay-corpus", "/tmp/corpus", "--hosts", "2"]) }
+    end
+
+    it "allows --control and --no-diff with a corpus replay" do
+      opts = Options.parse(["run", "--replay-corpus", "/tmp/corpus", "--control", "--no-diff"])
+      assert(opts.control?)
+      refute(opts.diff?)
+      assert_equal("/tmp/corpus", opts.replay_corpus)
+    end
+
     it "parses the report command" do
       opts = Options.parse(["report", "--results-dir", "/tmp/results"])
       assert_equal(Command::Report, opts.command)

@@ -54,6 +54,31 @@ module KrikriPlaybookGenerator
       playbook
     end
 
+    # One `run --replay-corpus` row: a case name in `module`, the replay's
+    # status in `corpus_status`, and the engine diff (for a regression) or
+    # the recording diff (for drift) that decided it.
+    def write_corpus_result(dir : String, name : String, status : String,
+                            engine_diff : String = "", drift_diff : String = "",
+                            reason : String? = nil, error : String? = nil) : String
+      playbook = File.join(dir, "#{name}.yml")
+      File.write(playbook, "---\n")
+      result = {
+        "playbook"         => playbook,
+        "corpus_case"      => name,
+        "corpus_dir"       => File.join(dir, name),
+        "corpus_status"    => status,
+        "corpus_reason"    => reason,
+        "module"           => name,
+        "mode"             => "replay",
+        "divergent"        => status == "regressed",
+        "masked_identical" => engine_diff.empty?,
+        "error"            => error,
+        "diff"             => {"masked" => engine_diff, "raw" => "", "expected" => "", "drift" => drift_diff},
+      }
+      File.open(File.join(dir, "results.jsonl"), "a") { |file| file.puts(result.to_json) }
+      playbook
+    end
+
     it "raises when results.jsonl doesn't exist" do
       dir = File.tempname("kpg-spec-triage")
       Dir.mkdir_p(dir)
@@ -749,6 +774,82 @@ module KrikriPlaybookGenerator
       assert_equal(true, report["batch"]["second_run"].as_bool)
       assert_equal(true, report["batch"]["diff"].as_bool)
       assert_equal(%w[2.21.6 2.20.1], report["batch"]["reference_cores"].as_a.map(&.as_s))
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "summarizes a replay results dir by status and keeps it out of the fuzz metrics" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_corpus_result(dir, "file-mode", "regressed",
+        engine_diff: "stdout:\n-changed: [localhost]\n+ok: [localhost]\n")
+      write_corpus_result(dir, "copy-content", "regressed",
+        engine_diff: "stdout:\n-changed: [localhost]\n+ok: [localhost]\n")
+      write_corpus_result(dir, "user-shell", "drifted",
+        drift_diff: "stdout:\n-ok=1\n+ok=2\n")
+      write_corpus_result(dir, "deb-package", "failed-to-run",
+        reason: "no expected.out recorded transcript", error: "no expected.out recorded transcript")
+      write_corpus_result(dir, "pip-virtualenv", "skipped", reason: "needs live host")
+      write_corpus_result(dir, "debug-msg", "pass", engine_diff: "")
+
+      triage = Triage.new(dir)
+      report = triage.corpus_report
+      refute_nil(report)
+      report = report.as(Triage::CorpusReport)
+      assert_equal(6, report.total)
+      assert_equal(%w[copy-content file-mode], report.rows_with("regressed").map(&.module_name))
+      assert_equal(2, report.regressed)
+      assert_equal(1, report.drifted)
+      assert_equal(1, report.failed)
+      assert_equal(1, report.skipped)
+      assert_equal(1, report.passed)
+
+      # both regressed cases share one diff signature: one root cause
+      first = report.rows_with("regressed").first
+      refute_nil(report.signature(first))
+      assert_equal([first.module_name == "copy-content" ? "file-mode" : "copy-content"],
+        report.shared_cases(first))
+      # drift keys on the recording diff, not the (empty) engine diff
+      drifted = report.rows_with("drifted").first
+      refute_nil(report.signature(drifted))
+
+      # replay rows measure nothing the fuzz metrics gate on
+      assert_equal(0, triage.happy_coverage.attempted)
+      assert_empty(triage.rates)
+      assert_empty(triage.quality)
+
+      parsed = JSON.parse(triage.report_json)
+      assert_equal(6, parsed["corpus"]["total"].as_i)
+      assert_equal(2, parsed["corpus"]["regressed"].as_i)
+      assert_equal(1, parsed["corpus"]["drifted"].as_i)
+      cases = parsed["corpus"]["cases"].as_a
+      assert_equal(5, cases.size)
+      assert(cases.any? { |entry| entry["case"] == "pip-virtualenv" && entry["reason"] == "needs live host" })
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "counts a regressed replay case as an output finding against its case name" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_corpus_result(dir, "file-mode", "regressed",
+        engine_diff: "stdout:\n-changed: [localhost]\n+ok: [localhost]\n")
+
+      findings = Triage.new(dir).report
+      assert_equal(1, findings.size)
+      assert_equal("file-mode", findings.first.module_name)
+      refute_nil(findings.first.signature)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "has no corpus report for a fuzz results dir" do
+      dir = File.tempname("kpg-spec-triage")
+      Dir.mkdir_p(dir)
+      write_result(dir, "a", "copy", divergent: false)
+
+      assert_nil(Triage.new(dir).corpus_report)
+      assert(JSON.parse(Triage.new(dir).report_json)["corpus"].raw.nil?)
     ensure
       FileUtils.rm_rf(dir) if dir
     end

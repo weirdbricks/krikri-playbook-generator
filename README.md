@@ -307,6 +307,7 @@ commit). `--all-modules` scans every installed module instead.
     just generate    # fused generate + --run-on-podman (apt,copy,user,cron x 500)
     just run         # run playbooks/ through podman
     just report      # report ~/scratch/kpg-results
+    just corpus      # replay krikri's divergence corpus (podman, release/nightly gate)
     just version
 
 ## Usage
@@ -399,6 +400,93 @@ class - literal vs templated `delegate_to`, local vs SSH delegation,
 with vs without `retries`, the other package formula, and one more
 missing `module_utils` import.
 
+### Corpus replay (past divergence repros)
+
+A curated corpus of repros from earlier divergences is a regression gate,
+and it lives in krikri's own checkout
+(`../krikri/test/fixtures/divergence/`, one directory per case):
+
+    <case>/playbook.yml   the repro, or a role layout (tasks/main.yml,
+                          defaults/main.yml, ... and no playbook.yml)
+    <case>/expected.out   the exact normalized transcript real ansible-core
+                          printed when the case was recorded
+    <case>/NOTES.md       why the case exists (carried into results.jsonl,
+                          never compared)
+    live/cases.txt        cases that need a REAL host (package, service,
+                          crontab or pip mutation), one name per line
+
+`run --replay-corpus DIR` replays every case through both engines and
+classifies the three comparisons per case:
+
+| Comparison | Question it answers |
+| ---------- | ------------------- |
+| krikri vs real ansible | do the engines agree (the fuzzer's own question) |
+| krikri vs `expected.out` | did a fix regress? |
+| real ansible vs `expected.out` | has the recording drifted from the pinned ansible-core? |
+
+They collapse into one status per case: the engines disagree ->
+**regressed** (a corpus case exists because they disagreed once, so they
+must agree now); they agree but the transcript no longer matches the
+recording -> **drifted** (re-record it; krikri is not at fault); all three
+agree -> **pass**. An engine that could not run at all, or a case with no
+recording, is **failed-to-run** rather than a silent pass.
+
+    krikri-playbook-generator run --replay-corpus ../krikri/test/fixtures/divergence \
+      --results-dir ~/scratch/kpg-corpus --run-on-podman
+
+The invocation is the runner's own (`ANSIBLE_NOCOLOR=1`, gathering/cache
+env vars stripped, stdin closed, a per-engine `timeout`, raw
+stdout/stderr/rc), in REAL mode - this runner always runs real mode, so
+`--check`/`--modes` are refused (a case whose `flags.txt` selects
+`--check` is a known limitation below). Cases listed in `live/cases.txt` are
+skipped with a `needs live host` row (never run: they mutate the host) and
+a case that is listed but has no directory still gets that row. A case
+with `playbook.yml` runs in place, so its sibling `files/`, `templates/`
+and `roles/` resolve as they did when it was recorded; a role-layout case
+is run through a synthesized entry play (`hosts: kpg_targets`,
+`gather_facts: false`, `roles: [<case>]`) at one absolute path both
+engines share. Both backends hand the engines the same corpus inventory,
+so a repro targeting `localhost` (how they were written) or the generated
+`kpg_targets` group matches exactly one host either way.
+
+**Known limitation (the runner, not the cases).** krikri's corpus cases
+use three input conventions this runner does not read yet: a recording
+normalizes the case's scratch directory to `<WORK>` (7 of the current 9
+cases), a case can select `--check`/extra args via `flags.txt`, and a case
+can pin an interpreter via its `inventory.ini`. This runner runs every
+case in real mode with its own inventory and does not substitute
+`<WORK>`, so those cases are currently classified `drifted` (or refused
+for `--check`) rather than replayed faithfully. krikri's own in-process
+replay (`test/integration/divergence_corpus_test.cr`) does handle all
+three and remains the authoritative gate; this runner is a cross-engine
+cross-check for the flat, real-mode cases until its invocation is brought
+to the same conventions.
+
+`--run-on-podman` gives each case a **fresh container pair** (the same
+isolation the fuzz batches get, and the reason a recording is
+reproducible at all). Without it the replay runs on this machine, where
+the two engines share one host: a case whose transcript includes
+pre-existing state can legitimately differ between them, so the local
+backend is a smoke gate, not the release gate. The disposable-VM backends
+(Atlantic, microVM, mixed) are not wired for replay yet and are refused
+rather than silently collapsed onto one of the two.
+
+Results look like a fuzz batch's: `results.jsonl` rows in the same shape
+(`module` carries the CASE NAME, `mode` is `replay`) plus
+`corpus_status`/`corpus_reason`/`corpus_notes` and `diff.expected`/
+`diff.drift` next to the engine-vs-engine diff, `versions.txt` provenance
+including the corpus path and case counts, and the report's sections -
+a `== Corpus replay ==` summary (counts, one line per non-pass case with
+its diff signature and a `--replay-corpus <case>` repro, cases sharing a
+signature named as one root cause), then the usual divergences/quality
+sections. `report DIR` prints the same corpus section for a replay
+results dir, and replay rows are kept out of the happy-path coverage
+metric and the per-module rates (a corpus case is not a generated happy
+path). Exit code: **2** when a case regressed (a krikri bug, the same
+meaning as a fuzz divergence), **1** when the corpus itself needs
+attention (a drifted recording, a case that could not run, or a directory
+with no cases in it), **0** when every case passed or was skipped as live.
+
 ### Happy-path success gate
 
 A batch whose happy-path playbooks mostly fail on the reference engine is
@@ -439,7 +527,9 @@ modules that would otherwise install packages, create users, etc. on the
 machine running this tool; pass `--allow-mutation` to run for real
 without podman, once you have your own disposable host to point it at.
 `--run-on-podman` also works on `run` alone, to re-run an
-already-generated `--out` directory. `--modes` chooses the mode matrix
+already-generated `--out` directory. `run --replay-corpus DIR` replays a
+curated corpus of past divergence repros instead of a fuzz batch (see
+"Corpus replay" below). `--modes` chooses the mode matrix
 and `--no-second-run` skips the idempotency pass; Triage's repro command
 pins `--modes` (and `--no-second-run` for a run-1 finding) so it
 reproduces exactly the row it reports.

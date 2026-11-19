@@ -1,4 +1,5 @@
 require "option_parser"
+require "./corpus"
 require "./run_mode"
 require "./run_context"
 require "./play_keywords"
@@ -108,6 +109,9 @@ module KrikriPlaybookGenerator
     # backend's pinned target version).
     property reference_core_versions : Array(String)
     property? reference_core_versions_given : Bool
+    # `run --replay-corpus DIR`: replay the curated divergence corpus in DIR
+    # through both engines instead of a fuzz batch.
+    property replay_corpus : String?
 
     def initialize(@command, @modules = nil, @all_modules = false, @seed = 42, @count = 100,
                    @supported_community = false, @scope_from_krikri = false,
@@ -137,6 +141,7 @@ module KrikriPlaybookGenerator
                    @microvm_parallel = 1, @modes = [RunMode::Check, RunMode::Real],
                    @modes_given = false, @second_run = true, @diff = true,
                    @reference_core_versions = [] of String, @reference_core_versions_given = false,
+                   @replay_corpus = nil,
                    @user_profiles = [UserProfile::Root], @user_profiles_given = false,
                    @umasks = [DEFAULT_UMASK], @umasks_given = false,
                    @hosts = [1], @hosts_given = false,
@@ -180,6 +185,7 @@ module KrikriPlaybookGenerator
         dsl.on("--chaos-kinds LIST", "comma-separated chaos kinds") { |v| opts.chaos_kinds = v.split(',') }
         dsl.on("--out DIR", "playbook output dir") { |v| opts.out_dir = expand_path(v) }
         dsl.on("--results-dir DIR", "results output dir") { |v| opts.results_dir = expand_path(v) }
+        dsl.on("--replay-corpus DIR", "replay the curated divergence corpus in DIR through both engines and classify each case (run only; real mode, local or --run-on-podman)") { |v| opts.replay_corpus = expand_path(v) }
         dsl.on("--atlantic-hosts N", "max concurrent Atlantic.net hosts") { |v| opts.atlantic_hosts = parse_int(v, "--atlantic-hosts") }
         dsl.on("--ansible-playbook-bin PATH", "ansible-playbook executable (default: on PATH)") { |v| opts.ansible_playbook_bin = expand_tilde(v) }
         dsl.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = expand_tilde(v) }
@@ -305,8 +311,7 @@ module KrikriPlaybookGenerator
       # would only replay stale coverage.
       opts.seed = random_seed unless opts.seed_given?
 
-      opts.out_dir = expand_path(rest.first) if opts.command.run? && !rest.empty?
-      opts.results_dir = expand_path(rest.first) if opts.command.report? && !rest.empty?
+      set_positional_target!(opts, rest)
       opts.out_dir = expand_path(opts.out_dir)
       opts.results_dir = expand_path(opts.results_dir)
       opts.microvm_dir = expand_path(opts.microvm_dir)
@@ -316,6 +321,21 @@ module KrikriPlaybookGenerator
       validate!(opts)
 
       opts
+    end
+
+    # The positional `run <target>` / `report <dir>` forms (the repro command
+    # Triage prints for a single playbook). A run cannot take both a target
+    # and `--replay-corpus DIR`: they name two different jobs.
+    private def self.set_positional_target!(opts : Options, rest : Array(String)) : Nil
+      return if rest.empty?
+
+      if opts.command.run?
+        raise InvalidOptionsError.new("run takes either a playbook target or --replay-corpus DIR, not both") if opts.replay_corpus
+
+        opts.out_dir = expand_path(rest.first)
+      elsif opts.command.report?
+        opts.results_dir = expand_path(rest.first)
+      end
     end
 
     # The modes Runner actually compares. Both is the default on an
@@ -406,6 +426,7 @@ module KrikriPlaybookGenerator
       check_context_conflicts!(opts)
       raise InvalidOptionsError.new("--json is only valid with the report or modules command") if opts.json? && !opts.command.report? && !opts.command.modules?
 
+      check_replay_conflicts!(opts)
       check_happy_gate_target!(opts)
     end
 
@@ -427,11 +448,41 @@ module KrikriPlaybookGenerator
       opts.reference_core_versions.uniq!
     end
 
+    # Corpus replay is its own command path, not a fuzz batch: it runs the
+    # recorded REAL-mode invocation against a recorded transcript, so the
+    # run-matrix flags mean something different there (or are not implemented
+    # yet - the disposable-VM backends, see Corpus::BACKEND_HOOK).
+    private def self.check_replay_conflicts!(opts : Options) : Nil
+      return unless opts.replay_corpus
+
+      raise InvalidOptionsError.new("--replay-corpus is only valid with run") unless opts.command.run?
+      if opts.run_on_atlantic? || opts.run_on_microvm? || opts.run_on_mixed?
+        raise InvalidOptionsError.new(Corpus::BACKEND_HOOK)
+      end
+      if opts.check? || opts.modes_given?
+        raise InvalidOptionsError.new(
+          "--replay-corpus runs the recorded real-mode invocation; --check/--modes do not apply")
+      end
+      if opts.allow_mutation?
+        raise InvalidOptionsError.new(
+          "--replay-corpus always runs for real locally (the recording is a real-mode transcript); drop --allow-mutation")
+      end
+      return unless opts.hosts_given? || opts.umasks_given? || opts.limits_given?
+
+      raise InvalidOptionsError.new(
+        "--replay-corpus runs every case on one host under umask #{DEFAULT_UMASK}; " \
+        "--hosts/--umask/--limit do not apply")
+    end
+
     # The flags that only make sense for (or contradict) --run-on-podman.
     private def self.check_podman_conflicts!(opts : Options) : Nil
       runners = [opts.run_on_podman?, opts.run_on_atlantic?, opts.run_on_microvm?, opts.run_on_mixed?].count(true)
       raise InvalidOptionsError.new("only one of --run-on-podman/--run-on-atlantic/--run-on-microvm may be given") if runners > 1
-      raise InvalidOptionsError.new("--control needs a backend (--run-on-podman, --run-on-microvm or --run-on-mixed)") if opts.control? && !opts.run_on_podman? && !opts.run_on_microvm? && !opts.run_on_mixed?
+      # --control is meaningful on corpus replay too: real ansible on both
+      # sides is exactly how a replay harness gap is told from a krikri bug.
+      if opts.control? && !opts.run_on_podman? && !opts.run_on_microvm? && !opts.run_on_mixed? && !opts.replay_corpus
+        raise InvalidOptionsError.new("--control needs a backend (--run-on-podman, --run-on-microvm or --run-on-mixed)")
+      end
       raise InvalidOptionsError.new("--refresh-podman-templates needs --run-on-podman") if opts.refresh_podman_templates? && !opts.run_on_podman? && !opts.run_on_mixed?
       raise InvalidOptionsError.new("--podman-parallel needs --run-on-podman") if opts.podman_parallel > 1 && !opts.run_on_podman? && !opts.run_on_mixed?
       raise InvalidOptionsError.new("--microvm-parallel needs --run-on-microvm") if opts.microvm_parallel > 1 && !opts.run_on_microvm?

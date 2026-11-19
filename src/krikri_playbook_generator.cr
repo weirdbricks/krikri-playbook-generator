@@ -13,32 +13,9 @@ module KrikriPlaybookGenerator
     in Command::Generate
       do_generate(opts)
     in Command::Run
-      Preflight.check!(opts.ansible_playbook_bin, opts.krikri_bin)
-      playbooks = playbook_paths_for_run(opts)
-      results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
-        opts.krikri_bin, modes: Options.effective_modes(opts), run_on_podman: opts.run_on_podman?,
-        run_on_atlantic: opts.run_on_atlantic?, run_on_microvm: opts.run_on_microvm?,
-        run_on_mixed: opts.run_on_mixed?, second_run: opts.second_run?, diff: opts.diff?,
-        keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
-        refresh_podman_templates: opts.refresh_podman_templates?,
-        podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
-        microvm_parallel: opts.microvm_parallel,
-        user_profiles: Options.effective_user_profiles(opts),
-        umasks: Options.effective_umasks(opts),
-        hosts: Options.effective_hosts(opts),
-        limits: Options.effective_limits(opts),
-        connections: Options.effective_connections(opts),
-        reference_versions: opts.reference_core_versions).run
-      print_run_summary(results)
-      divergences?(results) ? DIVERGENT_EXIT : 0
+      do_run(opts)
     in Command::Report
-      triage = Triage.new(opts.results_dir)
-      findings = triage.report
-      state_findings = triage.state_report
-      check_mode_findings = triage.check_mode_report
-      print_report(triage, json: opts.json?, findings: findings, state_findings: state_findings,
-        check_mode_findings: check_mode_findings)
-      report_exit_code(triage, findings, state_findings, check_mode_findings, opts.min_happy_success)
+      do_report(opts)
     in Command::Modules
       print_module_scope(json: opts.json?, opts: opts)
     end
@@ -63,6 +40,51 @@ module KrikriPlaybookGenerator
   rescue e : MicrovmProvisionError
     STDERR.puts "error: #{e.message}"
     1
+  rescue e : Corpus::CorpusError
+    STDERR.puts "error: #{e.message}"
+    1
+  end
+
+  # `run`: a fuzz batch of playbooks, or - with --replay-corpus - the curated
+  # divergence corpus. Split out of `main` so the dispatch stays one line per
+  # subcommand and neither path inflates its complexity.
+  private def self.do_run(opts : Options) : Int32
+    Preflight.check!(opts.ansible_playbook_bin, opts.krikri_bin)
+    if corpus_dir = opts.replay_corpus
+      return replay_corpus(opts, corpus_dir)
+    end
+
+    playbooks = playbook_paths_for_run(opts)
+    results = Runner.new(playbooks, opts.results_dir, opts.atlantic_hosts, opts.ansible_playbook_bin,
+      opts.krikri_bin, modes: Options.effective_modes(opts), run_on_podman: opts.run_on_podman?,
+      run_on_atlantic: opts.run_on_atlantic?, run_on_microvm: opts.run_on_microvm?,
+      run_on_mixed: opts.run_on_mixed?, second_run: opts.second_run?, diff: opts.diff?,
+      keep_going: opts.keep_going?, engine_timeout: opts.engine_timeout, control: opts.control?,
+      refresh_podman_templates: opts.refresh_podman_templates?,
+      podman_parallel: opts.podman_parallel, microvm_dir: opts.microvm_dir,
+      microvm_parallel: opts.microvm_parallel,
+      user_profiles: Options.effective_user_profiles(opts),
+      umasks: Options.effective_umasks(opts),
+      hosts: Options.effective_hosts(opts),
+      limits: Options.effective_limits(opts),
+      connections: Options.effective_connections(opts),
+      reference_versions: opts.reference_core_versions).run
+    print_run_summary(results)
+    divergences?(results) ? DIVERGENT_EXIT : 0
+  end
+
+  # `report`: the same sections for any results dir, including one a
+  # `--replay-corpus` run wrote (its corpus summary comes first).
+  private def self.do_report(opts : Options) : Int32
+    triage = Triage.new(opts.results_dir)
+    findings = triage.report
+    state_findings = triage.state_report
+    check_mode_findings = triage.check_mode_report
+    corpus = triage.corpus_report
+    print_report(triage, json: opts.json?, findings: findings, state_findings: state_findings,
+      check_mode_findings: check_mode_findings, corpus: corpus)
+    report_exit_code(triage, findings, state_findings, check_mode_findings,
+      opts.min_happy_success, corpus)
   end
 
   # The default scope (ansible.builtin core + promoted supported FQCNs),
@@ -275,6 +297,86 @@ module KrikriPlaybookGenerator
     Dir.glob("#{opts.out_dir}/*.yml")
   end
 
+  # `run --replay-corpus DIR`: replay the curated corpus through both engines
+  # and report through the same triage machinery a fuzz batch uses. Exit 2
+  # when a case regressed (krikri no longer matches the recorded transcript -
+  # the same "krikri diverges" meaning the fuzzer's exit 2 has), 1 when the
+  # corpus itself needs attention (a drifted recording, a case that could not
+  # run, a missing recording, or a directory with no cases at all), 0 when
+  # every case passes or is a live skip.
+  private def self.replay_corpus(opts : Options, corpus_dir : String) : Int32
+    CorpusRunner.new(corpus_dir, opts.results_dir,
+      ansible_playbook_bin: opts.ansible_playbook_bin, krikri_bin: opts.krikri_bin,
+      engine_timeout: opts.engine_timeout, keep_going: opts.keep_going?,
+      diff: opts.diff?, control: opts.control?, run_on_podman: opts.run_on_podman?).run
+    triage = Triage.new(opts.results_dir)
+    report = triage.corpus_report
+    print_full_report(triage, corpus: report)
+    unless report
+      # A gate that replayed nothing proves nothing - most likely the path
+      # points at the wrong directory, not at an empty corpus.
+      STDERR.puts "error: no replayable cases under #{corpus_dir.inspect}"
+      return 1
+    end
+    return DIVERGENT_EXIT if report.regressed.positive?
+    return 1 if report.drifted.positive? || report.failed.positive?
+
+    0
+  end
+
+  # The replay summary, in the report's own style: a header with the counts,
+  # then one line per non-pass case with the diff signature that decided it
+  # and a copy-paste repro. Cases sharing a signature are named as one root
+  # cause, the same "N playbooks, one bug" rule the divergence section uses.
+  private def self.print_corpus_report(report : Triage::CorpusReport) : Nil
+    puts "== Corpus replay (past divergence repros) =="
+    puts "cases: #{report.total} (#{report.passed} pass, #{report.regressed} regressed, " \
+         "#{report.drifted} drifted, #{report.failed} failed-to-run) | " \
+         "#{report.skipped} skipped (#{Corpus::LIVE_REASON})"
+    print_corpus_status(report, "regressed",
+      "regressed (krikri no longer matches the recorded transcript)")
+    print_corpus_status(report, "drifted",
+      "drifted (the recording no longer matches the pinned ansible-core; re-record it)")
+    print_corpus_status(report, "failed-to-run", "failed to run")
+    print_corpus_status(report, "skipped", "skipped (#{Corpus::LIVE_REASON})")
+    puts "Every replayed case passes." if report.regressed.zero? && report.drifted.zero? && report.failed.zero?
+  end
+
+  private def self.print_corpus_status(report : Triage::CorpusReport, status : String,
+                                       label : String) : Nil
+    rows = report.rows_with(status)
+    return if rows.empty?
+
+    puts "#{label}:"
+    rows.each { |row| print_corpus_row(report, row, status) }
+  end
+
+  private def self.print_corpus_row(report : Triage::CorpusReport, row : Triage::ResultLine,
+                                    status : String) : Nil
+    case status
+    when "failed-to-run", "skipped"
+      # nothing ran, so there is no diff signature and no repro: name the
+      # case, the path that failed, and why.
+      puts "  #{row.module_name}: #{row.playbook || row.corpus_dir}"
+      puts "    #{row.corpus_reason}" if row.corpus_reason
+    else
+      signature = report.signature(row)
+      key = signature ? "signature #{signature}" : "no signature"
+      puts "  #{row.module_name} [#{key}]: #{row.playbook || row.corpus_dir}"
+      shared = report.shared_cases(row)
+      puts "    same signature as: #{shared.join(", ")} (one root cause)" unless shared.empty?
+      puts "    repro: #{corpus_repro_command(row)}"
+    end
+  end
+
+  # A replay row reproduces by replaying exactly that case directory, not by
+  # re-running a playbook through the fuzz runner: only the corpus's
+  # recorded transcript can judge the result.
+  private def self.corpus_repro_command(row : Triage::ResultLine) : String
+    case_dir = row.corpus_dir.empty? ? row.playbook : row.corpus_dir
+    "krikri-playbook-generator run --replay-corpus #{case_dir} --results-dir /tmp/kpg-repro"
+  end
+
   private def self.divergences?(results : Array(Runner::PlaybookResult)) : Bool
     results.any?(&.divergent?)
   end
@@ -290,24 +392,28 @@ module KrikriPlaybookGenerator
 
   private def self.print_report(triage : Triage, json : Bool, findings : Array(Triage::Finding)? = nil,
                                 state_findings : Array(Triage::Finding)? = nil,
-                                check_mode_findings : Array(Triage::Finding)? = nil) : Nil
+                                check_mode_findings : Array(Triage::Finding)? = nil,
+                                corpus : Triage::CorpusReport? = nil) : Nil
     if json
       puts triage.report_json
     else
-      print_full_report(triage, findings, state_findings, check_mode_findings)
+      print_full_report(triage, findings, state_findings, check_mode_findings, corpus)
     end
   end
 
   private def self.print_full_report(triage : Triage, findings : Array(Triage::Finding)? = nil,
                                      state_findings : Array(Triage::Finding)? = nil,
-                                     check_mode_findings : Array(Triage::Finding)? = nil) : Nil
+                                     check_mode_findings : Array(Triage::Finding)? = nil,
+                                     corpus : Triage::CorpusReport? = nil) : Nil
     print_batch_info(triage)
     diff = triage.batch_info[:diff]
+    print_corpus_report(corpus) if corpus
     print_divergences(findings || triage.report, diff)
     print_state_divergences(state_findings || triage.state_report, diff)
     print_check_mode_mutations(check_mode_findings || triage.check_mode_report, diff)
     print_quality(triage.quality, triage.expected_failures, triage.happy_coverage, triage.not_applicable_modules)
-    print_rates(triage.rates)
+    rates = triage.rates
+    print_rates(rates) unless rates.empty?
   end
 
   # Batch-level happy-path runnability gate (`--min-happy-success`): a
@@ -333,8 +439,13 @@ module KrikriPlaybookGenerator
   private def self.report_exit_code(triage : Triage, findings : Array(Triage::Finding),
                                     state_findings : Array(Triage::Finding),
                                     check_mode_findings : Array(Triage::Finding),
-                                    minimum : Float64?) : Int32
+                                    minimum : Float64?,
+                                    corpus : Triage::CorpusReport? = nil) : Int32
     return DIVERGENT_EXIT if !findings.empty? || !state_findings.empty? || !check_mode_findings.empty?
+    # A replay results dir reports through the same command: a regressed case
+    # is a krikri divergence (exit 2), drift/an unrun case stays visible in
+    # the corpus section without pretending krikri diverged.
+    return DIVERGENT_EXIT if corpus.try(&.regressed.positive?)
 
     happy_gate_failed?(triage, minimum) ? 1 : 0
   end
@@ -380,8 +491,20 @@ module KrikriPlaybookGenerator
       end
       puts "  example: #{finding.playbooks.first}"
       puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version, connection: example.connection)}"
+      puts "  repro: #{finding_repro(finding, example, diff)}"
     end
+  end
+
+  # A fuzz finding repros by re-running its playbook through an isolated
+  # backend; a replay finding repros by replaying exactly its corpus case
+  # (only the case's recorded transcript can judge the result).
+  private def self.finding_repro(finding : Triage::Finding, example : Triage::ResultLine,
+                                 diff : Bool) : String
+    return corpus_repro_command(example) if example.corpus?
+
+    Triage.repro_command(finding.playbooks.first, [finding.module_name], example.mode, example.run,
+      diff, example.user, example.umask, example.hosts, example.env, example.limit,
+      example.core_version, connection: example.connection)
   end
 
   private def self.print_state_divergences(findings : Array(Triage::Finding), diff : Bool = true) : Nil
@@ -394,7 +517,7 @@ module KrikriPlaybookGenerator
       puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
       puts "  example: #{example.playbook}"
       puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version, connection: example.connection)}"
+      puts "  repro: #{finding_repro(finding, example, diff)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
         puts "  leftover staging files:"
@@ -421,7 +544,7 @@ module KrikriPlaybookGenerator
            "#{finding.count} playbook(s) mutated the host in check mode"
       puts "  example: #{example.playbook}"
       puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{Triage.repro_command(example.playbook, [finding.module_name], example.mode, example.run, diff, example.user, example.umask, example.hosts, example.env, example.limit, example.core_version, connection: example.connection)}"
+      puts "  repro: #{finding_repro(finding, example, diff)}"
       lines = example.check_mode_diff.lines
       lines.first(10).each { |line| puts "  #{line}" }
       puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10
@@ -438,7 +561,8 @@ module KrikriPlaybookGenerator
            "(#{coverage.success_rate.round(1)}% run successfully on real ansible)"
     end
     if quality.empty?
-      puts "Every happy-path playbook ran successfully on real ansible."
+      # nothing to say when there was nothing to measure
+      puts "Every happy-path playbook ran successfully on real ansible." unless coverage.attempted.zero?
     else
       quality.each do |entry|
         puts "#{entry.module_name}: #{entry.failed}/#{entry.total} happy-path playbook(s) failed on real ansible (wasted coverage)"

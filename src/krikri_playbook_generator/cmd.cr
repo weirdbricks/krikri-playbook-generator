@@ -10,12 +10,17 @@ module KrikriPlaybookGenerator
 
     record Result, rc : Int32, stdout : String, stderr : String, timed_out : Bool = false
 
+    # `chdir` runs the child in another working directory; corpus replay uses
+    # it so both engines run a case from the case's own directory (a
+    # playbook-relative lookup or role search then resolves as it did when
+    # the case was recorded).
     def self.run(command : String, args : Array(String) = [] of String, input : String? = nil,
-                 timeout : Float64? = nil) : Result
+                 timeout : Float64? = nil, chdir : String? = nil) : Result
       proc = Process.new(command, args: args,
         input: Process::Redirect::Pipe,
         output: Process::Redirect::Pipe,
-        error: Process::Redirect::Pipe)
+        error: Process::Redirect::Pipe,
+        chdir: chdir)
       if input
         proc.input.print(input)
       end

@@ -39,9 +39,16 @@ module KrikriPlaybookGenerator
       state_signature : String?, state_diff : String, check_mode_mutated : Bool,
       check_mode_diff : String, check_mode_signature : String?,
       leftover_temps : String, library_target : String?, library_source : String?,
-      core_version : String do
+      core_version : String, corpus_status : String?, corpus_reason : String?,
+      corpus_dir : String, corpus_drift_diff : String do
       def errored? : Bool
         !error.nil?
+      end
+
+      # A `run --replay-corpus` row: its `module` is a corpus CASE NAME, not
+      # a scanned module, so the generator-quality metrics must not read it.
+      def corpus? : Bool
+        !corpus_status.nil?
       end
 
       # The playbook differs on printed output (the byte-for-byte engine
@@ -88,6 +95,74 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # The `--replay-corpus` gate's view of a results dir: one row per replayed
+    # case, counted by status, with the failures grouped by case name + diff
+    # signature like a fuzz finding (a status's rows share a root cause when
+    # their signatures match). Kept apart from the sections above because a
+    # replay row's "module" is a corpus case name and its gate status (did a
+    # fix regress? did the recording drift?) is not a fuzz finding.
+    record CorpusReport, rows : Array(ResultLine) do
+      REGRESSED_STATUS = "regressed"
+
+      def total : Int32
+        rows.size
+      end
+
+      def count(status : String) : Int32
+        rows.count { |row| row.corpus_status == status }
+      end
+
+      def passed : Int32
+        count("pass")
+      end
+
+      def regressed : Int32
+        count(REGRESSED_STATUS)
+      end
+
+      def drifted : Int32
+        count("drifted")
+      end
+
+      def failed : Int32
+        count("failed-to-run")
+      end
+
+      def skipped : Int32
+        count("skipped")
+      end
+
+      # Every row with this status, in case-name order.
+      def rows_with(status : String) : Array(ResultLine)
+        rows.select { |row| row.corpus_status == status }.sort_by!(&.module_name)
+      end
+
+      # The diff that decided a row's status: the engine-vs-engine diff for a
+      # regression, the ansible-vs-recording diff for drift. Its signature is
+      # what groups two cases into one root cause.
+      def status_diff(row : ResultLine) : String
+        return row.masked_diff if row.corpus_status == REGRESSED_STATUS
+        return row.corpus_drift_diff if row.corpus_status == "drifted"
+
+        ""
+      end
+
+      def signature(row : ResultLine) : String?
+        ByteDiff.signature(status_diff(row))
+      end
+
+      # The other cases sharing this row's signature - "N cases, one root
+      # cause" instead of N separate findings.
+      def shared_cases(row : ResultLine) : Array(String)
+        signature = signature(row)
+        return [] of String unless signature
+
+        rows_with(row.corpus_status || "")
+          .select { |other| signature(other) == signature && other.module_name != row.module_name }
+          .map(&.module_name)
+      end
+    end
+
     def initialize(@results_dir : String, @overrides : Overrides = Overrides.load)
     end
 
@@ -108,6 +183,20 @@ module KrikriPlaybookGenerator
     # apart from both sections above so a playbook is still counted once.
     def check_mode_report : Array(Finding)
       check_mode_findings_from(result_lines)
+    end
+
+    # The replay gate's summary; nil for a fuzz results dir (no
+    # `corpus_status` rows), so `report` on an ordinary batch prints exactly
+    # what it did before.
+    def corpus_report : CorpusReport?
+      corpus_report_from(result_lines)
+    end
+
+    private def corpus_report_from(lines : Array(ResultLine)) : CorpusReport?
+      rows = lines.select(&.corpus?)
+      return if rows.empty?
+
+      CorpusReport.new(rows)
     end
 
     def findings_from(lines : Array(ResultLine)) : Array(Finding)
@@ -230,6 +319,44 @@ module KrikriPlaybookGenerator
               rates_from(lines).each { |rate| rate_json(json, rate) }
             end
           end
+          corpus = corpus_report_from(lines)
+          json.field "corpus" do
+            if corpus
+              corpus_json(json, corpus)
+            else
+              json.null
+            end
+          end
+        end
+      end
+    end
+
+    # The replay gate as one JSON object: counts per status plus every
+    # non-pass case with the signature that decided it.
+    private def corpus_json(json : JSON::Builder, corpus : CorpusReport) : Nil
+      json.object do
+        json.field "total", corpus.total
+        json.field "passed", corpus.passed
+        json.field "regressed", corpus.regressed
+        json.field "drifted", corpus.drifted
+        json.field "failed_to_run", corpus.failed
+        json.field "skipped", corpus.skipped
+        json.field "cases" do
+          json.array do
+            corpus.rows_with("regressed").concat(corpus.rows_with("drifted"))
+              .concat(corpus.rows_with("failed-to-run"))
+              .concat(corpus.rows_with("skipped"))
+              .each do |row|
+                json.object do
+                  json.field "case", row.module_name
+                  json.field "status", row.corpus_status
+                  json.field "playbook", row.playbook
+                  json.field "dir", row.corpus_dir
+                  json.field "signature", corpus.signature(row)
+                  json.field "reason", row.corpus_reason
+                end
+              end
+          end
         end
       end
     end
@@ -318,13 +445,7 @@ module KrikriPlaybookGenerator
       groups = Hash(String, Array(ResultLine)).new { |hash, key| hash[key] = [] of ResultLine }
 
       lines.each do |line|
-        next if line.chaos || line.errored?
-        next if line.run > 1
-        next if @overrides.expect_failure?(line.module_name)
-        next if @overrides.not_applicable?(line.module_name)
-        # A generated library/ probe measures the extension API, not a
-        # module's happy path, so it never counts toward the gate.
-        next if line.library_target
+        next unless happy_row?(line)
         next unless line.ansible_failed
 
         groups[line.module_name] << line
@@ -332,10 +453,27 @@ module KrikriPlaybookGenerator
 
       groups.map do |module_name, entries|
         total = lines.count do |line|
-          !line.chaos && !line.errored? && line.run == 1 && line.module_name == module_name
+          happy_row?(line) && line.module_name == module_name
         end
         Quality.new(module_name, entries.size, total, entries.first.ansible_error || "unknown error")
       end.sort_by! { |quality| -quality.failed }
+    end
+
+    # A row the happy-path metrics count: a generated happy-path playbook's
+    # first run. Chaos rows, second-run rows (repeatability, not
+    # runnability), replay rows (a curated repro, not a generated happy
+    # path), custom-`library/` probes (the extension API, not a module's
+    # happy path) and the override table's `expect_failure`/
+    # `not_applicable` modules are all out, so the gate measures what it
+    # says it measures.
+    private def happy_row?(line : ResultLine) : Bool
+      return false if line.chaos || line.errored? || line.corpus?
+      return false if line.run > 1
+      return false if line.library_target
+      return false if @overrides.expect_failure?(line.module_name)
+      return false if @overrides.not_applicable?(line.module_name)
+
+      true
     end
 
     # Batch-level version of the quality metric, counting every happy-path
@@ -348,14 +486,7 @@ module KrikriPlaybookGenerator
       attempted = 0
       failed = 0
       lines.each do |line|
-        next if line.chaos || line.errored?
-        # A second-run row re-runs an already counted playbook: it measures
-        # idempotency, not whether the reference engine can run the task.
-        next if line.run > 1
-        next if @overrides.expect_failure?(line.module_name)
-        next if @overrides.not_applicable?(line.module_name)
-        # Library probes are excluded for the same reason as in `quality`.
-        next if line.library_target
+        next unless happy_row?(line)
 
         attempted += 1
         failed += 1 if line.ansible_failed
@@ -421,6 +552,9 @@ module KrikriPlaybookGenerator
 
       lines.each do |line|
         next if line.errored?
+        # Replay rows are one row per case, not per module; the corpus
+        # section reports their identity counts.
+        next if line.corpus?
 
         groups[{line.module_name, line.profile}] << line
       end
@@ -498,9 +632,14 @@ module KrikriPlaybookGenerator
     end
 
     private def parse_result_line(parsed : Hash(String, JSON::Any)) : ResultLine?
-      playbook = parsed["playbook"]?.try(&.as_s?)
       module_name = parsed["module"]?.try(&.as_s?)
-      return unless playbook && module_name
+      return unless module_name
+
+      # A skipped replay case has no playbook (nothing ran); its case
+      # directory is what the report names instead.
+      playbook = parsed["playbook"]?.try(&.as_s?)
+      playbook ||= parsed["corpus_dir"]?.try(&.as_s?)
+      return unless playbook
 
       mutations = parsed["mutations"]?.try(&.as_a?).try do |entries|
         entries.compact_map do |entry|
@@ -552,8 +691,18 @@ module KrikriPlaybookGenerator
         leftover_temps,
         parse_library_target(parsed),
         parse_library_source(parsed),
-        parse_core_version(parsed)
+        parse_core_version(parsed),
+        parsed["corpus_status"]?.try(&.as_s?),
+        parsed["corpus_reason"]?.try(&.as_s?),
+        parsed["corpus_dir"]?.try(&.as_s?) || "",
+        parse_drift_diff(parsed)
       )
+    end
+
+    # The ansible-vs-recording diff a `drifted` replay row carries beside the
+    # engine-vs-engine one.
+    private def parse_drift_diff(parsed : Hash(String, JSON::Any)) : String
+      parsed.dig?("diff", "drift").try(&.as_s?) || ""
     end
 
     # The target a generated library/ probe imports or exercises; nil for

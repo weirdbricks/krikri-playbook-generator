@@ -58,6 +58,12 @@ refuzz MODULE COUNT="10" OUT="playbooks/refuzz" RESULTS="~/scratch/kpg-refuzz" R
 report DIR="~/scratch/kpg-results":
     {{BIN}} report {{DIR}}
 
+# Replay the curated divergence corpus through both engines (release/nightly gate).
+# The corpus lives in krikri's own checkout; podman gives each case a fresh
+# container pair, so a recording is reproducible (local shares one host).
+corpus DIR="../krikri/test/fixtures/divergence" RESULTS="~/scratch/kpg-corpus" RUN_ARGS="--run-on-podman":
+    {{BIN}} run --replay-corpus {{DIR}} --results-dir {{RESULTS}} {{RUN_ARGS}}
+
 # Print the tool version.
 version:
     {{BIN}} --version
