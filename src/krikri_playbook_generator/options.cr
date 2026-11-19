@@ -185,7 +185,7 @@ module KrikriPlaybookGenerator
         dsl.on("--chaos-kinds LIST", "comma-separated chaos kinds") { |v| opts.chaos_kinds = v.split(',') }
         dsl.on("--out DIR", "playbook output dir") { |v| opts.out_dir = expand_path(v) }
         dsl.on("--results-dir DIR", "results output dir") { |v| opts.results_dir = expand_path(v) }
-        dsl.on("--replay-corpus DIR", "replay the curated divergence corpus in DIR through both engines and classify each case (run only; real mode, local or --run-on-podman)") { |v| opts.replay_corpus = expand_path(v) }
+        dsl.on("--replay-corpus DIR", "replay the curated divergence corpus in DIR through both engines and classify each case (run only; each case's own flags.txt/inventory.ini decide the invocation, local or --run-on-podman)") { |v| opts.replay_corpus = expand_path(v) }
         dsl.on("--atlantic-hosts N", "max concurrent Atlantic.net hosts") { |v| opts.atlantic_hosts = parse_int(v, "--atlantic-hosts") }
         dsl.on("--ansible-playbook-bin PATH", "ansible-playbook executable (default: on PATH)") { |v| opts.ansible_playbook_bin = expand_tilde(v) }
         dsl.on("--krikri-bin PATH", "path to the krikri-playbook binary") { |v| opts.krikri_bin = expand_tilde(v) }
@@ -448,10 +448,11 @@ module KrikriPlaybookGenerator
       opts.reference_core_versions.uniq!
     end
 
-    # Corpus replay is its own command path, not a fuzz batch: it runs the
-    # recorded REAL-mode invocation against a recorded transcript, so the
-    # run-matrix flags mean something different there (or are not implemented
-    # yet - the disposable-VM backends, see Corpus::BACKEND_HOOK).
+    # Corpus replay is its own command path, not a fuzz batch: it runs each
+    # case's RECORDED invocation (its own flags.txt/inventory.ini) against a
+    # recorded transcript, so the run-matrix flags mean something different
+    # there (or are not implemented yet - the disposable-VM backends, see
+    # Corpus::BACKEND_HOOK).
     private def self.check_replay_conflicts!(opts : Options) : Nil
       return unless opts.replay_corpus
 
@@ -461,11 +462,12 @@ module KrikriPlaybookGenerator
       end
       if opts.check? || opts.modes_given?
         raise InvalidOptionsError.new(
-          "--replay-corpus runs the recorded real-mode invocation; --check/--modes do not apply")
+          "--replay-corpus runs each case's recorded invocation (a case's own flags.txt " \
+          "may select --check); the batch-level --check/--modes do not apply")
       end
       if opts.allow_mutation?
         raise InvalidOptionsError.new(
-          "--replay-corpus always runs for real locally (the recording is a real-mode transcript); drop --allow-mutation")
+          "--replay-corpus runs the case's recorded (real-mode) invocation; drop --allow-mutation")
       end
       return unless opts.hosts_given? || opts.umasks_given? || opts.limits_given?
 

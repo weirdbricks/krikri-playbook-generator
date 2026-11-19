@@ -364,11 +364,14 @@ module KrikriPlaybookGenerator
     # the SAME pair after the first run succeeded on both engines (the
     # idempotency pass); each pass is returned separately.
     #
-    # `extra_dirs` copies further playbook-adjacent directories into /work
-    # beside the playbook (a corpus case tree: role layout, files/,
-    # templates/), and `inventory` replaces the generated one-alias
-    # inventory for a caller that owns its own host layout (corpus replay,
-    # where a hand-written repro targets `localhost` or `kpg_targets`).
+    # `extra_paths` copies further playbook-adjacent entries into /work beside
+    # the playbook (a corpus case tree: role layout, files/, templates/, a
+    # `stable.txt` the playbook reads), `inventory` replaces the generated
+    # one-alias inventory for
+    # a caller that owns its own host layout (corpus replay, where a
+    # hand-written repro targets `localhost` or `kpg_targets`), and `flags`
+    # are extra CLI arguments both engines get (corpus replay's `flags.txt`,
+    # e.g. `-e name=value`).
     def run_playbook(playbook_path : String, profile : Profile = Profile::Debian,
                      version : String = EXPECTED_ANSIBLE_VERSION,
                      check : Bool? = nil, second_run : Bool = false,
@@ -378,8 +381,9 @@ module KrikriPlaybookGenerator
                      limit : String? = nil,
                      include_unreachable : Bool = false,
                      connection : ConnectionProfile = ConnectionProfile.local,
-                     extra_dirs : Array(String) = [] of String,
-                     inventory : String? = nil) : Array(HostState::Comparison)
+                     extra_paths : Array(String) = [] of String,
+                     inventory : String? = nil,
+                     flags : Array(String) = [] of String) : Array(HostState::Comparison)
       unless @provisioned.includes?({profile, version})
         raise PodmanProvisionError.new("provision was never called for profile #{profile} (core #{version})")
       end
@@ -409,8 +413,8 @@ module KrikriPlaybookGenerator
           wait_for_sshd(real)
           wait_for_sshd(krikri)
         end
-        copy_playbook(playbook_path, real, extra_dirs)
-        copy_playbook(playbook_path, krikri, extra_dirs)
+        copy_playbook(playbook_path, real, extra_paths)
+        copy_playbook(playbook_path, krikri, extra_paths)
         # The writable fixture root is re-owned for this row's identity
         # before the first snapshot, so both engines start identical and
         # the chown itself never shows up as a mutation.
@@ -430,11 +434,11 @@ module KrikriPlaybookGenerator
 
         runs = [] of HostState::Comparison
         runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-          user, umask, env, limit, connection)
+          user, umask, env, limit, connection, flags)
         if second_run && HostState.succeeded?(runs.first[:ansible]) &&
            HostState.succeeded?(runs.first[:krikri])
           runs << comparison(real, krikri, playbook_path, krikri_engine, effective_check, effective_diff,
-            user, umask, env, limit, connection)
+            user, umask, env, limit, connection, flags)
         end
         runs
       ensure
@@ -457,9 +461,10 @@ module KrikriPlaybookGenerator
                            user : UserProfile, umask : String,
                            env : Hash(String, String) = {} of String => String,
                            limit : String? = nil,
-                           connection : ConnectionProfile = ConnectionProfile.local) : HostState::Comparison
-      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env, limit, connection),
-       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env, limit, connection)}
+                           connection : ConnectionProfile = ConnectionProfile.local,
+                           flags : Array(String) = [] of String) : HostState::Comparison
+      {ansible: observe(real, "ansible-playbook", playbook_path, check, diff, user, umask, env, limit, connection, flags),
+       krikri:  observe(krikri, krikri_engine, playbook_path, check, diff, user, umask, env, limit, connection, flags)}
     end
 
     private def observe(name : String, engine_cmd : String, playbook_path : String,
@@ -467,9 +472,10 @@ module KrikriPlaybookGenerator
                         umask : String,
                         env : Hash(String, String) = {} of String => String,
                         limit : String? = nil,
-                        connection : ConnectionProfile = ConnectionProfile.local) : HostState::Observation
+                        connection : ConnectionProfile = ConnectionProfile.local,
+                        flags : Array(String) = [] of String) : HostState::Observation
       before = snapshot_state(name)
-      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env, limit, connection)
+      result = exec_engine(name, engine_cmd, playbook_path, check, diff, user, umask, env, limit, connection, flags)
       HostState::Observation.new(result, before, snapshot_state(name))
     end
 
@@ -781,7 +787,7 @@ module KrikriPlaybookGenerator
     # misleading "both failed identically" result instead of a clear
     # provisioning error.
     private def copy_playbook(playbook_path : String, name : String,
-                              extra_dirs : Array(String) = [] of String) : Nil
+                              extra_paths : Array(String) = [] of String) : Nil
       basename = File.basename(playbook_path)
       result = Cmd.run("podman", ["cp", playbook_path, "#{name}:/work/#{basename}"], timeout: 120.0)
       raise PodmanProvisionError.new("podman cp #{basename.inspect} into #{name} failed: #{result.stderr}") unless Cmd.success?(result)
@@ -801,13 +807,14 @@ module KrikriPlaybookGenerator
       end
 
       # A caller-owned case tree (corpus replay): its role layout, file and
-      # template sources travel beside the playbook too, so a repro that was
-      # recorded against a whole directory still resolves.
-      extra_dirs.each do |dir|
-        next unless Dir.exists?(dir)
+      # template sources travel beside the playbook too - including a plain
+      # file a repro reads - so a case recorded against a whole directory
+      # still resolves.
+      extra_paths.each do |path|
+        next unless File.exists?(path)
 
-        copied = Cmd.run("podman", ["cp", dir, "#{name}:/work/"], timeout: 120.0)
-        raise PodmanProvisionError.new("podman cp #{File.basename(dir)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
+        copied = Cmd.run("podman", ["cp", path, "#{name}:/work/"], timeout: 120.0)
+        raise PodmanProvisionError.new("podman cp #{File.basename(path)} into #{name} failed: #{copied.stderr}") unless Cmd.success?(copied)
       end
 
       # A generated library/ probe needs its custom module beside the
@@ -826,11 +833,12 @@ module KrikriPlaybookGenerator
                             umask : String = DEFAULT_UMASK,
                             env : Hash(String, String) = {} of String => String,
                             limit : String? = nil,
-                            connection : ConnectionProfile = ConnectionProfile.local) : Cmd::Result
+                            connection : ConnectionProfile = ConnectionProfile.local,
+                            flags : Array(String) = [] of String) : Cmd::Result
       owner = user.nonroot? ? Fixtures::UNPRIVILEGED_USER : "root"
       env = env.merge(connection.env(user))
       script = PodmanBackend.engine_script(engine_cmd, File.basename(playbook_path), @engine_timeout,
-        check, diff, umask, owner, owner, env, limit, connection.cli_flags(user))
+        check, diff, umask, owner, owner, env, limit, connection.cli_flags(user) + flags)
       args = ["exec", "-w", "/work"]
       if user.nonroot?
         args += ["--user", "#{Fixtures::UNPRIVILEGED_USER}:#{Fixtures::UNPRIVILEGED_USER}",

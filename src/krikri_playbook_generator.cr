@@ -308,7 +308,7 @@ module KrikriPlaybookGenerator
     CorpusRunner.new(corpus_dir, opts.results_dir,
       ansible_playbook_bin: opts.ansible_playbook_bin, krikri_bin: opts.krikri_bin,
       engine_timeout: opts.engine_timeout, keep_going: opts.keep_going?,
-      diff: opts.diff?, control: opts.control?, run_on_podman: opts.run_on_podman?).run
+      control: opts.control?, run_on_podman: opts.run_on_podman?).run
     triage = Triage.new(opts.results_dir)
     report = triage.corpus_report
     print_full_report(triage, corpus: report)

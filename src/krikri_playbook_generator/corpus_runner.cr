@@ -18,13 +18,15 @@ module KrikriPlaybookGenerator
   # engines and records one results.jsonl row per case, in the shape
   # `Runner` writes, so `report`/Triage reads a replay batch unchanged.
   #
-  # The invocation is the same shape the fuzz runner uses locally - one
-  # absolute playbook path and cwd per case, `ANSIBLE_NOCOLOR=1` and the
-  # gathering/cache env vars stripped (ENGINE_ENV_STRIP), stdin closed, a
-  # per-engine `timeout` so a hang is rc 124, raw stdout/stderr/rc captured -
-  # but deliberately REAL mode: the corpus records what real
-  # ansible-playbook prints, and a `--check` transcript is not comparable to
-  # it. Replay therefore mutates the host it runs on exactly like the
+  # The invocation is the one the RECORDING was made with (see
+  # `Corpus`/krikri's `DivergenceCase`): the case's own `inventory.ini` when
+  # it ships one, its `flags.txt` (so a check-mode recording is replayed with
+  # `--check`), no `--diff`, `ANSIBLE_NOCOLOR=1`, the gathering/cache env vars
+  # stripped (ENGINE_ENV_STRIP), stdin closed, a per-engine `timeout` so a
+  # hang is rc 124, and raw stdout/stderr/rc captured. Everything runs in a
+  # staged COPY of the case, so a replay never writes into the corpus, and
+  # the copy's path is the `<WORK>` the recording normalized away before
+  # comparing. A replay still mutates the host it runs on exactly like the
   # original repro did; that is why the corpus's live-mutation cases are
   # skipped (`live/cases.txt`) and why the gate belongs on a disposable or
   # already-isolated host.
@@ -36,6 +38,10 @@ module KrikriPlaybookGenerator
     # The mode `report` shows for a replay row; Triage treats it like any
     # other opaque mode label, and the corpus section is what the gate reads.
     REPLAY_MODE = "replay"
+
+    # Where a podman replay puts the case inside the container: the
+    # directory the recording's `<WORK>` stands for on that backend.
+    PODMAN_WORK_DIR = "/work"
 
     # One replayed (or skipped) case: everything results.jsonl needs, plus
     # the verdict Triage counts. `playbook` is the path both engines ran
@@ -53,7 +59,7 @@ module KrikriPlaybookGenerator
     def initialize(@corpus_dir : String, @results_dir : String,
                    @ansible_playbook_bin : String = "ansible-playbook",
                    @krikri_bin : String = "krikri-playbook", @engine_timeout : Int32 = 120,
-                   @keep_going : Bool = false, @diff : Bool = true, @control : Bool = false,
+                   @keep_going : Bool = false, @control : Bool = false,
                    @run_on_podman : Bool = false)
     end
 
@@ -99,7 +105,7 @@ module KrikriPlaybookGenerator
       end
 
       backend = PodmanBackend.new(@krikri_bin, @engine_timeout, @control, module_fqcns(cases),
-        diff: @diff)
+        diff: false)
       podman_profiles(cases).each { |profile| backend.provision(profile) }
       backend
     end
@@ -191,48 +197,95 @@ module KrikriPlaybookGenerator
       end
 
       FileUtils.mkdir_p(stage_dir)
-      playbook = Corpus.build_playbook(kase, stage_dir)
-      profile = podman_profiles([kase]).first
-      ansible, krikri = backend ? run_in_pair(backend, profile, playbook) : run_both(playbook)
+      flags = Corpus.flags(kase.dir)
+      inventory = Corpus.inventory(kase.dir)
       expected = kase.expected_path.try { |path| File.read(path) }
-      verdict = Corpus.classify(to_output(ansible), to_output(krikri), expected)
+      return replay_in_pair(kase, stage_dir, backend, flags, inventory, expected) if backend
+
+      replay_locally(kase, stage_dir, flags, inventory, expected)
+    end
+
+    # Local replay: each engine gets its OWN pristine copy of the case (and
+    # its own HOME), the way the recording and the in-process replay each
+    # started from a fresh tree. Sharing one tree would let the engine that
+    # ran first leave files the second one sees - a `get_url`/`copy` case
+    # would report `ok` where the recording says `changed`. Each engine's
+    # transcript is normalized against its own copy, so both report `<WORK>`.
+    private def replay_locally(kase : Corpus::Case, stage_dir : String, flags : Array(String),
+                               inventory : String, expected : String?) : Row
+      ansible_playbook = Corpus.build_playbook(kase, File.join(stage_dir, "ansible"))
+      krikri_playbook = Corpus.build_playbook(kase, File.join(stage_dir, "krikri"))
+      path = write_inventory(inventory)
+      begin
+        ansible = run_local("ansible", @ansible_playbook_bin, ansible_playbook, path, flags)
+        krikri = run_local("krikri", @control ? @ansible_playbook_bin : @krikri_bin,
+          krikri_playbook, path, flags)
+      ensure
+        File.delete(path) if File.exists?(path)
+      end
+      verdict = Corpus.classify(
+        to_normalized_output(ansible, File.dirname(ansible_playbook)),
+        to_normalized_output(krikri, File.dirname(krikri_playbook)), expected)
+      Row.new(kase.name, kase.dir, ansible_playbook, verdict.status, verdict, ansible, krikri,
+        kase.notes, kase.expected_path, verdict.reason, "debian")
+    end
+
+    private def replay_in_pair(kase : Corpus::Case, stage_dir : String, backend : PodmanBackend,
+                               flags : Array(String), inventory : String,
+                               expected : String?) : Row
+      profile = podman_profiles([kase]).first
+      playbook = Corpus.build_playbook(kase, stage_dir)
+      ansible, krikri = run_in_pair(backend, profile, playbook, flags, inventory)
+      verdict = Corpus.classify(to_output(ansible), to_output(krikri), expected, PODMAN_WORK_DIR)
       Row.new(kase.name, kase.dir, playbook, verdict.status, verdict, ansible, krikri,
         kase.notes, kase.expected_path, verdict.reason, profile.debian? ? "debian" : "rocky")
     end
 
-    # Both engines get the identical invocation: one inventory file, the same
-    # absolute playbook path and cwd, and (with --control) real ansible on
-    # BOTH sides, so any non-pass row is a harness gap or a missing mask
-    # rather than krikri.
-    private def run_both(playbook : String) : {Runner::EngineRun, Runner::EngineRun}
-      inventory = write_inventory
+    # One engine's local run: the case's copy as cwd and playbook, the case's
+    # flags, HOME inside that copy (a `~/...` path in a case must never reach
+    # the developer's real home - the same guarantee the capture tool gives),
+    # and (with --control) real ansible on both sides, so any non-pass row is
+    # a harness gap or a missing mask rather than krikri.
+    private def run_local(engine : String, bin : String, playbook : String,
+                          inventory : String, flags : Array(String)) : Runner::EngineRun
       cwd = File.dirname(playbook)
-      begin
-        ansible = run_engine("ansible", @ansible_playbook_bin, playbook, inventory, cwd)
-        krikri = run_engine("krikri", @control ? @ansible_playbook_bin : @krikri_bin,
-          playbook, inventory, cwd)
-        {ansible, krikri}
-      ensure
-        File.delete(inventory) if File.exists?(inventory)
-      end
+      home = File.join(cwd, "home")
+      Dir.mkdir_p(home)
+      run_engine(engine, bin, playbook, inventory, cwd, flags, home, user_site_base)
     end
 
-    private def write_inventory : String
+    # Redirecting HOME into the staged case (a `~/...` path in a case must
+    # never reach the real home - the recording ran that way too) would also
+    # hide the invoking user's pip `--user` site-packages. On a box whose
+    # ansible-core lives there, that silently switches the reference engine to
+    # the system copy, whose version prints different warnings or none - a
+    # divergence the replay would then blame on krikri. PYTHONUSERBASE keeps
+    # that tree reachable under the redirected HOME.
+    private def user_site_base : String?
+      home = ENV["HOME"]?
+      home && File.join(home, ".local")
+    end
+
+    private def write_inventory(content : String) : String
       path = File.tempname("kpg-corpus-inventory")
-      File.write(path, Corpus::INVENTORY)
+      File.write(path, content)
       path
     end
 
     # Podman: one fresh container pair for the case (never a pair reused
     # across cases, so a case cannot see the previous one's state), the
-    # case's whole tree copied beside the playbook, and the corpus
-    # inventory, so a `localhost` or `kpg_targets` repro matches its one
-    # host on this backend too.
+    # case's whole tree copied beside the playbook, the case's own flags, and
+    # the case's inventory (or the corpus fallback), so a `localhost` or
+    # `kpg_targets` repro matches its one host on this backend too. `--check`
+    # from `flags.txt` becomes the backend's check switch so it is not passed
+    # twice; the rest travel as-is.
     private def run_in_pair(backend : PodmanBackend, profile : PodmanBackend::Profile,
-                            playbook : String) : {Runner::EngineRun, Runner::EngineRun}
-      comparison = backend.run_playbook(playbook, profile, check: false, second_run: false,
-        diff: @diff, umask: DEFAULT_UMASK, extra_dirs: Corpus.support_dirs(playbook),
-        inventory: Corpus::INVENTORY).first
+                            playbook : String, flags : Array(String),
+                            inventory : String) : {Runner::EngineRun, Runner::EngineRun}
+      check = flags.includes?("--check")
+      comparison = backend.run_playbook(playbook, profile, check: check, second_run: false,
+        diff: false, umask: DEFAULT_UMASK, extra_paths: Corpus.case_entries(playbook),
+        inventory: inventory, flags: flags.reject { |flag| flag == "--check" }).first
       {to_engine_run("ansible", comparison[:ansible]),
        to_engine_run("krikri", comparison[:krikri])}
     end
@@ -249,19 +302,24 @@ module KrikriPlaybookGenerator
       STDERR.puts "ERROR: leaked containers after teardown: #{leaks.join(", ")}" unless leaks.empty?
     end
 
-    # The fuzz runner's local invocation shape, minus the mode matrix: no
-    # `--check` (a corpus recording is a real-mode transcript), `--diff`
-    # unless --no-diff, the same `-e kpg_owner/kpg_group` defaults so a repro
-    # that templates them renders the same value on both sides, and the
-    # engine killed at --engine-timeout (rc 124) rather than wedging the
-    # gate.
+    # The recorded invocation, locally: the case's inventory, its own
+    # `flags.txt` (so a check-mode case replays in check mode), no `--diff`
+    # and no generated-playbook `-e` defaults - the recording is the
+    # authority on what the engines were run with - and the engine killed at
+    # --engine-timeout (rc 124) rather than wedging the gate.
     private def run_engine(engine : String, bin : String, playbook : String,
-                           inventory : String, cwd : String) : Runner::EngineRun
+                           inventory : String, cwd : String, flags : Array(String),
+                           home : String, user_site_base : String?) : Runner::EngineRun
       args = [@engine_timeout.to_s, bin, "-i", inventory]
-      args << "--diff" if @diff
-      args << "-e" << "kpg_owner=root" << "-e" << "kpg_group=root"
+      args.concat(flags)
       args << playbook
-      script = "umask #{DEFAULT_UMASK}; #{ENGINE_ENV_STRIP} timeout \"$@\""
+      env = String.build do |str|
+        str << "HOME=" << Process.quote(home)
+        if base = user_site_base
+          str << " PYTHONUSERBASE=" << Process.quote(base)
+        end
+      end
+      script = "umask #{DEFAULT_UMASK}; #{env} #{ENGINE_ENV_STRIP} timeout \"$@\""
       result = Cmd.run("bash", ["-c", script, "kpg"] + args,
         timeout: @engine_timeout + 30.0, chdir: cwd)
       Runner::EngineRun.new(engine, result.rc, Runner::Recap.parse(result.stdout),
@@ -270,6 +328,16 @@ module KrikriPlaybookGenerator
 
     private def to_output(run : Runner::EngineRun) : Corpus::Output
       Corpus::Output.new(run.stdout, run.stderr, run.rc, run.timed_out)
+    end
+
+    # One engine's transcript substituted against the copy it ran in, so a
+    # comparison with no single shared directory (the local backend gives each
+    # engine its own copy) still lines up on `<WORK>`. Deliberately
+    # `substitute_work` and not `normalize`: the streams are combined
+    # stdout-then-stderr later, so their trailing newlines have to survive.
+    private def to_normalized_output(run : Runner::EngineRun, work_dir : String) : Corpus::Output
+      Corpus::Output.new(Corpus.substitute_work(run.stdout, work_dir),
+        Corpus.substitute_work(run.stderr, work_dir), run.rc, run.timed_out)
     end
 
     private def guarded(kase : Corpus::Case, &) : Row
@@ -439,11 +507,12 @@ module KrikriPlaybookGenerator
 
     # Provenance in the same file `run` writes, plus the corpus it replayed:
     # a gate results dir has to say which corpus and how many cases it
-    # covered. A versions.txt failure is a lost metadata file, never a reason
-    # to lose the results already on disk.
+    # covered. `--diff` is always off here (the recording decides the
+    # invocation), and a versions.txt failure is a lost metadata file, never
+    # a reason to lose the results already on disk.
     private def write_versions(started : Time, cases : Int32, live : Int32) : Nil
       Versions.write(@results_dir, VERSION, @krikri_bin, @ansible_playbook_bin, @control,
-        [RunMode::Real], false, @diff, Time.utc - started, started,
+        [RunMode::Real], false, false, Time.utc - started, started,
         user_profiles: [UserProfile::Local.label], umasks: [DEFAULT_UMASK], hosts: [1],
         limits: ["off"], connections: [ConnectionProfile.local.label],
         reference_versions: [Runner::DEFAULT_CORE_VERSION])

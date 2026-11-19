@@ -412,6 +412,10 @@ and it lives in krikri's own checkout
                           printed when the case was recorded
     <case>/NOTES.md       why the case exists (carried into results.jsonl,
                           never compared)
+    <case>/flags.txt      optional: extra CLI flags, one per line (e.g.
+                          `--check`, or `-e` followed by `name=value`)
+    <case>/inventory.ini  optional: the case's own inventory, usually a
+                          [local] host pinning ansible_python_interpreter
     live/cases.txt        cases that need a REAL host (package, service,
                           crontab or pip mutation), one name per line
 
@@ -434,33 +438,36 @@ recording, is **failed-to-run** rather than a silent pass.
     krikri-playbook-generator run --replay-corpus ../krikri/test/fixtures/divergence \
       --results-dir ~/scratch/kpg-corpus --run-on-podman
 
-The invocation is the runner's own (`ANSIBLE_NOCOLOR=1`, gathering/cache
-env vars stripped, stdin closed, a per-engine `timeout`, raw
-stdout/stderr/rc), in REAL mode - this runner always runs real mode, so
-`--check`/`--modes` are refused (a case whose `flags.txt` selects
-`--check` is a known limitation below). Cases listed in `live/cases.txt` are
-skipped with a `needs live host` row (never run: they mutate the host) and
-a case that is listed but has no directory still gets that row. A case
-with `playbook.yml` runs in place, so its sibling `files/`, `templates/`
-and `roles/` resolve as they did when it was recorded; a role-layout case
-is run through a synthesized entry play (`hosts: kpg_targets`,
-`gather_facts: false`, `roles: [<case>]`) at one absolute path both
-engines share. Both backends hand the engines the same corpus inventory,
-so a repro targeting `localhost` (how they were written) or the generated
+The invocation is the one the RECORDING was made with: the case's own
+`inventory.ini` when it ships one, its `flags.txt` (so a check-mode case
+replays with `--check`), no `--diff`, and the runner's environment
+(`ANSIBLE_NOCOLOR=1`, gathering/cache env vars stripped, stdin closed, a
+per-engine `timeout`, raw stdout/stderr/rc). The batch-level `--check`/
+`--modes` are refused - it is the case, not the gate, that decides those.
+Cases listed in `live/cases.txt` are skipped with a `needs live host` row
+(never run: they mutate the host) and a case that is listed but has no
+directory still gets that row. Every case runs in a staged COPY of its
+directory (the corpus itself is never written to), with `HOME` inside that
+copy, so a `~/...` path cannot reach the developer's home. Locally each
+engine gets its own fresh copy, so the engine that ran first cannot leave
+files the second one then reports as already-present. The copy's path (each
+engine's own directory locally, `/work` in a podman container) is rewritten
+to the `<WORK>` the recording uses before comparing, so the transcripts
+line up byte for byte, and a whole case tree (roles, `files/`,
+`templates/`, a file the playbook reads) travels with it. A role-layout case is run through a synthesized entry play
+(`hosts: kpg_targets`, `gather_facts: false`, `roles: [<case>]`) at one
+absolute path both engines share; when a case ships no inventory of its
+own, both backends hand the engines the same fallback inventory, so a
+repro targeting `localhost` (how they were written) or the generated
 `kpg_targets` group matches exactly one host either way.
 
-**Known limitation (the runner, not the cases).** krikri's corpus cases
-use three input conventions this runner does not read yet: a recording
-normalizes the case's scratch directory to `<WORK>` (7 of the current 9
-cases), a case can select `--check`/extra args via `flags.txt`, and a case
-can pin an interpreter via its `inventory.ini`. This runner runs every
-case in real mode with its own inventory and does not substitute
-`<WORK>`, so those cases are currently classified `drifted` (or refused
-for `--check`) rather than replayed faithfully. krikri's own in-process
-replay (`test/integration/divergence_corpus_test.cr`) does handle all
-three and remains the authoritative gate; this runner is a cross-engine
-cross-check for the flat, real-mode cases until its invocation is brought
-to the same conventions (tracked in #37).
+The three input conventions are krikri's own (`Krikri::DivergenceCase`/
+`DivergenceTranscript`, used by the in-process replay in
+`test/integration/divergence_corpus_test.cr`): a recording normalizes its
+scratch directory to `<WORK>`, a case can select `--check`/extra args via
+`flags.txt`, and a case can pin its interpreter via `inventory.ini`. This
+runner reads all three, so a case recorded faithfully replays as `pass`
+here as well.
 
 `--run-on-podman` gives each case a **fresh container pair** (the same
 isolation the fuzz batches get, and the reason a recording is

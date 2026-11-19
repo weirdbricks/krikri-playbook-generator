@@ -150,6 +150,74 @@ module KrikriPlaybookGenerator
       end
     end
 
+    # The corpus's own input conventions: a recording normalizes its scratch
+    # directory to <WORK>, a case can select --check/extra args via flags.txt,
+    # and a case can pin its inventory. A replay that ignored any of them
+    # classifies a faithful case as drifted (or refuses the check-mode case).
+    it "replays a case's <WORK>/flags.txt/inventory.ini conventions" do
+      skip("needs ansible-playbook and krikri-playbook on this machine") if engines_missing?
+      corpus = File.tempname("kpg-corpus")
+      results = File.tempname("kpg-corpus-results")
+      begin
+        dir = File.join(corpus, "conventions")
+        FileUtils.mkdir_p(dir)
+        File.write(File.join(dir, "playbook.yml"), <<-'YAML')
+          ---
+          - name: Replay corpus case
+            hosts: pinned
+            gather_facts: false
+            tasks:
+              - name: Show the scratch dir, the mode and a var from flags.txt
+                ansible.builtin.debug:
+                  msg: "dir={{ playbook_dir }}/roles check={{ ansible_check_mode }} extra={{ case_extra }}"
+              - name: Write a file
+                ansible.builtin.copy:
+                  content: "hello\n"
+                  dest: "{{ playbook_dir }}/created.txt"
+                  mode: "0644"
+          YAML
+        # only this inventory defines `pinned`, so the play resolves a host
+        # only when the case's own inventory.ini is what the engines get
+        File.write(File.join(dir, "inventory.ini"), <<-INI)
+          [pinned]
+          localhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3
+          INI
+        File.write(File.join(dir, "flags.txt"), <<-TXT)
+          --check
+          -e
+          case_extra=from-flags
+          TXT
+        File.write(File.join(dir, "expected.out"), "")
+
+        first = CorpusRunner.new(corpus, results, krikri_bin: krikri_bin, engine_timeout: 60).run
+        # the engines agree; it is the empty recording that does not match yet
+        assert_equal(Corpus::Status::Drifted, first.first.status)
+
+        row = rows_by_case(results)["conventions"]
+        recorded = row["ansible"]["stdout"].as_s + row["ansible"]["stderr"].as_s
+        # flags.txt decided the invocation: check mode and its extra var
+        assert(recorded.includes?("check=True"))
+        assert(recorded.includes?("extra=from-flags"))
+        # the case's inventory made `pinned` resolve to a host
+        assert(recorded.includes?("ok: [localhost]"))
+        refute(recorded.includes?("skipping: no hosts matched"))
+        # no --diff was added: the recording is a plain real-mode transcript
+        refute(recorded.includes?("--- before"))
+        # and the scratch path the engines printed is rewritten to <WORK>
+        work_dir = File.dirname(row["playbook"].as_s)
+        assert(work_dir.includes?("kpg-corpus"))
+        File.write(File.join(dir, "expected.out"), Corpus.normalize(recorded, work_dir))
+
+        second = CorpusRunner.new(corpus, results, krikri_bin: krikri_bin, engine_timeout: 60).run
+        replayed = second.first
+        assert_equal(Corpus::Status::Pass, replayed.status)
+        assert_equal(true, replayed.verdict.as(Corpus::Verdict).krikri_matches_expected)
+      ensure
+        FileUtils.rm_rf(corpus) if corpus
+        FileUtils.rm_rf(results) if results
+      end
+    end
+
     it "replays a case in a fresh podman container pair, the only isolated backend", tags: :slow do
       skip("podman not available on this machine") unless PodmanBackend.available?
       skip("no krikri-playbook binary to stage into the container") unless File.exists?(krikri_bin)

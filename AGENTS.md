@@ -584,25 +584,36 @@ checklist before closing the issue.
   directory holds `playbook.yml` (or a ROLE layout:
   `tasks/main.yml`, `defaults/main.yml`, ...), `expected.out` (the exact
   normalized transcript real ansible-core 2.21.6 printed when the case was
-  recorded) and `NOTES.md`; `live/cases.txt` lists the cases that need a
-  real package/service/crontab/pip mutation. `discover` walks one level
-  (or accepts a corpus dir that is itself a case, so a single repro can be
-  replayed on its own), ignores directories that are not case-shaped and
-  never treats `live/` as a case, and marks a case with a playbook but no
-  recording (or a recording but no playbook/role layout) as unusable with a
-  `problem` rather than dropping it. `live_cases` parses `cases.txt`
-  (`#` comments, blank lines, an optional note after the name).
-  `build_playbook` runs a flat case IN PLACE (its sibling `files/`,
-  `templates/`, `roles/` resolve as they did when it was recorded) and
-  synthesizes an entry play for a role layout (`hosts: kpg_targets`,
-  `gather_facts: false`, `roles: [<copied case>]` under a staging dir), so
-  both engines run one absolute path. `INVENTORY` is the corpus inventory
-  both backends hand the engines (`localhost` plus the `kpg_targets`
-  alias), and `support_dirs` is the playbook-adjacent tree the podman
-  backend copies beside the playbook. The comparison itself is pure:
-  `normalize` applies the same explicit MASKS plus CRLF/trailing-newline
-  folding, `matches_expected?` accepts a recording taken as stdout only or
-  with `2>&1`, and `classify` collapses the three comparisons
+  recorded), `NOTES.md`, and optionally `flags.txt` (extra CLI flags, one
+  per line: `--check`, or `-e` followed by `name=value`) and
+  `inventory.ini` (the case's own inventory, usually a `[local]` host
+  pinning `ansible_python_interpreter`); `live/cases.txt` lists the cases
+  that need a real package/service/crontab/pip mutation. `discover` walks
+  one level (or accepts a corpus dir that is itself a case, so a single
+  repro can be replayed on its own), ignores directories that are not
+  case-shaped and never treats `live/` as a case, and marks a case with a
+  playbook but no recording (or a recording but no playbook/role layout) as
+  unusable with a `problem` rather than dropping it. `live_cases` parses
+  `cases.txt` (`#` comments, blank lines, an optional note after the name);
+  `flags`/`inventory` read the case's two optional input conventions.
+  `build_playbook` STAGES a copy of the case's input (everything but
+  `RECORDED`: `expected.out`/`NOTES.md`) into the scratch dir - a replay
+  never writes into the corpus - and returns the staged
+  `<stage>/playbook.yml` for a flat case (sibling `files/`, `templates/`,
+  `roles/` travel with it), or synthesizes an entry play for a role layout
+  (`hosts: kpg_targets`, `gather_facts: false`, `roles: [<copied case>]`
+  under the staging dir), so both engines run one absolute path.
+  `INVENTORY` is the FALLBACK inventory for a case with no `inventory.ini`
+  (`localhost` plus the `kpg_targets` alias), and `case_entries` is every
+  top-level entry of the staged case, which the podman backend copies beside
+  the playbook so the tree travels whole (roles, files/templates, and a plain
+  file a repro reads). The
+  comparison itself is pure: `normalize` rewrites the directory the engines
+  ran in to `WORK` (`<WORK>`, only as a whole path, so a lookalike sibling
+  keeps its spelling), applies the same explicit MASKS plus
+  CRLF/trailing-newline folding, `matches_expected?` accepts a recording
+  taken as stdout only or with `2>&1` and normalizes the engine side
+  against that directory, and `classify` collapses the three comparisons
   (krikri-vs-ansible, krikri-vs-recording, ansible-vs-recording) into
   `pass`/`regressed`/`drifted`/`failed-to-run` — engines disagree means
   `regressed` (a case exists because they disagreed once, so they must
@@ -621,20 +632,30 @@ checklist before closing the issue.
   `corpus_expected`/`corpus_status`/`corpus_reason`/`corpus_notes` plus
   `diff.expected` (krikri vs the recording) and `diff.drift` (ansible vs
   the recording) beside `diff.masked`/`diff.raw`. Both engines get the
-  fuzz runner's local invocation shape (one inventory file, same absolute
-  playbook path and cwd, `ENGINE_ENV_STRIP`, stdin closed, per-engine
-  `timeout`, raw capture) in REAL mode - the recording is a real-mode
-  transcript, so Options refuses `--check`/`--modes` - and `--control` runs
-  real ansible on both sides, the noise check for the harness itself.
-  `--run-on-podman` replays each case in a FRESH container pair
-  (`PodmanBackend#run_playbook` with `extra_dirs: Corpus.support_dirs` and
-  `inventory: Corpus::INVENTORY`, so a case tree and its `localhost`/
-  `kpg_targets` host resolve exactly as locally); without it the two
-  engines share this machine. Live-listed cases are skipped with a
-  `needs live host` row even when their directory exists (the corpus list
-  is authoritative), and a case that never ran lands in the report's
-  errors section (`error` set) instead of looking like a divergence.
-  `versions.txt` gains `corpus:`/`corpus cases:`/`corpus live cases:`.
+  RECORDED invocation: the case's own `inventory.ini` (or `Corpus::INVENTORY`
+  when it has none), its `flags.txt` (`--check` becomes the podman
+  backend's check switch so it is not passed twice; other flags travel
+  as-is), no `--diff`, `HOME` inside the staged case, `ENGINE_ENV_STRIP`,
+  stdin closed, per-engine `timeout`, raw capture. The batch-level
+  `--check`/`--modes` remain refused (Options) because it is the case, not
+  the gate, that selects them; `--control` runs real ansible on both sides,
+  the noise check for the harness itself. `--run-on-podman` replays each
+  case in a FRESH container pair (`PodmanBackend#run_playbook` with
+  `extra_paths: Corpus.case_entries`, the case's inventory and its flags, so
+  the whole case tree, its `localhost`/`kpg_targets` host and its `-e` vars
+  resolve exactly as locally); without it the two engines share this
+  machine, so each gets its OWN pristine copy of the case (and its own HOME):
+  a shared tree would let the engine that ran first leave files the second
+  one sees, and a `get_url`/`copy` case would report `ok` where the
+  recording says `changed`. The verdict is classified against `<WORK>` =
+  the staged copy's path locally, or `/work` inside the podman container
+  (each local engine's transcript is substituted against its own copy).
+  Live-listed cases are
+  skipped with a `needs live host` row even when their directory exists
+  (the corpus list is authoritative), and a case that never ran lands in
+  the report's errors section (`error` set) instead of looking like a
+  divergence. `versions.txt` gains `corpus:`/`corpus cases:`/`corpus live
+  cases:` (and always records `diff: false`).
   A `run --replay-corpus` exits 2 on a regression (a krikri bug), 1 on
   drift or a case that could not run, 0 when everything passed or was
   skipped.
@@ -884,8 +905,9 @@ checklist before closing the issue.
   only) widens the comparison to more reference ansible-core versions; the
   default is the pinned target version. `--replay-corpus DIR` (run only)
   switches that command from a fuzz batch to a corpus replay: it conflicts
-  with a positional target, refuses `--check`/`--modes`/`--allow-mutation`
-  (the recording is a real-mode transcript) and
+  with a positional target, refuses `--check`/`--modes` (a case's own
+  `flags.txt` is what selects check mode) and `--allow-mutation`
+  (the recording is the invocation) and
   `--hosts`/`--umask`/`--limit` (one local host, the invoking account,
   umask 022), accepts `--run-on-podman` (fresh pair per case) and
   `--control`, and refuses the disposable-VM backends with
@@ -1036,11 +1058,12 @@ Documented deliberately, not silently:
 - Corpus replay (`--replay-corpus`) has no host-state oracle and no
   idempotency pass: it compares the recorded transcript, because a repro's
   recording is a transcript. That also means a corpus case whose output
-  contains inherently per-run values (`file`'s `--diff` prints `atime`/
-  `mtime` floats, which two real runs of the SAME engine already
-  disagree on) reports as a regression until the corpus normalizes it away
-  or the mask list grows an entry for it - the gate can only be as stable
-  as the recording. The local backend shares one host between the two
+  contains inherently per-run values (a timestamp, a random id, a
+  container hostname) reports as a regression until the corpus normalizes
+  it away or the mask list grows an entry for it - the gate can only be as
+  stable as the recording. `--diff` is never added (a recording is a plain
+  real-mode transcript), so diff output is not part of what is compared.
+  The local backend shares one host between the two
   engines, so a case whose transcript includes pre-existing state can
   differ legitimately between them; the podman backend gives each case its
   own fresh pair and is the one a release gate should use. The
@@ -1266,17 +1289,23 @@ records the row's profile, and `triage_spec.cr` groups and rates per
 profile. `corpus_spec.cr` builds small synthetic corpus directories (no dependency on
 krikri's checkout) and covers discovery (flat case, role layout, unusable
 case, ignored non-case dir, a corpus dir that is itself a case, missing
-dir), `live/cases.txt` parsing, the role-layout entry playbook and the
-in-place flat path, and the whole three-way classification matrix
+dir), `live/cases.txt` parsing, the role-layout entry playbook, the staged
+flat path (the case tree copied, the recorded result left behind), the
+case's `flags.txt`/`inventory.ini` conventions, and the whole three-way
+classification matrix
 (pass/regressed/drifted/failed-to-run, rc-only divergence with a usable
 signature, masked and CRLF/trailing-newline normalization, a `2>&1`
-recording). `corpus_runner_spec.cr` is an integration spec: it replays a
+recording, `<WORK>` substitution and its whole-path-only boundary).
+`corpus_runner_spec.cr` is an integration spec: it replays a
 synthetic corpus through the real engines (recorded transcript written from
 the first replay's ansible output, then passing on the second), asserts the
 failed-to-run/no-recording row, the live skip (including a live-listed case
 whose directory exists), the results.jsonl row shape, `versions.txt`'s
 corpus lines and that Triage keeps replay rows out of coverage/rates; it
-also covers an engine that cannot be launched (failed-to-run, not a
+also replays a `<WORK>` + `flags.txt` `--check`/`-e` + `inventory.ini`
+case that only passes when all three conventions are read (recorded from
+the first replay, then passing), covers an engine that cannot be launched
+(failed-to-run, not a
 divergence) and, tagged `:slow`, one real podman replay (skips itself when
 `podman` or the krikri binary is absent). `triage_spec.cr` covers
 `corpus_report`'s counts, signature grouping/sharing, the drift signature

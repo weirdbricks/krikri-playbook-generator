@@ -86,15 +86,27 @@ module KrikriPlaybookGenerator
       end
     end
 
-    it "runs a flat case in place, so its sibling files and templates still resolve" do
+    it "stages a copy of a flat case, so a replay never writes into the corpus" do
       with_corpus do |root|
-        write_case(root, "flat")
+        dir = write_case(root, "flat")
+        FileUtils.mkdir_p(File.join(dir, "roles", "some-role", "tasks"))
+        File.write(File.join(dir, "roles", "some-role", "tasks", "main.yml"), "---\n")
+        File.write(File.join(dir, "stable.txt"), "v1.0.0\n")
+        File.write(File.join(dir, Corpus::NOTES_FILE), "why it exists\n")
+
         kase = Corpus.discover(root).first
         stage = File.tempname("kpg-corpus-stage")
         begin
-          assert_equal(File.join(root, "flat", "playbook.yml"), Corpus.build_playbook(kase, stage))
-          # nothing was staged for a flat case
-          refute(Dir.exists?(stage))
+          playbook = Corpus.build_playbook(kase, stage)
+          assert_equal(File.join(stage, Corpus::PLAYBOOK_FILE), playbook)
+          # the whole input travels, so sibling files/roles still resolve
+          assert(File.exists?(File.join(stage, "roles", "some-role", "tasks", "main.yml")))
+          assert_equal("v1.0.0\n", File.read(File.join(stage, "stable.txt")))
+          # the recorded result is not part of the input
+          refute(File.exists?(File.join(stage, Corpus::EXPECTED_FILE)))
+          refute(File.exists?(File.join(stage, Corpus::NOTES_FILE)))
+          # and the corpus itself is untouched
+          assert(File.exists?(File.join(dir, Corpus::EXPECTED_FILE)))
         ensure
           FileUtils.rm_rf(stage)
         end
@@ -268,6 +280,53 @@ module KrikriPlaybookGenerator
       it "normalizes CRLF and trailing newlines identically on both sides" do
         assert_equal("a\nb", Corpus.normalize("a\r\nb\r\n\r\n"))
         assert_equal("", Corpus.normalize("\n\n"))
+      end
+
+      it "substitutes the scratch directory with <WORK> before comparing" do
+        work = "/tmp/kpg-corpus-abc123"
+        recording = "TASK [x] ***\nOrigin: <WORK>/roles/r/tasks/main.yml:1:1\n"
+        transcript = "TASK [x] ***\nOrigin: #{work}/roles/r/tasks/main.yml:1:1\n"
+
+        verdict = Corpus.classify(output(transcript), output(transcript), recording, work)
+        assert_equal(Corpus::Status::Pass, verdict.status)
+        assert_equal(true, verdict.krikri_matches_expected)
+        assert_equal(true, verdict.ansible_matches_expected)
+      end
+
+      it "rewrites only the whole scratch path, never a lookalike sibling" do
+        work = "/tmp/kpg-corpus-abc123"
+        text = "#{work}/a.yml\n#{work}-lookalike/b.yml\n#{work}2/c.yml\n"
+        assert_equal("<WORK>/a.yml\n#{work}-lookalike/b.yml\n#{work}2/c.yml",
+          Corpus.normalize(text, work))
+      end
+    end
+
+    it "reads a case's flags.txt as one CLI argument per line" do
+      with_corpus do |root|
+        dir = write_case(root, "check-mode")
+        File.write(File.join(dir, Corpus::FLAGS_FILE), <<-TXT)
+          --check
+
+          -e
+            sudo_pair_unpack_directory=sudo_pair-unpack
+          TXT
+
+        assert_equal(["--check", "-e", "sudo_pair_unpack_directory=sudo_pair-unpack"],
+          Corpus.flags(dir))
+        # a case without one gets no extra flags at all
+        assert_empty(Corpus.flags(write_case(root, "plain")))
+      end
+    end
+
+    it "uses a case's own inventory.ini when it ships one and the fallback otherwise" do
+      with_corpus do |root|
+        pinned = write_case(root, "pinned")
+        inventory = "[local]\nlocalhost ansible_connection=local\n"
+        File.write(File.join(pinned, Corpus::INVENTORY_FILE), inventory)
+
+        assert_equal(inventory, Corpus.inventory(pinned))
+        # the fallback still defines the host a hand-written repro targets
+        assert_equal(Corpus::INVENTORY, Corpus.inventory(write_case(root, "fallback")))
       end
     end
 
