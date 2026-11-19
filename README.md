@@ -460,7 +460,7 @@ for `--check`) rather than replayed faithfully. krikri's own in-process
 replay (`test/integration/divergence_corpus_test.cr`) does handle all
 three and remains the authoritative gate; this runner is a cross-engine
 cross-check for the flat, real-mode cases until its invocation is brought
-to the same conventions.
+to the same conventions (tracked in #37).
 
 `--run-on-podman` gives each case a **fresh container pair** (the same
 isolation the fuzz batches get, and the reason a recording is
