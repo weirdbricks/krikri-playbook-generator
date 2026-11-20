@@ -660,5 +660,32 @@ module KrikriPlaybookGenerator
     it "finds no modules in a playbook without tasks" do
       assert_empty(Runner.modules_from_playbook("---\n- hosts: all\n  gather_facts: false\n"))
     end
+
+    it "gives a hand-saved repro the host images its modules need" do
+      rocky = <<-YAML
+        ---
+        - hosts: all
+          gather_facts: false
+          tasks:
+            - name: firewalld
+              ansible.posix.firewalld:
+                service: http
+                state: enabled
+        YAML
+      ubuntu = <<-YAML
+        ---
+        - hosts: all
+          gather_facts: false
+          tasks:
+            - name: copy
+              ansible.builtin.copy:
+                content: hi
+                dest: /tmp/kpg
+        YAML
+
+      assert_equal(["rocky"], Runner.repro_meta(rocky).not_nil!.profiles)
+      assert_equal(["debian"], Runner.repro_meta(ubuntu).not_nil!.profiles)
+      assert_nil(Runner.repro_meta("---\n- hosts: all\n  gather_facts: false\n"))
+    end
   end
 end

@@ -562,11 +562,16 @@ checklist before closing the issue.
   `MetaInfo` carries `module_names` (every task's module for a v2
   multi-task playbook, falling back to just the primary one for v1
   sidecars) and `env` (the sidecar's play-level env mapping): podman picks
-  the Rpm profile when ANY task needs it, the
+  the Rpm profile when ANY task needs the Rocky image (the rpm family,
+  firewalld, SELinux), the
   Atlantic grouping requires a profile for EVERY task's module, the local
   supported-community check covers every task, and the podman
   dependency-union list includes every task's fqcn. results.jsonl gains a
   `modules` array for multi-task playbooks (`module` stays the primary).
+  A sidecar-less playbook (a kpg issue's hand-saved `repro.yml`) gets its
+  module list and profiles from its own tasks (`Runner.repro_meta`), so a
+  firewalld/SELinux repro runs on the Rocky golden where the reference
+  module's Python binding is installed, never on the Ubuntu one.
   `--keep-going` turns
   per-playbook failures into errored results instead of aborting the
   batch; errored results are never counted as divergent.

@@ -656,9 +656,13 @@ module KrikriPlaybookGenerator
       paths.each do |path|
         names = load_meta(path).try(&.module_names) || [] of String
         sidecar = load_meta(path).try(&.profiles) || ["debian"]
-        # An rpm-only module still pins the playbook to Rocky.
-        if names.any? { |name| AtlanticBackend::PROFILE_FOR_MODULE[name.split(".").last]? == "rpm" }
-          profiles[MicrovmBackend.profile_for(names)] << path
+        # A module only the Rocky image can host (the rpm family, firewalld,
+        # SELinux) pins the playbook to Rocky even when a legacy or hand-saved
+        # sidecar carries no profile list. The module list, not the sidecar,
+        # is what keeps a firewalld repro off the Ubuntu golden, where real
+        # ansible's firewall Python binding is not installed.
+        if MicrovmBackend.profile_for(names) == "rocky"
+          profiles["rocky"] << path
         else
           sidecar.each { |profile| profiles[Runner.microvm_os(profile)] << path }
         end
@@ -807,9 +811,9 @@ module KrikriPlaybookGenerator
     # dependency set.
     private def podman_profile_for(path : String) : Array(PodmanBackend::Profile)
       names = load_meta(path).try(&.module_names) || [] of String
-      # An rpm-only module pins the whole playbook to Rocky even if a
-      # legacy sidecar has no profile list.
-      return [PodmanBackend::Profile::Rpm] if names.any? { |name| AtlanticBackend::PROFILE_FOR_MODULE[name.split(".").last]? == "rpm" }
+      # A module only the Rocky template can host pins the whole playbook to
+      # Rocky even if a legacy sidecar has no profile list.
+      return [PodmanBackend::Profile::Rpm] if Dependencies.host_profile(names) == "rocky"
 
       profiles = load_meta(path).try(&.profiles) || ["debian"]
       profiles.map { |profile| profile == "rocky" ? PodmanBackend::Profile::Rpm : PodmanBackend::Profile::Debian }.uniq!
@@ -1025,9 +1029,17 @@ module KrikriPlaybookGenerator
       # Python dependency dies on the reference side as a "harness gap"
       # (issue #1298: seboolean's libselinux binding was never installed, so
       # its repro could never be verified).
-      modules = Runner.modules_from_playbook(read_playbook(path))
+      Runner.repro_meta(read_playbook(path))
+    end
+
+    # The meta a sidecar-less playbook gets. Its profiles come from the same
+    # rule a generated sidecar uses, so a hand-saved firewalld/SELinux repro
+    # runs on the Rocky image and finds the module's Python binding.
+    def self.repro_meta(text : String) : MetaInfo?
+      modules = modules_from_playbook(text)
       return if modules.empty?
-      MetaInfo.new(modules.first, false, [] of {String, String}, modules)
+      MetaInfo.new(modules.first, false, [] of {String, String}, modules,
+        profiles: Dependencies.playbook_profiles(modules, Overrides.load))
     end
 
     private def read_playbook(path : String) : String
