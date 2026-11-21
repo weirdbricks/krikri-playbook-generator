@@ -386,7 +386,7 @@ module KrikriPlaybookGenerator
       next unless result.error || result.divergent?
       verdict = result.error ? "ERROR" : "DIVERGENT"
       color = result.error ? Log::RED : Log::YELLOW
-      puts Log.paint(color, "[#{verdict}] #{result.playbook} #{result.context_label}")
+      puts "#{Log.paint(color, "[#{verdict}]")} #{result.playbook} #{result.context_label}"
     end
   end
 
