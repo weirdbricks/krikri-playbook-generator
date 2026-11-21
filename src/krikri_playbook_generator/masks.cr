@@ -32,13 +32,6 @@ module KrikriPlaybookGenerator
         "Python interpreter and can never emit it. Only that lone key is masked",
       },
       {
-        Regex.new("(Valid booleans include: )[^\"\\n]*"),
-        "\\1<BOOLEAN-SET-ORDER>",
-        "convert_bool's error text lists BOOLEANS in Python set-iteration order, which " \
-        "changes per process (string hash randomization) - two real ansible runs already " \
-        "disagree byte-for-byte; the membership is fixed and covered by krikri's own specs",
-      },
-      {
         Regex.new("\\b[0-9A-F]{16}(:error:[0-9A-F]{8}:)"),
         "<OPENSSL-THREAD-ID>\\1",
         "OpenSSL's ERR_print_errors prefixes each queued error line with the hex id of the " \
@@ -176,6 +169,16 @@ module KrikriPlaybookGenerator
       # order is normalized; the membership must still match.
       masked = masked.gsub(/(Invalid options for [\w.]+: )([\w,]+)/) do |_, match|
         "#{match[1]}#{match[2].split(',').sort!.join(',')}"
+      end
+      # convert_bool's error text lists the frozenset BOOLEANS in
+      # set-iteration order, which changes per process (string hash
+      # randomization) - two real ansible runs already disagree byte-for-byte.
+      # Only the order is normalized: the members and their quoting must still
+      # match, so a wrong or missing member surfaces as a divergence instead of
+      # being masked away with the order. Only the repr'd members are captured,
+      # so a JSON fatal line's closing `"}` stays outside the sort.
+      masked = masked.gsub(/(Valid booleans include: )((?:'[^']*'|True|False|\d+(?:\.\d+)?)(?:, (?:'[^']*'|True|False|\d+(?:\.\d+)?))*)(?=\n|"|\z)/) do |_, match|
+        "#{match[1]}#{match[2].to_s.split(", ").sort!.join(", ")}"
       end
       # With several wrong-typed string options (defaults_from, handlers_from,
       # tasks_from, vars_from) real reports whichever its set iteration hits

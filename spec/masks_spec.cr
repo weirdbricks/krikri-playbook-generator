@@ -76,10 +76,17 @@ module KrikriPlaybookGenerator
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("'x'", "'y'")))
     end
 
-    it "masks the per-process set order of convert_bool's valid-boolean list" do
+    it "sorts the per-process set order of convert_bool's valid-boolean list" do
       a = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 0, '1', 'on', 1, 'yes'\n)
       b = %(msg: The value 'x' is not a valid boolean. Valid booleans include: 'yes', 1, 0, 'on', '1'\n)
       assert_equal(ByteDiff.mask(a), ByteDiff.mask(b))
+      assert_includes(ByteDiff.mask(a), "Valid booleans include: '1', 'on', 'yes', 0, 1")
+      # only the order is noise: membership and quoting are part of the message
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("'yes'", "'maybe'")))
+      refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub(", 1,", ", '1',")))
+      # a JSON fatal line's closing "} is not a member and must stay put
+      json = %(fatal: [t]: FAILED! => {"msg": "Valid booleans include: 'y', 1, 0"}\n)
+      assert_includes(ByteDiff.mask(json), %("Valid booleans include: 'y', 0, 1"}))
       refute_equal(ByteDiff.mask(a), ByteDiff.mask(a.sub("boolean. Valid", "boolean.  Valid")))
     end
 
