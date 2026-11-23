@@ -182,8 +182,12 @@ module KrikriPlaybookGenerator
         @state_diff = diff
         @state_divergent = !diff.nil?
         if @mode.check?
+          # Masked before the promise is judged: a transient socket a guest
+          # service opened and closed is not this engine's mutation.
           @check_mode_ansible = HostState.check_mode_changes(@ansible.state_before, @ansible.state_after)
+            .try { |changes| HostState.masked_changes(changes) }
           @check_mode_krikri = HostState.check_mode_changes(@krikri.state_before, @krikri.state_after)
+            .try { |changes| HostState.masked_changes(changes) }
         else
           @check_mode_ansible = nil
           @check_mode_krikri = nil

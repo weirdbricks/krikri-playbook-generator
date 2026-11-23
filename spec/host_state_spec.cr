@@ -93,6 +93,32 @@ module KrikriPlaybookGenerator
       assert_equal(signature, other)
     end
 
+    it "hashes versionlock.list without dnf's wall-clock comment, and only that path" do
+      script = HostState::SNAPSHOT_SCRIPT
+      assert_includes(script, "-path #{HostState::VERSIONLOCK} -prune")
+      assert_includes(script, "sed '/^[[:space:]]*#/d' #{HostState::VERSIONLOCK}")
+      # A real content difference of that file is still a state difference: the
+      # hash line is not masked away.
+      before = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      line = "hash\tchanged\t#{before}  #{HostState::VERSIONLOCK}\t#{before}  #{HostState::VERSIONLOCK}"
+      assert_equal([line], HostState.masked_changes([line]))
+    end
+
+    it "masks run-to-run socket churn before an engine's changes are diffed" do
+      ansible = ["port\tremoved\t/proc/net/udp\t00000000:B80C"]
+      krikri = ["port\tremoved\t/proc/net/udp\t00000000:8B2C"]
+      assert_equal("", HostState.diff(ansible, krikri))
+      # A real listener on a fixed port still shows up as a difference.
+      refute_equal("", HostState.diff(["port\tadded\t/proc/net/udp\t00000000:0035"], [] of String))
+    end
+
+    it "judges a check-mode run on its masked delta, so socket churn is not a mutation" do
+      churn = ["port\tremoved\t/proc/net/udp\t00000000:B80C"]
+      assert_equal([] of String, HostState.masked_changes(churn))
+      real = ["file\tadded\tf\t0\t0\t644\t7\t/tmp/kpg-work/leftover"]
+      assert_equal(real, HostState.masked_changes(real))
+    end
+
     it "snapshots the documented roots and excludes per-host files" do
       script = HostState::SNAPSHOT_SCRIPT
       HostState::ROOTS.each { |root| assert_includes(script, root) }

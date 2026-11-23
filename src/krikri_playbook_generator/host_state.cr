@@ -68,6 +68,12 @@ module KrikriPlaybookGenerator
 
     EXCLUDED_PATHS = %w[/etc/hostname /etc/hosts /etc/resolv.conf /etc/machine-id] + HOME_EXCLUDED
 
+    # The one file whose raw bytes can never match across runs: dnf's versionlock
+    # plugin writes the wall-clock time into it (`# Added lock on <date>`) as well as
+    # the lock itself, so it is hashed with those comment lines stripped (see
+    # SNAPSHOT_TEMPLATE) instead of by the generic scan.
+    VERSIONLOCK = "/etc/dnf/plugins/versionlock.list"
+
     # Transport bookkeeping the SSH connection profile makes each engine
     # write on its own controller: krikri's SSH ControlMaster socket dir
     # under /tmp (matched by `.krikri-playbook-*` in TEMP_PATTERNS but not
@@ -107,12 +113,24 @@ module KrikriPlaybookGenerator
           -printf '%y\t%U\t%G\t%m\t%s\t%p\n' 2>/dev/null
       done | LC_ALL=C sort
       printf '#hashes\n'
-      for root in KPG_ROOTS; do
-        [ -e "$root" ] || continue
-        find "$root" -xdev \( EXCLUDE_PREDICATE \) -prune -o \
-          \( TEMP_PREDICATE \) -prune -o \
-          -type f -size -1048576c -exec sha256sum {} + 2>/dev/null
-      done | LC_ALL=C sort
+      {
+        for root in KPG_ROOTS; do
+          [ -e "$root" ] || continue
+          find "$root" -xdev \( EXCLUDE_PREDICATE \) -prune -o \
+            \( TEMP_PREDICATE \) -prune -o \
+            -path KPG_VERSIONLOCK -prune -o \
+            -type f -size -1048576c -exec sha256sum {} + 2>/dev/null
+        done
+        # dnf's versionlock plugin stamps WHEN it locked each package into the file
+        # itself as a comment (`# Added lock on <date>`), so its raw sha256 differs
+        # on every run at identical content; hash it with every comment line stripped
+        # instead (dnf and dnf5 spell the stamp differently), so a real content
+        # difference - the wrong package locked - still shows up. This is the one
+        # path the generic hash scan above skips.
+        if [ -f KPG_VERSIONLOCK ]; then
+          printf '%s  %s\n' "$(sed '/^[[:space:]]*#/d' KPG_VERSIONLOCK | sha256sum | cut -d' ' -f1)" KPG_VERSIONLOCK
+        fi
+      } | LC_ALL=C sort
       printf '#temps\n'
       for root in KPG_TEMP_ROOTS; do
         [ -e "$root" ] || continue
@@ -133,6 +151,7 @@ module KrikriPlaybookGenerator
     SNAPSHOT_SCRIPT = SNAPSHOT_TEMPLATE
       .gsub("KPG_ROOTS", ROOTS.join(" "))
       .gsub("KPG_TEMP_ROOTS", TEMP_ROOTS.join(" "))
+      .gsub("KPG_VERSIONLOCK", VERSIONLOCK)
       .gsub("EXCLUDE_PREDICATE", EXCLUDE_PREDICATE)
       .gsub("TEMP_PREDICATE", TEMP_PREDICATE)
 
@@ -280,9 +299,26 @@ module KrikriPlaybookGenerator
       leftovers.sort!
     end
 
-    # Unified diff of the two engines' change lists ("" when identical).
+    # Unified diff of the two engines' change lists ("" when identical). Each
+    # side is masked with the same explicit list the printed output uses: a state
+    # line the list clears is run-to-run churn the two hosts cannot share (a
+    # guest service's transient socket, a timestamp a tool writes into a file),
+    # never a krikri gap. This used to bypass ByteDiff.mask, so such a line had no
+    # way to be masked at all and each one came back as a fresh issue.
     def self.diff(ansible_changes : Array(String), krikri_changes : Array(String)) : String
-      ByteDiff.unified(change_text(ansible_changes), change_text(krikri_changes))
+      ByteDiff.unified(masked_change_text(ansible_changes), masked_change_text(krikri_changes))
+    end
+
+    # One engine's change list as masked text.
+    def self.masked_change_text(changes : Array(String)) : String
+      text = change_text(changes)
+      text.empty? ? text : ByteDiff.mask(text)
+    end
+
+    # The same list after masking, as a list: what the check-mode oracle compares
+    # and what a state signature is built from.
+    def self.masked_changes(changes : Array(String)) : Array(String)
+      masked_change_text(changes).split('\n').reject(&.empty?)
     end
 
     # One engine's check-mode delta minus the documented control-side

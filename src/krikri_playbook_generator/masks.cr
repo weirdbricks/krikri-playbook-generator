@@ -157,6 +157,22 @@ module KrikriPlaybookGenerator
         "at different moments, so both numbers can never match; the rest of dnf's " \
         "stdout (the actual package lines) must still match",
       },
+      {
+        Regex.new("^port\\t(?:added|removed)\\t/proc/net/udp\\t00000000:[89A-F][0-9A-F]{3}\\n?", Regex::Options::MULTILINE),
+        "",
+        "the host-state oracle lists the guest's own bound sockets (/proc/net/udp), " \
+        "and systemd's timesyncd SNTP client and the resolver open and close " \
+        "wildcard-bound ephemeral sockets between the two snapshots: each side " \
+        "catches a different four-hex port at the same moment (a control run of real " \
+        "ansible on both hosts diverges on exactly that line), and no engine can own " \
+        "it. Only UDP, only the wildcard address, and only the ephemeral upper half " \
+        "(>= 0x8000). Documented blind spot: a game or VPN daemon that listens on an " \
+        "ephemeral-range wildcard UDP port (WireGuard's 51820, mosh's 60000-61000) " \
+        "and that only one engine leaves running would be masked too - none of the " \
+        "rows that filed this mask were a listener, they were all transient client " \
+        "sockets. The results' own `state_changes` stays raw, so a suspicious mask " \
+        "can still be diagnosed from the evidence",
+      },
     ]
 
     def self.mask(text : String) : String

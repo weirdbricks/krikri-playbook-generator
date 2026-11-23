@@ -463,7 +463,13 @@ checklist before closing the issue.
   sha256 for files under 1 MiB, boot id, package list, enabled units,
   listening ports), and the two before/after DELTAS are diffed — only
   deltas, because the real and krikri images' absolute state differs by
-  construction. A delta mismatch is `state_divergent` with its own
+  construction. Each side is masked through `ByteDiff::MASKS` before it is
+  diffed, so guest churn outside any engine's control (a service's transient
+  wildcard UDP socket) stays out of the oracle, and a check-mode delta is
+  masked the same way before its promise is judged. The one file whose raw
+  bytes can never match, dnf's `versionlock.list` (it embeds `# Added lock on
+  <date>`), is hashed with those comment lines stripped instead of masked, so
+  a real content difference still shows. A delta mismatch is `state_divergent` with its own
   `state_signature` (`state:`-prefixed) and `state_diff`; per engine
   results.jsonl keeps `state_after`, `state_digest` and `state_changes`.
   A check-mode row also records `check_mode_mutated` and

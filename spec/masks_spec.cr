@@ -185,6 +185,22 @@ module KrikriPlaybookGenerator
       assert_equal(text, ByteDiff.mask(text))
     end
 
+    it "drops a guest's transient wildcard ephemeral UDP socket from a state change" do
+      change = "port\tremoved\t/proc/net/udp\t00000000:B80C\n"
+      assert_equal("", ByteDiff.mask(change))
+      assert_equal("", ByteDiff.mask("port\tadded\t/proc/net/udp\t00000000:E798\n"))
+    end
+
+    it "leaves a real listener's socket change alone: fixed port, other address, other protocol" do
+      [
+        "port\tadded\t/proc/net/udp\t00000000:0035\n",
+        "port\tadded\t/proc/net/udp\t0100007F:C1A2\n",
+        "port\tadded\t/proc/net/tcp\t00000000:C1A2\n",
+      ].each { |line| assert_equal(line, ByteDiff.mask(line)) }
+      # udp6 stays out of this mask too (the long-digit-run mask owns its zeros).
+      assert(ByteDiff.mask("port\tadded\t/proc/net/udp6\t0000C0FE00000000FF005450563412FE:C1A2\n").includes?("udp6"))
+    end
+
     it "produces an empty diff for identical text and +/- lines for differences" do
       assert_equal("", ByteDiff.unified("same\nlines\n", "same\nlines\n"))
 
