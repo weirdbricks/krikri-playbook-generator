@@ -502,7 +502,7 @@ module KrikriPlaybookGenerator
     end
 
     # One line per finished comparison, so a long batch shows where it is:
-    #   12:34:56 [runner] comparison 5/12 complete: 000004-file-chaos.yml (check, run 1) (DIVERGENT)
+    #   12:34:56 [runner] 5/12: 000004-file-chaos.yml (check, run 1) (DIVERGENT)
     private def progress(result : PlaybookResult) : PlaybookResult
       done = @completed.add(1) + 1
       verdict = if result.error
@@ -512,7 +512,7 @@ module KrikriPlaybookGenerator
                 else
                   Log.paint(Log::GREEN, "ok")
                 end
-      log("comparison #{done}/#{@planned} complete: " \
+      log("#{done}/#{@planned}: " \
           "#{File.basename(result.playbook)} #{result.context_label} (#{verdict})")
       result
     end
@@ -734,7 +734,7 @@ module KrikriPlaybookGenerator
         env_for: ->(path : String) { play_env(path) },
         on_playbook_done: ->(path : String) {
           done = @completed.add(1) + 1
-          log("comparison #{done}/#{@planned} complete: #{File.basename(path)} " \
+          log("#{done}/#{@planned}: #{File.basename(path)} " \
               "(real, run 1, root, umask #{umask})")
         })
       backend.run_groups(groups).map do |entry|
