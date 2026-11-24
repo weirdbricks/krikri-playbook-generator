@@ -923,18 +923,25 @@ checklist before closing the issue.
   umask 022), accepts `--run-on-podman` (fresh pair per case) and
   `--control`, and refuses the disposable-VM backends with
   `Corpus::BACKEND_HOOK`.
+- `src/krikri_playbook_generator/table.cr` — `Table.render`, the fixed-width
+  box drawing behind the report's batch, finding and rate tables. Cells are
+  single-line by contract (paths, repro commands and diff excerpts print in
+  the numbered footer under the table instead), and there is no ANSI color
+  so padded widths match the piped output krikri-loop captures.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
-  report: divergences grouped by module + mode + run + identity + umask +
-  diff signature (with count, mutations, example playbook and repro
-  command pinning `--user-profile`/`--umask`), the state-only
+  report: the batch line as a one-row table, divergences grouped by module +
+  mode + run + identity + umask + diff signature as one table row each
+  (with count, mutations, example playbook and repro command pinning
+  `--user-profile`/`--umask` in the numbered footer), the state-only
   divergences (state signature, example and the changed state lines),
   the check-mode mutations (engine-labelled signature, example, repro and
   the mutated paths),
   the generator-quality
   section (batch happy-path success rate, per-module failures on real
   ansible with first error line, expected-failure and not-applicable
-  exclusions), and per-module byte-identical rates. `Command::Generate` fuses the
+  exclusions), and per-module byte-identical rates as a table.
+  `Command::Generate` fuses the
   whole pipeline into one call when `--run-on-podman` is passed: after
   building the playbooks (still written to `--out` for later review
   either way), it immediately runs them via `Runner` with

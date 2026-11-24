@@ -348,16 +348,18 @@ recorded as an errored result and the batch continues instead of
 aborting) and optionally `--engine-timeout N` (per-engine seconds; a hung
 engine is recorded with rc 124). The report has three sections:
 
-- **Divergences** — grouped by module + diff signature, one line per
-  root cause with its count, the example playbook and a copy-paste repro
-  command (`krikri-playbook-generator run <playbook.yml> --run-on-podman
-  ...` — `run` accepts a single playbook file path).
+- **Divergences** — a table with one row per root cause (module, mode,
+  run, identity, umask, host count, diff signature and playbook count),
+  and a numbered footer under it with the example playbook and a
+  copy-paste repro command (`krikri-playbook-generator run
+  <playbook.yml> --run-on-podman ...` — `run` accepts a single playbook
+  file path).
 - **Generator quality** — the batch happy-path success rate (how many
   generated happy-path playbooks real ansible actually ran), per module how
   many failed on real ansible (wasted coverage) and the first error line,
   plus the modules excluded as intentionally failing or `not_applicable`.
-- **Per-module byte-identical rate** — masked-comparison identical/total
-  per module.
+- **Per-module byte-identical rate** — a table of masked-comparison
+  identical/total per module.
 
 ### Re-fuzzing after a fix
 

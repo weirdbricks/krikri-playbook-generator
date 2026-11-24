@@ -452,26 +452,47 @@ module KrikriPlaybookGenerator
 
   # The cost of the mode matrix and the second-run pass is part of the
   # result: a 4x batch that finds nothing is a different decision from a
-  # 2x one.
+  # 2x one. One table row, so the batch's own fields line up with the
+  # divergence tables below instead of a pipe-separated line.
   private def self.print_batch_info(triage : Triage) : Nil
     info = triage.batch_info
-    modes = info[:modes].empty? ? "unknown" : info[:modes].join(",")
-    duration = info[:duration] || "unknown"
+    headers = ["modes", "idempotency", "wall time"]
+    headers << "reference cores" unless info[:cores].empty?
+    row = [info[:modes].empty? ? "unknown" : info[:modes].join(","),
+           info[:second_run] ? "on" : "off", info[:duration] || "unknown"]
+    row << info[:cores].join(",") unless info[:cores].empty?
     puts "== Batch =="
-    line = "modes: #{modes} | idempotency pass: #{info[:second_run] ? "on" : "off"} | wall time: #{duration}"
-    line += " | reference cores: #{info[:cores].join(",")}" unless info[:cores].empty?
-    puts line
+    puts Table.render(headers, [row])
   end
 
-  # (mode, run, identity, umask, host count, signature label) for one
-  # finding's example; the host count only shows when it is not the default.
-  private def self.finding_context(example : Triage::ResultLine, label : String) : String
-    context = "#{example.mode}, run #{example.run}, #{example.user}, umask #{example.umask}"
-    context += ", hosts #{example.hosts}" unless example.hosts == 1
-    unless example.core_version == KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
-      context += ", core #{example.core_version}"
+  # A finding's example carries these fields; the core column only appears
+  # when some example was measured against a non-default reference, so the
+  # common single-core run keeps the table narrow.
+  private def self.non_default_core?(example : Triage::ResultLine) : Bool
+    example.core_version != KrikriPlaybookGenerator::DEFAULT_ANSIBLE_CORE_VERSION
+  end
+
+  # The one table shape all three finding sections share (output, state,
+  # check-mode); only the signature column's name differs. A state or
+  # check-mode signature carries its section's kind as a prefix, which the
+  # column name already says, so the cell shows just the hash.
+  private def self.print_finding_table(findings : Array(Triage::Finding), signature_header : String,
+                                       signature_prefix : String? = nil) : Nil
+    show_core = findings.any? { |finding| non_default_core?(finding.example) }
+    headers = ["#", "module", "mode", "run", "user", "umask", "hosts"]
+    headers << "core" if show_core
+    headers << signature_header << "# of playbooks"
+    rows = findings.map_with_index do |finding, index|
+      example = finding.example
+      row = [(index + 1).to_s, finding.module_name, example.mode, example.run.to_s,
+             example.user, example.umask, example.hosts.to_s]
+      row << example.core_version if show_core
+      signature = finding.signature || "no signature"
+      signature = signature.lchop(signature_prefix) if signature_prefix
+      row << signature << finding.count.to_s
+      row
     end
-    "(#{context}, #{label})"
+    puts Table.render(headers, rows, right_align: ["run", "hosts", "# of playbooks"])
   end
 
   private def self.print_divergences(findings : Array(Triage::Finding), diff : Bool = true) : Nil
@@ -481,17 +502,17 @@ module KrikriPlaybookGenerator
       return
     end
 
-    findings.each do |finding|
-      label = finding.signature ? "signature #{finding.signature}" : "no signature"
+    print_finding_table(findings, "signature")
+    findings.each_with_index do |finding, index|
+      key = "[#{index + 1}]"
       example = finding.example
-      puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} divergent playbook(s)"
-      puts "  core versions: #{finding.core_versions.join(", ")}" if finding.core_versions.size > 1
+      puts "  #{key} example: #{finding.playbooks.first}"
+      puts "  #{key} module: #{example.library_source}" if example.library_source
+      puts "  #{key} repro: #{finding_repro(finding, example, diff)}"
       unless finding.example_mutations.empty?
-        puts "  mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
+        puts "  #{key} mutations: #{finding.example_mutations.map { |mutation| "#{mutation.kind} #{mutation.option}" }.join(", ")}"
       end
-      puts "  example: #{finding.playbooks.first}"
-      puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{finding_repro(finding, example, diff)}"
+      puts "  #{key} core versions: #{finding.core_versions.join(", ")}" if finding.core_versions.size > 1
     end
   end
 
@@ -511,43 +532,42 @@ module KrikriPlaybookGenerator
     return if findings.empty?
 
     puts "== State divergences (same printed result, different host state) =="
-    findings.each do |finding|
-      label = finding.signature ? "state signature #{finding.signature}" : "no signature"
+    print_finding_table(findings, "state signature", "state:")
+    findings.each_with_index do |finding, index|
+      key = "[#{index + 1}]"
       example = finding.example
-      puts "#{finding.module_name} #{finding_context(example, label)}: #{finding.count} state-only playbook(s)"
-      puts "  example: #{example.playbook}"
-      puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{finding_repro(finding, example, diff)}"
+      puts "  #{key} example: #{example.playbook}"
+      puts "  #{key} module: #{example.library_source}" if example.library_source
+      puts "  #{key} repro: #{finding_repro(finding, example, diff)}"
       print_state_diff(example.state_diff)
       unless example.leftover_temps.empty?
-        puts "  leftover staging files:"
-        example.leftover_temps.lines.first(10).each { |line| puts "    #{line}" }
-        puts "    ... #{example.leftover_temps.lines.size - 10} more line(s)" if example.leftover_temps.lines.size > 10
+        puts "  #{key} leftover staging files:"
+        example.leftover_temps.lines.first(10).each { |line| puts "      #{line}" }
+        puts "      ... #{example.leftover_temps.lines.size - 10} more line(s)" if example.leftover_temps.lines.size > 10
       end
     end
   end
 
   private def self.print_state_diff(diff : String) : Nil
     changed = diff.lines.select { |line| line.starts_with?('-') || line.starts_with?('+') }
-    changed.first(10).each { |line| puts "  #{line}" }
-    puts "  ... #{changed.size - 10} more changed line(s)" if changed.size > 10
+    changed.first(10).each { |line| puts "      #{line}" }
+    puts "      ... #{changed.size - 10} more changed line(s)" if changed.size > 10
   end
 
   private def self.print_check_mode_mutations(findings : Array(Triage::Finding), diff : Bool = true) : Nil
     return if findings.empty?
 
     puts "== Check-mode mutations (--check changed the host) =="
-    findings.each do |finding|
-      label = finding.signature ? "check-mode signature #{finding.signature}" : "no signature"
+    print_finding_table(findings, "check-mode signature", "check-mode:")
+    findings.each_with_index do |finding, index|
+      key = "[#{index + 1}]"
       example = finding.example
-      puts "#{finding.module_name} #{finding_context(example, label)}: " \
-           "#{finding.count} playbook(s) mutated the host in check mode"
-      puts "  example: #{example.playbook}"
-      puts "  module: #{example.library_source}" if example.library_source
-      puts "  repro: #{finding_repro(finding, example, diff)}"
+      puts "  #{key} example: #{example.playbook}"
+      puts "  #{key} module: #{example.library_source}" if example.library_source
+      puts "  #{key} repro: #{finding_repro(finding, example, diff)}"
       lines = example.check_mode_diff.lines
-      lines.first(10).each { |line| puts "  #{line}" }
-      puts "  ... #{lines.size - 10} more line(s)" if lines.size > 10
+      lines.first(10).each { |line| puts "      #{line}" }
+      puts "      ... #{lines.size - 10} more line(s)" if lines.size > 10
     end
   end
 
@@ -579,9 +599,8 @@ module KrikriPlaybookGenerator
 
   private def self.print_rates(rates : Array(Triage::Rate)) : Nil
     puts "== Per-module byte-identical rate (masked comparison) =="
-    rates.each do |rate|
-      puts "#{rate.label}: #{rate.identical}/#{rate.total} byte-identical"
-    end
+    rows = rates.map { |rate| [rate.label, rate.identical.to_s, rate.total.to_s] }
+    puts Table.render(["module", "identical", "total"], rows, right_align: ["identical", "total"])
   end
 end
 
