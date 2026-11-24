@@ -244,19 +244,6 @@ module KrikriPlaybookGenerator
       mutated.mutations.each { |(name, _)| refute(mutated.choice_sources.has_key?(name)) }
     end
 
-    it "never asks zfs to destroy state in a happy path" do
-      schema = SchemaScanner.new(["community.general.zfs"]).scan.first
-      Generator.new(7, 0.0).generate(schema, 30).each do |task|
-        # origin switches the module to `zfs clone`, which needs an existing
-        # snapshot - a random word just makes real ansible fail the task.
-        refute(task.args.has_key?("origin"), "zfs happy path set origin: #{task.args}")
-        next unless state = task.args["state"]?
-
-        assert_equal("present", state.as_s, "zfs happy path destroy: #{task.args}")
-        assert_equal(ChoiceSource::Constructive, task.choice_sources["state"])
-      end
-    end
-
     it "points path-typed options at pre-seeded fixture or work paths only" do
       Generator.new(3, 0.0).generate(copy_schema, 30).each do |task|
         src = task.args["src"]?

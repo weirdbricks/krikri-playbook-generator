@@ -691,7 +691,7 @@ checklist before closing the issue.
   runner is injectable as a `Proc` so the spec can fake it.
 - `src/krikri_playbook_generator/microvm_backend.cr` — `MicrovmBackend`.
   **Implemented**: the local KVM backend for modules a plain container
-  cannot host (db, docker/podman, zfs/snap/rabbitmq/libvirt/nsupdate,
+  cannot host (db, docker/podman, libvirt/nsupdate,
   firewalld/SELinux). It bakes ONE golden per OS — Ubuntu 24.04 minimal
   and Rocky 10 cloud images — keyed by the dependency table's package
   union plus the profile prep (`fingerprint`), installs the pinned
@@ -719,12 +719,7 @@ checklist before closing the issue.
   routes a batch here per playbook (`MicrovmBackend.microvm_only?`) and
   keeps everything else on podman; `--run-on-microvm` forces it for the
   whole batch. A golden without its `.ok` marker is discarded and re-baked
-  (a bake that died leaves the file behind). The verify boot also imports
-  the golden's zfs pool: its backing file lives under `/var/lib/kpg-zfs`,
-  never `/tmp` (Ubuntu's tmpfiles rule empties that at every boot, which
-  silently wiped the pool and made every zfs happy path fail on real
-  ansible). A pool the bake never created only warns, so the rest of the
-  profile still works. Missing optional packages
+  (a bake that died leaves the file behind). Missing optional packages
   warn instead of failing the bake, so one bad entry cannot cost the whole
   profile; a bake whose installs leave the root at 95% or more raises a
   disk-full error instead of letting the missing pip3 surface as a cryptic

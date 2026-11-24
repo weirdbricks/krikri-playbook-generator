@@ -15,7 +15,7 @@ module KrikriPlaybookGenerator
     end
 
     it "marks only modules that need a service or kernel as microvm-only" do
-      %w[mysql_db docker_container podman_image zfs snap rabbitmq_user nsupdate
+      %w[mysql_db docker_container podman_image nsupdate
         virt_net firewalld selinux current_container_facts].each do |name|
         assert(MicrovmBackend.microvm_only?([name]), "#{name} should be routed to microvm")
       end
@@ -177,14 +177,7 @@ module KrikriPlaybookGenerator
 
     it "keeps the two golden profiles within one prep script each" do
       assert_includes(MicrovmBackend.prep_for("ubuntu"), "postgresql")
-      assert_includes(MicrovmBackend.prep_for("ubuntu"), "zpool")
       assert_includes(MicrovmBackend.prep_for("rocky"), "firewalld")
-    end
-
-    it "keeps the zfs pool's backing file out of /tmp, which empties on boot" do
-      prep = MicrovmBackend.prep_for("ubuntu")
-      refute_includes(prep, "/tmp/kpg-zfs")
-      assert_includes(prep, "/var/lib/kpg-zfs/pool.img")
     end
   end
 end

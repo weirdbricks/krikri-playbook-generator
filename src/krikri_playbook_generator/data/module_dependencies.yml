@@ -45,7 +45,6 @@ collection_pins:
   community.general: "12.5.0"
   community.mysql: "5.0.2"
   community.postgresql: "4.2.0"
-  community.rabbitmq: "1.6.0"
   containers.podman: "1.17.0"
 
 supported: []
@@ -195,12 +194,6 @@ community.general.htpasswd:
     rpm_packages: [httpd-tools]
   real:
     collections: [community.general]
-community.general.java_cert:
-  both:
-    debian_packages: [default-jre-headless]
-    rpm_packages: [java-17-openjdk-headless]
-  real:
-    collections: [community.general]
 community.general.kernel_blacklist:
   both:
     debian_packages: [kmod]
@@ -280,11 +273,6 @@ community.general.seport:
     rpm_packages: [policycoreutils-python-utils, python3-libselinux]
   real:
     collections: [community.general]
-community.general.snap:
-  both:
-    debian_packages: [snapd]
-  real:
-    collections: [community.general]
 community.general.timezone:
   both:
     debian_packages: [tzdata]
@@ -308,11 +296,6 @@ community.general.yum_versionlock:
     collections: [community.general]
   krikri:
     rpm_packages: [python3-dnf-plugin-versionlock]
-community.general.zfs:
-  both:
-    debian_packages: [zfsutils-linux]
-  real:
-    collections: [community.general]
 
 ansible.mysql.mysql_db:
   real:
@@ -392,19 +375,6 @@ community.postgresql.postgresql_user:
     collections: [community.postgresql]
   both:
     debian_packages: [postgresql-client]
-
-community.rabbitmq.rabbitmq_plugin:
-  real:
-    debian_packages: [python3-pika]
-    collections: [community.rabbitmq]
-  both:
-    debian_packages: [rabbitmq-server]
-community.rabbitmq.rabbitmq_user:
-  real:
-    debian_packages: [python3-pika]
-    collections: [community.rabbitmq]
-  both:
-    debian_packages: [rabbitmq-server]
 
 community.crypto.openssl_privatekey:
   real:

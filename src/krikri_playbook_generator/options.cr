@@ -194,7 +194,7 @@ module KrikriPlaybookGenerator
         dsl.on("--run-on-podman", "run both engines inside throwaway podman containers instead of locally (requires podman)") { opts.run_on_podman = true }
         dsl.on("--run-on-atlantic", "run both engines on disposable Atlantic.net VMs, one per module profile (real mutation, no --check)") { opts.run_on_atlantic = true }
         dsl.on("--run-on-microvm", "run each playbook in a fresh local KVM microVM pair (requires qemu-system-x86_64 and /dev/kvm)") { opts.run_on_microvm = true }
-        dsl.on("--run-on-mixed", "podman for the playbooks its containers can host, microVM for the ones needing a service/kernel (db, docker, zfs, firewalld, selinux)") { opts.run_on_mixed = true }
+        dsl.on("--run-on-mixed", "podman for the playbooks its containers can host, microVM for the ones needing a service/kernel (db, docker, libvirt, firewalld, selinux)") { opts.run_on_mixed = true }
         dsl.on("--microvm-dir DIR", "state dir for the microvm goldens, cloud images and run records (default: ~/.local/share/krikri-playbook-generator/microvm)") { |v| opts.microvm_dir = expand_path(v) }
         dsl.on("--microvm-parallel N", "run N playbooks at once on microvm, each in its own VM pair (default: 1)") { |v| opts.microvm_parallel = parse_int(v, "--microvm-parallel") }
         dsl.on("--control", "noise check: run real ansible on both sides (podman only); every divergence is a missing mask or harness gap") { opts.control = true }

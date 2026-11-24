@@ -97,10 +97,6 @@ module KrikriPlaybookGenerator
       "docker_network_info" => "containers",
       "docker_compose_v2"   => "containers",
       "podman_image"        => "containers",
-      "zfs"                 => "misc",
-      "snap"                => "misc",
-      "rabbitmq_plugin"     => "misc",
-      "rabbitmq_user"       => "misc",
       "virt_net"            => "misc",
       "nsupdate"            => "misc",
     }
@@ -145,23 +141,11 @@ module KrikriPlaybookGenerator
           PREP
       ),
       "misc" => Profile.new(
-        # Ubuntu, not Debian 13: the Debian image's running kernel has no
-        # matching headers in the current repo (6.12.43 installed vs
-        # 6.12.107+ in the pool), so zfs-dkms can never build; Ubuntu 24.04
-        # ships the zfs module in its stock linux-modules-extra. Its glibc
-        # (2.39) still satisfies the binary's 2.38 maximum.
+        # Ubuntu, not Debian 13: its glibc (2.39) still satisfies the
+        # binary's 2.38 maximum.
         image: IMAGE_UBUNTU,
-        packages: "zfsutils-linux linux-modules-extra-$(uname -r) snapd rabbitmq-server python3-pika libvirt-daemon-system libvirt-clients python3-libvirt bind9 python3-dnspython",
+        packages: "libvirt-daemon-system libvirt-clients python3-libvirt bind9 python3-dnspython",
         prep: <<-PREP
-          depmod -a
-          modprobe zfs
-          if ! zpool list kpgpool >/dev/null 2>&1; then
-            mkdir -p /tmp/kpg-zfs
-            truncate -s 128M /tmp/kpg-zfs/pool.img
-            zpool create -f kpgpool /tmp/kpg-zfs/pool.img
-          fi
-          systemctl enable --now snapd.socket
-          systemctl enable --now rabbitmq-server
           systemctl enable --now libvirtd
           cat > /etc/bind/named.conf.local <<'KPG_BIND_EOF'
           zone "kpg-test.zone" {
@@ -502,8 +486,7 @@ module KrikriPlaybookGenerator
     private def prep_vm(vm : Vm, profile : String, spec : Profile) : Nil
       # one failed package must not blank out the whole profile's set: the
       # original single apt line died wholesale on the first unavailable
-      # package (zfsutils-linux without contrib), leaving rabbitmq/bind/
-      # libvirt uninstalled too
+      # package, leaving bind/libvirt uninstalled too
       installs = spec.packages.split.map do |pkg|
         "(apt-get install -y -qq --no-install-recommends #{pkg} >/dev/null 2>&1 || " \
         "dnf install -y -q #{pkg} >/dev/null 2>&1 || echo PREP_PKG_FAIL #{pkg})"
@@ -530,13 +513,6 @@ module KrikriPlaybookGenerator
         if command -v apt-get >/dev/null; then
           rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
           dpkg --configure -a
-          # zfsutils-linux lives in contrib on Debian; deb822 (debian.sources)
-          # and classic sources.list both need the component added. Ubuntu
-          # has no contrib - leave its sources alone.
-          if grep -qi debian /etc/os-release; then
-            sed -i 's/^Components:.*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
-            sed -i 's/main non-free-firmware/main contrib non-free non-free-firmware/' /etc/apt/sources.list 2>/dev/null || true
-          fi
           apt-get update -qq
           apt-get install -y -qq python3 python3-pip rsync sudo >/dev/null
           pip3 install --quiet --break-system-packages #{ANSIBLE_CORE_PIN}

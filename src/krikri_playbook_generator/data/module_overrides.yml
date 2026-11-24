@@ -830,27 +830,6 @@ modules:
     executable: {kind: literal_pool, pool: ["podman"]}
     always: [name]
 
-  zfs:
-    name: {kind: literal_pool, pool: ["kpgpool/kpgds", "kpgpool/kpgds2"]}
-    origin: {exclude: true}
-    always: [name]
-
-  snap:
-    name: {kind: literal_pool, pool: ["core20"]}
-    classic: {kind: literal_pool, pool: ["false"]}
-    always: [name]
-
-  rabbitmq_plugin:
-    new_only: {kind: literal_pool, pool: ["true"]}
-    prefix: {kind: literal_pool, pool: ["rabbitmq_"]}
-    always: [name]
-
-  rabbitmq_user:
-    password: {kind: literal_pool, pool: ["kpg-pass-1", "kpg-pass-2"]}
-    tags: {kind: literal_pool, pool: ["kpg-tag"]}
-    vhost: {kind: literal_pool, pool: ["/"]}
-    always: [name, password]
-
   virt_net:
     name: {kind: literal_pool, pool: ["kpgnet"]}
     command: {kind: literal_pool, pool: ["define"]}

@@ -17,7 +17,7 @@ module KrikriPlaybookGenerator
   # a real kernel module or a cloud server.
   #
   # The module profile that the podman path cannot host (mariadb, postgres,
-  # docker, podman, zfs, snap, rabbitmq, libvirt, bind, firewalld, selinux)
+  # docker, podman, libvirt, bind, firewalld, selinux)
   # becomes the golden image's own state: one Ubuntu 24.04 and one Rocky 9
   # golden, baked once per dependency fingerprint, with the profile's
   # packages installed and its services prepared. Every playbook then boots
@@ -66,7 +66,7 @@ module KrikriPlaybookGenerator
     BAKE_LOCK_WAIT_SECS = 3600
 
     # Ubuntu's minimal cloud image has a 2.4G root. The ubuntu profile below
-    # (docker, mariadb, postgresql, zfs, snapd, rabbitmq, libvirt, bind,
+    # (docker, mariadb, postgresql, libvirt, bind,
     # nodejs) needs more than it: the bake used to fill the disk alphabetically,
     # so every package from gcc on failed as KPG_PKG_FAIL (pip3 included) and
     # the only visible error was "pip3: command not found". The golden's disk
@@ -92,9 +92,7 @@ module KrikriPlaybookGenerator
     }
 
     # Modules that need rpm tooling or an SELinux-enabled kernel: no Debian
-    # or Ubuntu golden can host them. Everything else runs on Ubuntu (zfs
-    # included - Debian 13's shipping kernel has no matching zfs-dkms
-    # headers, the same reason the Atlantic misc profile is Ubuntu).
+    # or Ubuntu golden can host them. Everything else runs on Ubuntu.
     # Modules whose happy path needs a service daemon, a kernel module or a
     # container runtime: podman's plain containers cannot host them, so the
     # mixed backend routes their playbooks here. The RPM family is
@@ -105,7 +103,7 @@ module KrikriPlaybookGenerator
       "docker_container", "docker_image", "docker_image_build", "docker_login",
       "docker_network", "docker_network_info", "docker_compose_v2",
       "podman_container", "podman_image", "current_container_facts",
-      "zfs", "snap", "rabbitmq_plugin", "rabbitmq_user", "virt_net", "nsupdate",
+      "virt_net", "nsupdate",
       "firewalld", "firewalld_info", "selinux", "seboolean", "sefcontext", "seport",
     }
 
@@ -113,7 +111,6 @@ module KrikriPlaybookGenerator
       "ubuntu" => %w[
         mariadb-server python3-pymysql postgresql python3-psycopg2
         docker.io podman python3-docker iptables docker-compose-v2
-        zfsutils-linux snapd rabbitmq-server python3-pika
         libvirt-daemon-system libvirt-clients python3-libvirt bind9 python3-dnspython
       ],
       "rocky" => %w[
@@ -135,24 +132,6 @@ module KrikriPlaybookGenerator
       systemctl enable --now docker 2>/dev/null || true
       docker pull alpine:3.20 >/dev/null 2>&1 || true
       docker pull busybox:latest >/dev/null 2>&1 || true
-      # The minimal cloud image ships no kernel modules outside its own
-      # set; zfs needs the matching linux-modules-extra (the same reason the
-      # Atlantic misc profile uses Ubuntu), and $(uname -r) is safe here
-      # because prep runs in the guest's shell.
-      apt-get install -y -qq --no-install-recommends "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
-      depmod -a 2>/dev/null || true
-      modprobe zfs 2>/dev/null || true
-      # Not under /tmp: Ubuntu's tmpfiles rule empties /tmp at every boot,
-      # so the pool's backing file vanished and every overlay boot failed its
-      # import (zfs then reports the confusing "missing pool name").
-      if command -v zpool >/dev/null 2>&1 && ! zpool list kpgpool >/dev/null 2>&1; then
-        mkdir -p /var/lib/kpg-zfs
-        truncate -s 128M /var/lib/kpg-zfs/pool.img
-        zpool create -f kpgpool /var/lib/kpg-zfs/pool.img >/dev/null 2>&1 || true
-      fi
-      systemctl enable zfs-import-cache 2>/dev/null || true
-      systemctl enable --now snapd.socket 2>/dev/null || true
-      systemctl enable --now rabbitmq-server 2>/dev/null || true
       systemctl enable --now libvirtd 2>/dev/null || true
       cat > /etc/bind/named.conf.local <<'KPG_BIND_EOF'
       zone "kpg-test.zone" {
@@ -619,13 +598,11 @@ module KrikriPlaybookGenerator
 
       seed = write_seed("bake-#{profile.os}", profile.os, "kpg-bake-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-bake-#{profile.os}", BAKE_ADDR, File.join(work_dir, "bake"))
-      pool = false
       begin
         wait_ssh(vm, bake_secs)
         install_golden_packages(vm, profile)
         run_prep(vm, profile)
         seed_fixtures(vm)
-        pool = run_script(vm, "zpool list -H kpgpool 2>/dev/null", 60.0).rc == 0
         stop_vm(vm)
       rescue e
         stop_vm(vm) rescue nil
@@ -633,37 +610,20 @@ module KrikriPlaybookGenerator
         raise e
       end
 
-      verify_gold(gold, profile, pool)
+      verify_gold(gold, profile)
       File.write(MicrovmBackend.baked_marker(gold), "ok\n")
     end
 
     # A golden that has never booted is not trusted: a bake that died leaves
     # the file behind, and booting it would fail every playbook of the run.
-    private def verify_gold(gold : String, profile : Profile, pool_expected : Bool) : Nil
+    private def verify_gold(gold : String, profile : Profile) : Nil
       seed = write_seed("verify-#{profile.os}", profile.os, "kpg-verify-#{profile.os}-#{Time.utc.to_unix_ms}")
       vm = boot(gold, seed, "kpg-verify-#{profile.os}", BAKE_ADDR, File.join(work_dir, "verify"))
       begin
         wait_ssh(vm, boot_secs)
         assert_ansible_version(vm)
-        assert_zfs_pool(vm, profile, pool_expected)
       ensure
         stop_vm(vm) rescue nil
-      end
-    end
-
-    # The pool must survive the bake's reboot, or every zfs happy path is
-    # wasted. A pool that never got created is a softer failure (the rest of
-    # the profile still works), so it only warns.
-    private def assert_zfs_pool(vm : Vm, profile : Profile, expected : Bool) : Nil
-      return unless run_script(vm, "command -v zpool", 60.0).rc == 0
-      imported = run_script(vm, "zpool list -H kpgpool 2>/dev/null", 60.0).rc == 0
-      if expected && !imported
-        raise MicrovmProvisionError.new(
-          "the zfs pool did not import on boot on the #{profile.os} golden - " \
-          "its backing file must live outside /tmp (see UBUNTU_PREP)")
-      end
-      unless expected || imported
-        Log.info("microvm", "warning: golden #{profile.os}: no zfs pool to import; zfs happy paths stay unscorable")
       end
     end
 

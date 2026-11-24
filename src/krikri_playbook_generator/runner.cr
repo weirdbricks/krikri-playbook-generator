@@ -51,7 +51,7 @@ module KrikriPlaybookGenerator
   #   - `PodmanBackend`, which is where byte-parity claims actually hold.
   # - **Atlantic.net** (opt-in via `--run-on-atlantic`) - `AtlanticBackend`,
   #   one disposable VM per module profile, for the modules that need a real
-  #   service or kernel (packages, databases, containers, zfs, ...).
+  #   service or kernel (packages, databases, containers, ...).
   #
   # With `keep_going: true` a per-playbook failure (e.g. a podman error
   # mid-batch) is recorded as an errored result and the batch continues;
