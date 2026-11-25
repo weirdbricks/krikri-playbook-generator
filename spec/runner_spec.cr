@@ -60,6 +60,16 @@ module KrikriPlaybookGenerator
       assert_nil(result.signature)
     end
 
+    it "leaves the identity and umask out of the context label when they are the defaults" do
+      recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
+      plain = Runner::PlaybookResult.new("p.yml", engine_run(recap), engine_run(recap), nil)
+      assert_equal("(real, run 1)", plain.context_label)
+
+      nondefault = Runner::PlaybookResult.new("p.yml", engine_run(recap), engine_run(recap), nil,
+        mode: RunMode::Check, user: UserProfile::Nonroot, umask: "002")
+      assert_equal("(check, run 1, nonroot, umask 002)", nondefault.context_label)
+    end
+
     it "records a module real ansible cannot load as an error, not a divergence" do
       recap = Runner::Recap.new(1, 0, 0, 0, 0, 0)
       missing = "[ERROR]: couldn't resolve module/action 'community.docker.docker_image'. This often indicates a misspelling"

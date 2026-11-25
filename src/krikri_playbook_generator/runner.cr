@@ -144,12 +144,14 @@ module KrikriPlaybookGenerator
       # (`--reference-core-version`); the krikri side stays at its target.
       getter core_version : String
 
-      # "(check, run 1, nonroot, umask 022)" - one row's matrix point; the
-      # host count and limit are appended only when they are not the
-      # default, so a plain batch's log lines stay as they were. A
-      # reference core other than the default is always named.
+      # "(check, run 1, nonroot, umask 002)" - one row's matrix point; every
+      # axis at its default (root identity, umask 022, one host, no limit,
+      # local connection, debian image, the default reference core) is left
+      # out, so a plain batch's rows stay as short as "(check, run 1)".
       def context_label : String
-        label = "(#{mode.label}, run #{run}, #{user.label}, umask #{umask}"
+        label = "(#{mode.label}, run #{run}"
+        label += ", #{user.label}" unless user.root?
+        label += ", umask #{umask}" unless umask == DEFAULT_UMASK
         label += ", hosts #{hosts}" unless hosts == 1
         label += ", limit #{limit}" unless limit == "off"
         label += ", #{connection}" unless connection == "local"
@@ -734,8 +736,8 @@ module KrikriPlaybookGenerator
         env_for: ->(path : String) { play_env(path) },
         on_playbook_done: ->(path : String) {
           done = @completed.add(1) + 1
-          log("#{done}/#{@planned}: #{File.basename(path)} " \
-              "(real, run 1, root, umask #{umask})")
+          umask_axis = umask == DEFAULT_UMASK ? "" : ", umask #{umask}"
+          log("#{done}/#{@planned}: #{File.basename(path)} (real, run 1#{umask_axis})")
         })
       backend.run_groups(groups).map do |entry|
         meta = load_meta(entry[:playbook])

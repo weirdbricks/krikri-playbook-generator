@@ -501,7 +501,10 @@ checklist before closing the issue.
   compared once per identity, umask and host count (`--user-profile`,
   `--umask`, `--hosts`): each row gets its own fresh host/pair and records
   `user`, `umask` and `hosts` in results.jsonl, and the context is part of
-  the progress/summary labels; local rows are always the invoking account
+  the progress/summary labels - with every axis left at its default (root,
+  umask 022, one host, no limit, local connection, debian image, the
+  default reference core) omitted, so a plain row logs `(check, run 1)`;
+  local rows are always the invoking account
   and Atlantic rows are always root. The transport axis (`--connection
   local|ssh|both|ssh-cli|ssh-hostport|ssh-env-key|ssh-env-user`) runs the
   same playbook over the local connection and/or an sshd inside the row's
