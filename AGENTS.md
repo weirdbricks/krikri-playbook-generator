@@ -918,11 +918,13 @@ checklist before closing the issue.
   umask 022), accepts `--run-on-podman` (fresh pair per case) and
   `--control`, and refuses the disposable-VM backends with
   `Corpus::BACKEND_HOOK`.
-- `src/krikri_playbook_generator/table.cr` — `Table.render`, the fixed-width
-  box drawing behind the report's batch, finding and rate tables. Cells are
-  single-line by contract (paths, repro commands and diff excerpts print in
-  the numbered footer under the table instead), and there is no ANSI color
-  so padded widths match the piped output krikri-loop captures.
+- `src/krikri_playbook_generator/table.cr` — `Table.render`, the Tablo table
+  behind the report's batch, finding and rate tables. Cells are single-line
+  by contract (paths, repro commands and diff excerpts print in the numbered
+  footer under the table instead). Column widths come from the unstyled
+  cells, so the green `Color` styling (`color.cr`) applies only for a
+  terminal or a `KRIKRI_FORCE_COLOR=1` loop pipe, and a captured report
+  stays plain text.
 - `src/krikri_playbook_generator.cr` — entrypoint, dispatches on
   `Options.parse(ARGV).command`. `Command::Report` prints the full
   report: the batch line as a one-row table, divergences grouped by module +

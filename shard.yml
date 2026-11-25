@@ -1,11 +1,16 @@
 name: krikri-playbook-generator
-version: 0.0.16
+version: 0.0.17
 crystal: ">= 1.20.0"
 license: MIT
 
 targets:
   krikri-playbook-generator:
     main: src/krikri_playbook_generator.cr
+
+dependencies:
+  tablo:
+    github: hutou/tablo
+    version: "~> 1.1.0"
 
 development_dependencies:
   ameba:

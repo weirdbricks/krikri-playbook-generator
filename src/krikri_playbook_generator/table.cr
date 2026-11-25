@@ -1,42 +1,33 @@
+require "./color"
+require "tablo"
+
 module KrikriPlaybookGenerator
-  # Fixed-width box drawing for the human report. Every cell is single-line
-  # by contract: paths, repro commands and diff excerpts are too wide to pad
-  # and would defeat the alignment the table exists for, so the report
-  # prints them in the numbered footer under the table instead.
-  #
-  # Deliberately no ANSI color: the report is piped by krikri-loop, and
-  # padding computed over escape sequences lines up in a terminal but not in
-  # the captured text.
+  # Fixed-width box drawing for the human report, green like the other krikri
+  # tools' tables. Every cell is single-line by contract: paths, repro
+  # commands and diff excerpts are too wide to pad and would defeat the
+  # alignment the table exists for, so the report prints them in the
+  # numbered footer under the table instead.
   module Table
     def self.render(headers : Array(String), rows : Array(Array(String)),
                     right_align : Array(String) = [] of String) : String
-      right = headers.map { |header| right_align.includes?(header) }
-      widths = headers.map_with_index do |header, column|
-        rows.reduce(header.size) do |width, row|
-          value = row[column]? || ""
-          value.size > width ? value.size : width
-        end
+      styler = ->(cell : String) { Color.paint(cell, Color::GREEN, STDOUT) }
+      # Tablo drops every styler unless its own stdout is a terminal, which a
+      # loop-piped report is not: its width math already runs on the unstyled
+      # cells, so color is safe to keep whenever Color.enabled? says so.
+      allow_stylers = Tablo::Config.styler_tty_only?
+      Tablo::Config.styler_tty_only = false if Color.enabled?(STDOUT)
+      begin
+        Tablo::Table.new(rows, border: Tablo::Border.new(Tablo::Border::PreSet::Modern)) do |table|
+          headers.each_with_index do |header, col|
+            width = ([header] + rows.map { |row| row[col]? || "" }).max_of(&.size)
+            align = right_align.includes?(header) ? Tablo::Justify::Right : Tablo::Justify::Left
+            table.add_column(header, width: width, body_alignment: align,
+              body_styler: styler, header_styler: styler) { |row| row[col]? || "" }
+          end
+        end.to_s
+      ensure
+        Tablo::Config.styler_tty_only = allow_stylers
       end
-
-      lines = [] of String
-      lines << border("┌", "┬", "┐", widths)
-      lines << cells(headers, widths, Array(Bool).new(headers.size, false))
-      lines << border("├", "┼", "┤", widths)
-      rows.each { |row| lines << cells(row, widths, right) }
-      lines << border("└", "┴", "┘", widths)
-      lines.join("\n")
-    end
-
-    private def self.border(left : String, middle : String, right : String, widths : Array(Int32)) : String
-      left + widths.map { |width| "─" * (width + 2) }.join(middle) + right
-    end
-
-    private def self.cells(values : Array(String), widths : Array(Int32), right : Array(Bool)) : String
-      padding = widths.map_with_index do |width, column|
-        value = values[column]? || ""
-        right[column] ? value.rjust(width) : value.ljust(width)
-      end
-      "│ #{padding.join(" │ ")} │"
     end
   end
 end

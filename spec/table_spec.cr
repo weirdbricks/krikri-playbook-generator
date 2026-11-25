@@ -41,5 +41,25 @@ TABLE
 └───┴───┘
 TABLE
     end
+
+    it "paints the table green on a terminal and leaves a piped report plain" do
+      plain = Table.render(["module", "n"], [["copy", "2"]])
+      refute_includes(plain, "\e[")
+
+      previous = ENV["KRIKRI_FORCE_COLOR"]?
+      begin
+        ENV["KRIKRI_FORCE_COLOR"] = "1"
+        colored = Table.render(["module", "n"], [["copy", "2"]])
+      ensure
+        if previous
+          ENV["KRIKRI_FORCE_COLOR"] = previous
+        else
+          ENV.delete("KRIKRI_FORCE_COLOR")
+        end
+      end
+      assert_includes(colored, "\e[32m")
+      assert_includes(colored, "\e[32mcopy\e[0m")
+      assert_equal(plain, colored.gsub(/\e\[[0-9;]*m/, ""))
+    end
   end
 end
